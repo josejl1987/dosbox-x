@@ -51,6 +51,8 @@ using namespace std;
 #include "keyboard.h"
 #include "control.h"
 
+#include <sol/sol.hpp>"
+
 /* [https://github.com/joncampbell123/dosbox-x/issues/1264] ncurses non-ASCII keys are outside ASCII range (start at octal 0400 == hex 0x100) */
 static inline int ncurses_aware_toupper(int x) {
 	if (x >= 0x00 && x <= 0xFF) return toupper(x);
@@ -305,6 +307,7 @@ extern Bitu cycle_count;
 static bool debugging = false;
 static bool debug_running = false;
 static bool check_rescroll = false;
+extern sol::state lua;
 
 static FPU_rec oldfpu;
 
@@ -507,7 +510,6 @@ public:
 
 std::vector<CDebugVar*> CDebugVar::varList;
 
-
 /********************/
 /* Breakpoint stuff */
 /********************/
@@ -515,81 +517,21 @@ std::vector<CDebugVar*> CDebugVar::varList;
 bool mustCompleteInstruction = false;
 bool skipFirstInstruction = false;
 
-enum EBreakpoint { BKPNT_UNKNOWN, BKPNT_PHYSICAL, BKPNT_INTERRUPT, BKPNT_MEMORY, BKPNT_MEMORY_PROT, BKPNT_MEMORY_LINEAR };
-
-#define BPINT_ALL 0x100
-
-class CBreakpoint
-{
-public:
-
-	CBreakpoint(void);
-	void					SetAddress		(uint16_t seg, uint32_t off)	{ location = (PhysPt)GetAddress(seg,off); type = BKPNT_PHYSICAL; segment = seg; offset = off; };
-	void					SetAddress		(PhysPt adr)				{ location = adr; type = BKPNT_PHYSICAL; };
-	void					SetInt			(uint8_t _intNr, uint16_t ah, uint16_t al)	{ intNr = _intNr; ahValue = ah; alValue = al; type = BKPNT_INTERRUPT; };
-	void					SetOnce			(bool _once)				{ once = _once; };
-	void					SetType			(EBreakpoint _type)			{ type = _type; };
-	void					SetValue		(uint8_t value)				{ ahValue = value; };
-	void					SetOther		(uint8_t other)				{ alValue = other; };	
-
-	bool					IsActive		(void)						{ return active; };
-	void					Activate		(bool _active);
-
-	EBreakpoint				GetType			(void)						{ return type; };
-	bool					GetOnce			(void)						{ return once; };
-	PhysPt					GetLocation		(void)						{ return location; };
-	uint16_t					GetSegment		(void)						{ return segment; };
-	uint32_t					GetOffset		(void)						{ return offset; };
-	uint8_t					GetIntNr		(void)						{ return intNr; };
-	uint16_t					GetValue		(void)						{ return ahValue; };
-	uint16_t					GetOther		(void)						{ return alValue; };
-
-	// statics
-	static CBreakpoint*		AddBreakpoint		(uint16_t seg, uint32_t off, bool once);
-	static CBreakpoint*		AddIntBreakpoint	(uint8_t intNum, uint16_t ah, uint16_t al, bool once);
-	static CBreakpoint*		AddMemBreakpoint	(uint16_t seg, uint32_t off);
-	static void				DeactivateBreakpoints();
-	static void				ActivateBreakpoints	();
-	static void				ActivateBreakpointsExceptAt(PhysPt adr);
-	static bool				CheckBreakpoint		(uint16_t seg, uint32_t off);
-	static bool				CheckIntBreakpoint	(PhysPt adr, uint8_t intNr, uint16_t ahValue, uint16_t alValue);
-	static CBreakpoint*		FindPhysBreakpoint	(uint16_t seg, uint32_t off, bool once);
-	static CBreakpoint*		FindOtherActiveBreakpoint(PhysPt adr, CBreakpoint* skip);
-	static bool				IsBreakpoint		(uint16_t seg, uint32_t off);
-	static bool				DeleteBreakpoint	(uint16_t seg, uint32_t off);
-	static bool				DeleteByIndex		(uint16_t index);
-	static void				DeleteAll			(void);
-	static void				ShowList			(void);
-
-
-private:
-	EBreakpoint	type;
-	// Physical
-	PhysPt		location;
-#if !C_HEAVY_DEBUG
-	uint8_t		oldData;
-#endif
-	uint16_t		segment;
-	uint32_t		offset;
-	// Int
-	uint8_t		intNr;
-	uint16_t		ahValue;
-	uint16_t		alValue;
-	// Shared
-	bool		active;
-	bool		once;
-
-	static std::list<CBreakpoint*>	BPoints;
-#if C_HEAVY_DEBUG
-	friend bool DEBUG_HeavyIsBreakpoint(void);
-#endif
-};
-
 CBreakpoint::CBreakpoint(void):type(BKPNT_UNKNOWN),location(0),
 #if !C_HEAVY_DEBUG
 oldData(0xCC),
 #endif
 segment(0),offset(0),intNr(0),ahValue(0),alValue(0),active(false),once(false) { }
+
+void CBreakpoint::SetAddress(uint16_t seg, uint32_t off)
+{
+    location = (PhysPt)GetAddress(seg, off); type = BKPNT_PHYSICAL; segment = seg; offset = off;
+}
+
+void CBreakpoint::SetInt(uint8_t _intNr, uint16_t ah, uint16_t al)
+{
+    intNr = _intNr; ahValue = ah; alValue = al; type = BKPNT_INTERRUPT;
+}
 
 void CBreakpoint::Activate(bool _active)
 {
@@ -4409,7 +4351,7 @@ void DEBUG_Enable_Handler(bool pressed) {
     } else if (tohide && (runnormal||debug_running||debugging)) {
         hidedebugger=true;
 #if defined(WIN32)
-        ShowWindow(GetConsoleWindow(), SW_HIDE);
+     //   ShowWindow(GetConsoleWindow(), SW_HIDE);
 #endif
         debugrunmode=debuggerrun;
         mainMenu.get_item("mapper_debugger").check(false).refresh_item(mainMenu);
@@ -5161,7 +5103,11 @@ void DEBUG_SetupConsole(void) {
         LOG(LOG_MISC, LOG_DEBUG)("DEBUG_SetupConsole initializing GUI");
 
         dbg.set_data_view(DBGBlock::DATV_SEGMENTED);
-
+        SDL_Window* window = SDL_CreateWindow("Hello, SDL2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 800, 600, SDL_WINDOW_SHOWN);
+        if(window == NULL) {
+            printf("SDL_CreateWindow Error: %s\n", SDL_GetError());
+            SDL_Quit();
+        }
 #ifdef WIN32
 		WIN32_Console();
 #else

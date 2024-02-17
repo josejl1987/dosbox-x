@@ -410,7 +410,10 @@ bool Network_SetFileAttr(char const * const filename, uint16_t attr) {
 #if defined(__MINGW64_VERSION_MAJOR)
 #define _nhandle 32
 #else
-extern "C" int _nhandle;
+ extern "C"
+ {
+     int _nhandle;
+ }
 #endif
 
  bool Network_CloseFile(uint16_t entry)

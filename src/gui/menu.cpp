@@ -819,6 +819,8 @@ static const char* def_menu_debug[] =
     "show_logtext",
     "save_logas",
     "--",
+    "load_lua",
+    "--",
     "show_console",
     "clear_console",
     "disable_logging",

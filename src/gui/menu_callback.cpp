@@ -2143,6 +2143,7 @@ bool intensity_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const me
 # include <X11/Xlib.h>
 # include <X11/Xatom.h>
 #endif
+#include <sol/sol.hpp>
 
 int GetNumScreen() {
     int numscreen = 1;
@@ -2399,6 +2400,39 @@ bool save_logas_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const m
 #endif
     return true;
 }
+
+extern sol::state lua;
+extern lua_State* LUA;
+bool load_lua_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+#if !defined(HX_DOS)
+    char CurrentDir[512];
+    char* Temp_CurrentDir = CurrentDir;
+    if(getcwd(Temp_CurrentDir, 512) == NULL) {
+        LOG(LOG_GUI, LOG_ERROR)("load_lua_menu_callback failed to get the current working directory.");
+        return false;
+    }
+    std::string cwd = std::string(Temp_CurrentDir) + CROSS_FILESPLIT;
+    const char* lFilterPatterns[] = { "*.lua","*.LUA" };
+    const char* lFilterDescription = "Lua files (*.lua)";
+    char const* luaScriptFile = tinyfd_openFileDialog("Load lua file...", "", 2, lFilterPatterns, lFilterDescription, 0);
+    if(luaScriptFile == NULL) return false;
+    lua.script_file(luaScriptFile);
+
+#endif
+    return true;
+}
+
+
+
+
+
+
+
+
+
+
 
 bool show_logtext_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
     (void)menu;//UNUSED
@@ -3606,6 +3640,7 @@ void AllocCallback1() {
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"show_codetext").set_text("Show code overview").set_callback_function(show_codetext_menu_callback);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"show_logtext").set_text("Show logging text").set_callback_function(show_logtext_menu_callback);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"save_logas").set_text("Save logging as...").set_callback_function(save_logas_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"load_lua").set_text("Load lua").set_callback_function(load_lua_menu_callback);
 
                 debugrunmode = debuggerrun;
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"debugger_rundebug").set_text("Debugger option: Run debugger").set_callback_function(debugger_rundebug_menu_callback).check(debugrunmode==0);

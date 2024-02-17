@@ -127,6 +127,9 @@
     <Filter Include="Sources\hardware\RetroWaveLib">
       <UniqueIdentifier>{2a582629-0964-4559-9992-810e70c2f6ce}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Sources\imgui">
+      <UniqueIdentifier>{1502e823-d2c9-4de2-91e7-ded1765369e5}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\aviwriter\avi_rw_iobuf.cpp">
@@ -1614,6 +1617,21 @@
     <ClCompile Include="..\src\hardware\imfc.cpp">
       <Filter>Sources\hardware</Filter>
     </ClCompile>
+    <ClCompile Include="imgui\imgui.cpp">
+      <Filter>Sources\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui_draw.cpp">
+      <Filter>Sources\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui_tables.cpp">
+      <Filter>Sources\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui_widgets.cpp">
+      <Filter>Sources\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="LuaEngine.cpp">
+      <Filter>Sources\debug</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\aviwriter\avi.h">
@@ -2567,6 +2585,9 @@
     <ClInclude Include="..\src\output\output_gamelink.h" />
     <ClInclude Include="..\src\cpu\dynamic_alloc_common.h">
       <Filter>Sources\cpu</Filter>
+    </ClInclude>
+    <ClInclude Include="luaengine.h">
+      <Filter>Sources\debug</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

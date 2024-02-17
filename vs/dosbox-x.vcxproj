@@ -76,100 +76,100 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release SDL2|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug SDL2|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <WindowsSDKDesktopARMSupport>true</WindowsSDKDesktopARMSupport>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release SDL2|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release SDL2|ARM64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release SDL2|ARM'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <WindowsSDKDesktopARMSupport>true</WindowsSDKDesktopARMSupport>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <WindowsSDKDesktopARMSupport>true</WindowsSDKDesktopARMSupport>
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug SDL2|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug SDL2|ARM64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug SDL2|ARM'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
     <WindowsSDKDesktopARMSupport>true</WindowsSDKDesktopARMSupport>
     <UseDebugLibraries>true</UseDebugLibraries>
@@ -233,7 +233,7 @@
     <OutDir>$(SolutionDir)..\bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)..\obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
     <IncludePath>$(IncludePath);$(DXSDK_DIR)Include</IncludePath>
-    <LibraryPath>$(LibraryPath);$(DXSDK_DIR)Lib</LibraryPath>
+    <LibraryPath>$(LibraryPath);$(DXSDK_DIR)Lib;$(SolutionDir)..\bin\$(Platform)\$(Configuration)\</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug SDL2|Win32'">
     <OutDir>$(SolutionDir)..\bin\$(Platform)\$(Configuration)\</OutDir>
@@ -245,7 +245,7 @@
     <OutDir>$(SolutionDir)..\bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)..\obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
     <IncludePath>$(IncludePath);$(DXSDK_DIR)Include</IncludePath>
-    <LibraryPath>$(LibraryPath);$(DXSDK_DIR)Lib</LibraryPath>
+    <LibraryPath>$(LibraryPath);$(DXSDK_DIR)Lib;$(SolutionDir)Lib</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
     <OutDir>$(SolutionDir)..\bin\$(Platform)\$(Configuration)\</OutDir>
@@ -349,20 +349,25 @@
   <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Release SDL2|ARM64'">
     <VcpkgEnabled>false</VcpkgEnabled>
   </PropertyGroup>
+  <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+    <VcpkgUseMD>true</VcpkgUseMD>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SolutionDir)pcap;$(SolutionDir);$(SolutionDir)..;$(SolutionDir)..\include;$(SolutionDir)..\src;$(SolutionDir)..\src\aviwriter;$(SolutionDir)..\src\libs\mt32;$(SolutionDir)..\src\hardware\snd_pc98\cbus;$(SolutionDir)..\src\hardware\snd_pc98\common;$(SolutionDir)..\src\hardware\snd_pc98\generic;$(SolutionDir)..\src\hardware\snd_pc98\sound;$(SolutionDir)..\src\hardware\snd_pc98\x11;$(SolutionDir)..\src\hardware\snd_pc98\sound\getsnd;$(SolutionDir)libpdcurses;$(SolutionDir)zlib;$(SolutionDir)libpng;$(SolutionDir)freetype\include;$(SolutionDir)sdl\include;$(SolutionDir)sdlnet;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)pcap;$(SolutionDir);$(SolutionDir)..;$(SolutionDir)..\include;$(SolutionDir)..\src;$(SolutionDir)..\src\aviwriter;$(SolutionDir)..\src\libs\mt32;$(SolutionDir)..\src\hardware\snd_pc98\cbus;$(SolutionDir)..\src\hardware\snd_pc98\common;$(SolutionDir)..\src\hardware\snd_pc98\generic;$(SolutionDir)..\src\hardware\snd_pc98\sound;$(SolutionDir)..\src\hardware\snd_pc98\x11;$(SolutionDir)..\src\hardware\snd_pc98\sound\getsnd;$(SolutionDir)libpdcurses;$(SolutionDir)zlib;$(SolutionDir)libpng;$(SolutionDir)freetype\include;$(SolutionDir)sdl\include;$(SolutionDir)sdlnet;$(SolutionDir)lua;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;__WIN32__;_CRT_SECURE_NO_WARNINGS;_FILE_OFFSET_BITS=64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions</EnableEnhancedInstructionSet>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>winmm.lib;imm32.lib;dsound.lib;dxguid.lib;SetupAPI.lib;version.lib;Iphlpapi.lib;Ws2_32.lib;opengl32.lib;$(SolutionDir)..\obj\libpdcurses\$(Platform)\$(Configuration)\libpdcurses.lib;$(SolutionDir)..\obj\zlib\$(Platform)\$(Configuration)\zlib.lib;$(SolutionDir)..\obj\libpng\$(Platform)\$(Configuration)\libpng.lib;$(SolutionDir)..\obj\freetype\$(Platform)\$(Configuration)\freetype.lib;$(SolutionDir)..\obj\SDL\$(Platform)\$(Configuration)\SDL.lib;$(SolutionDir)..\obj\SDLmain\$(Platform)\$(Configuration)\SDLmain.lib;$(SolutionDir)..\obj\SDL_net\$(Platform)\$(Configuration)\SDL_net.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>lua.lib;winmm.lib;imm32.lib;dsound.lib;dxguid.lib;SetupAPI.lib;version.lib;Iphlpapi.lib;Ws2_32.lib;opengl32.lib;$(SolutionDir)..\obj\libpdcurses\$(Platform)\$(Configuration)\libpdcurses.lib;$(SolutionDir)..\obj\zlib\$(Platform)\$(Configuration)\zlib.lib;$(SolutionDir)..\obj\libpng\$(Platform)\$(Configuration)\libpng.lib;$(SolutionDir)..\obj\freetype\$(Platform)\$(Configuration)\freetype.lib;$(SolutionDir)..\obj\SDL\$(Platform)\$(Configuration)\SDL.lib;$(SolutionDir)..\obj\SDLmain\$(Platform)\$(Configuration)\SDLmain.lib;$(SolutionDir)..\obj\SDL_net\$(Platform)\$(Configuration)\SDL_net.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Windows</SubSystem>
     </Link>
     <CustomBuildStep />
@@ -398,9 +403,9 @@ for /d %%i in ($(SolutionDir)\..\contrib\translations\*) do copy %%i\*.lng "$(Ou
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug SDL2|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SolutionDir)pcap;$(SolutionDir);$(SolutionDir)..;$(SolutionDir)..\include;$(SolutionDir)..\src;$(SolutionDir)..\src\aviwriter;$(SolutionDir)..\src\hardware\snd_pc98\cbus;$(SolutionDir)..\src\hardware\snd_pc98\common;$(SolutionDir)..\src\hardware\snd_pc98\generic;$(SolutionDir)..\src\hardware\snd_pc98\sound;$(SolutionDir)..\src\hardware\snd_pc98\x11;$(SolutionDir)..\src\hardware\snd_pc98\sound\getsnd;$(SolutionDir)..\src\libs\mt32;$(SolutionDir)libpdcurses;$(SolutionDir)zlib;$(SolutionDir)libpng;$(SolutionDir)freetype\include;$(SolutionDir)sdl2\include;$(SolutionDir)sdlnet;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)pcap;$(SolutionDir);$(SolutionDir)..;$(SolutionDir)..\include;$(SolutionDir)..\src;$(SolutionDir)..\src\aviwriter;$(SolutionDir)..\src\hardware\snd_pc98\cbus;$(SolutionDir)..\src\hardware\snd_pc98\common;$(SolutionDir)..\src\hardware\snd_pc98\generic;$(SolutionDir)..\src\hardware\snd_pc98\sound;$(SolutionDir)..\src\hardware\snd_pc98\x11;$(SolutionDir)..\src\hardware\snd_pc98\sound\getsnd;$(SolutionDir)..\src\libs\mt32;$(SolutionDir)libpdcurses;$(SolutionDir)zlib;$(SolutionDir)libpng;$(SolutionDir)freetype\include;$(SolutionDir)sdl2\include;$(SolutionDir)sdlnet;$(SolutionDir)lua;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;__WIN32__;_CRT_SECURE_NO_WARNINGS;_FILE_OFFSET_BITS=64;C_SDL2=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <AdditionalOptions>/QIfist</AdditionalOptions>
       <SDLCheck>false</SDLCheck>
@@ -408,9 +413,10 @@ for /d %%i in ($(SolutionDir)\..\contrib\translations\*) do copy %%i\*.lng "$(Ou
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions</EnableEnhancedInstructionSet>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>winmm.lib;imm32.lib;dsound.lib;dxguid.lib;SetupAPI.lib;version.lib;Iphlpapi.lib;Ws2_32.lib;opengl32.lib;$(SolutionDir)..\obj\libpdcurses\$(Platform)\$(Configuration)\libpdcurses.lib;$(SolutionDir)..\obj\zlib\$(Platform)\$(Configuration)\zlib.lib;$(SolutionDir)..\obj\libpng\$(Platform)\$(Configuration)\libpng.lib;$(SolutionDir)..\obj\freetype\$(Platform)\$(Configuration)\freetype.lib;$(SolutionDir)..\obj\SDL2\$(Platform)\$(Configuration)\sdl2.lib;$(SolutionDir)..\obj\SDL2main\$(Platform)\$(Configuration)\sdl2main.lib;$(SolutionDir)..\obj\SDL_net\$(Platform)\$(Configuration)\SDL_net.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>lua.lib;winmm.lib;imm32.lib;dsound.lib;dxguid.lib;SetupAPI.lib;version.lib;Iphlpapi.lib;Ws2_32.lib;opengl32.lib;$(SolutionDir)..\obj\libpdcurses\$(Platform)\$(Configuration)\libpdcurses.lib;$(SolutionDir)..\obj\zlib\$(Platform)\$(Configuration)\zlib.lib;$(SolutionDir)..\obj\libpng\$(Platform)\$(Configuration)\libpng.lib;$(SolutionDir)..\obj\freetype\$(Platform)\$(Configuration)\freetype.lib;$(SolutionDir)..\obj\SDL2\$(Platform)\$(Configuration)\sdl2.lib;$(SolutionDir)..\obj\SDL2main\$(Platform)\$(Configuration)\sdl2main.lib;$(SolutionDir)..\obj\SDL_net\$(Platform)\$(Configuration)\SDL_net.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Windows</SubSystem>
     </Link>
     <CustomBuildStep />
@@ -449,14 +455,15 @@ for /d %%i in ($(SolutionDir)\..\contrib\translations\*) do copy %%i\*.lng "$(Ou
       <TargetEnvironment>X64</TargetEnvironment>
     </Midl>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SolutionDir)pcap;$(SolutionDir);$(SolutionDir)..;$(SolutionDir)..\include;$(SolutionDir)..\src;$(SolutionDir)..\src\aviwriter;$(SolutionDir)..\src\libs\mt32;$(SolutionDir)..\src\hardware\snd_pc98\cbus;$(SolutionDir)..\src\hardware\snd_pc98\common;$(SolutionDir)..\src\hardware\snd_pc98\generic;$(SolutionDir)..\src\hardware\snd_pc98\sound;$(SolutionDir)..\src\hardware\snd_pc98\x11;$(SolutionDir)..\src\hardware\snd_pc98\sound\getsnd;$(SolutionDir)libpdcurses;$(SolutionDir)zlib;$(SolutionDir)libpng;$(SolutionDir)freetype\include;$(SolutionDir)sdl\include;$(SolutionDir)sdlnet;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)pcap;$(SolutionDir);$(SolutionDir)..;$(SolutionDir)..\include;$(SolutionDir)..\src;$(SolutionDir)..\src\aviwriter;$(SolutionDir)..\src\libs\mt32;$(SolutionDir)..\src\hardware\snd_pc98\cbus;$(SolutionDir)..\src\hardware\snd_pc98\common;$(SolutionDir)..\src\hardware\snd_pc98\generic;$(SolutionDir)..\src\hardware\snd_pc98\sound;$(SolutionDir)..\src\hardware\snd_pc98\x11;$(SolutionDir)..\src\hardware\snd_pc98\sound\getsnd;$(SolutionDir)libpdcurses;$(SolutionDir)zlib;$(SolutionDir)libpng;$(SolutionDir)freetype\include;$(SolutionDir)sdl\include;$(SolutionDir)sdlnet;$(SolutionDir)lua;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;__WIN32__;_CRT_SECURE_NO_WARNINGS;_FILE_OFFSET_BITS=64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <AdditionalDependencies>winmm.lib;imm32.lib;dsound.lib;dxguid.lib;SetupAPI.lib;version.lib;Iphlpapi.lib;Ws2_32.lib;opengl32.lib;$(SolutionDir)..\obj\libpdcurses\$(Platform)\$(Configuration)\libpdcurses.lib;$(SolutionDir)..\obj\zlib\$(Platform)\$(Configuration)\zlib.lib;$(SolutionDir)..\obj\libpng\$(Platform)\$(Configuration)\libpng.lib;$(SolutionDir)..\obj\freetype\$(Platform)\$(Configuration)\freetype.lib;$(SolutionDir)..\obj\SDL\$(Platform)\$(Configuration)\SDL.lib;$(SolutionDir)..\obj\SDLmain\$(Platform)\$(Configuration)\SDLmain.lib;$(SolutionDir)..\obj\SDL_net\$(Platform)\$(Configuration)\SDL_net.lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -584,18 +591,23 @@ for /d %%i in ($(SolutionDir)\..\contrib\translations\*) do copy %%i\*.lng "$(Ou
       <TargetEnvironment>X64</TargetEnvironment>
     </Midl>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SolutionDir)pcap;$(SolutionDir);$(SolutionDir)..;$(SolutionDir)..\include;$(SolutionDir)..\src;$(SolutionDir)..\src\aviwriter;$(SolutionDir)..\src\hardware\snd_pc98\cbus;$(SolutionDir)..\src\hardware\snd_pc98\common;$(SolutionDir)..\src\hardware\snd_pc98\generic;$(SolutionDir)..\src\hardware\snd_pc98\sound;$(SolutionDir)..\src\hardware\snd_pc98\x11;$(SolutionDir)..\src\hardware\snd_pc98\sound\getsnd;$(SolutionDir)..\src\libs\mt32;$(SolutionDir)libpdcurses;$(SolutionDir)zlib;$(SolutionDir)libpng;$(SolutionDir)freetype\include;$(SolutionDir)sdl2\include;$(SolutionDir)sdlnet;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)pcap;$(SolutionDir);$(SolutionDir)..;$(SolutionDir)..\include;$(SolutionDir)..\src;$(SolutionDir)..\src\aviwriter;$(SolutionDir)..\src\hardware\snd_pc98\cbus;$(SolutionDir)..\src\hardware\snd_pc98\common;$(SolutionDir)..\src\hardware\snd_pc98\generic;$(SolutionDir)..\src\hardware\snd_pc98\sound;$(SolutionDir)..\src\hardware\snd_pc98\x11;$(SolutionDir)..\src\hardware\snd_pc98\sound\getsnd;$(SolutionDir)..\src\libs\mt32;$(SolutionDir)libpdcurses;$(SolutionDir)zlib;$(SolutionDir)libpng;$(SolutionDir)freetype\include;$(SolutionDir)sdl2\include;$(SolutionDir)sdlnet;$(SolutionDir)lua;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;__WIN32__;_CRT_SECURE_NO_WARNINGS;_FILE_OFFSET_BITS=64;C_SDL2=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
-      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <Optimization>Disabled</Optimization>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <SupportJustMyCode>false</SupportJustMyCode>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>
     <Link>
       <AdditionalDependencies>winmm.lib;imm32.lib;dsound.lib;dxguid.lib;SetupAPI.lib;version.lib;Iphlpapi.lib;Ws2_32.lib;opengl32.lib;$(SolutionDir)..\obj\libpdcurses\$(Platform)\$(Configuration)\libpdcurses.lib;$(SolutionDir)..\obj\zlib\$(Platform)\$(Configuration)\zlib.lib;$(SolutionDir)..\obj\libpng\$(Platform)\$(Configuration)\libpng.lib;$(SolutionDir)..\obj\freetype\$(Platform)\$(Configuration)\freetype.lib;$(SolutionDir)..\obj\SDL2\$(Platform)\$(Configuration)\sdl2.lib;$(SolutionDir)..\obj\SDL2main\$(Platform)\$(Configuration)\sdl2main.lib;$(SolutionDir)..\obj\SDL_net\$(Platform)\$(Configuration)\SDL_net.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <SubSystem>Windows</SubSystem>
+      <SubSystem>Console</SubSystem>
     </Link>
     <PostBuildEvent>
       <Command>copy "$(SolutionDir)\..\contrib\fonts\FREECG98.BMP" "$(OutputPath)\FREECG98.BMP"
@@ -1585,6 +1597,11 @@ for /d %%i in ($(SolutionDir)\..\contrib\translations\*) do copy %%i\*.lng "$(Ou
     <ClCompile Include="..\src\libs\fluidsynth\fluid_ringbuffer.c" />
     <ClCompile Include="..\src\libs\fluidsynth\fluid_settings.c" />
     <ClCompile Include="..\src\libs\fluidsynth\fluid_sys.c" />
+    <ClCompile Include="imgui\imgui.cpp" />
+    <ClCompile Include="imgui\imgui_draw.cpp" />
+    <ClCompile Include="imgui\imgui_tables.cpp" />
+    <ClCompile Include="imgui\imgui_widgets.cpp" />
+    <ClCompile Include="LuaEngine.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="..\src\winres.rc" />
@@ -1910,6 +1927,7 @@ for /d %%i in ($(SolutionDir)\..\contrib\translations\*) do copy %%i\*.lng "$(Ou
     <ClInclude Include="..\src\libs\xBRZ\xbrz_config.h" />
     <ClInclude Include="..\src\libs\xBRZ\xbrz_tools.h" />
     <ClInclude Include="config.h" />
+    <ClInclude Include="luaengine.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

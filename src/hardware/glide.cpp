@@ -32,7 +32,6 @@
 
 #include <iomanip>
 #include <sstream>
-using namespace std;
 
 #include "SDL.h"
 #include "SDL_syswm.h"
@@ -40,6 +39,7 @@ using namespace std;
 #if defined (WIN32)
 #include <windows.h>
 #include <Shlwapi.h>
+using namespace std;
 
 #ifdef _MSC_VER
 #pragma comment( lib, "Shlwapi" )

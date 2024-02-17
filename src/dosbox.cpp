@@ -90,6 +90,7 @@
 #endif
 
 #include <list>
+#include <sol/sol.hpp>
 
 /*===================================TODO: Move to it's own file==============================*/
 #if defined(__SSE__) && !(defined(_M_AMD64) || defined(__e2k__))
@@ -160,7 +161,6 @@ bool                dos_con_use_int16_to_detect_input = true;
 bool                dbg_zero_on_dos_allocmem = true;
 bool                dbg_zero_on_xms_allocmem = true;
 bool                dbg_zero_on_ems_allocmem = true;
-
 /* the exact frequency of the NTSC color subcarrier ~3.579545454...MHz or 315/88 */
 /* see: https://en.wikipedia.org/wiki/Colorburst */
 #define             NTSC_COLOR_SUBCARRIER_NUM       (315000000ULL)
@@ -640,7 +640,7 @@ void DOSBOX_RunMachine(void){
     extern unsigned int last_callback;
     unsigned int p_last_callback = last_callback;
     last_callback = 0;
-
+    
 #ifdef DEBUG_RECURSION
     if (runmachine_recursion++ != 0)
         LOG_MSG("RunMachine recursion");

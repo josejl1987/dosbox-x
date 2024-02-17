@@ -162,6 +162,12 @@ extern int tryconvertcp, Reflect_Menu(void);
 #include <output/output_tools_xbrz.h>
 static bool init_output = false;
 
+#include <sol/sol.hpp>
+
+sol::state lua;
+LuaEngine luaEngine;
+
+
 #if defined(WIN32)
 #include "resource.h"
 #if !defined(HX_DOS)
@@ -7315,6 +7321,12 @@ void Windows_DPI_Awareness_Init() {
 }
 #endif
 
+inline int my_add(int x, int y) {
+    MessageBox(NULL, "MOEW","MOEW",0);
+    return x + y;
+}
+
+
 bool VM_Boot_DOSBox_Kernel() {
     if (!dos_kernel_disabled) {
         RemoveEMSPageFrame();
@@ -7527,6 +7539,7 @@ bool custom_bios = false;
 
 #if defined(WIN32) && !defined(HX_DOS)
 #include "Shlobj.h"
+#include <luaengine.h>
 int CALLBACK FolderBrowserCallback(HWND h_Dlg, UINT uMsg, LPARAM lParam, LPARAM lpData) {
     (void)lParam;
     if (uMsg == BFFM_INITIALIZED)
@@ -9198,6 +9211,10 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
         UpdateWindowDimensions();
         userResizeWindowWidth = 0;
         userResizeWindowHeight = 0;
+
+
+
+        luaEngine.LoadCode("hello.lua", "");
 
         UpdateOverscanMenu();
 

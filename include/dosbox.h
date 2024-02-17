@@ -69,6 +69,7 @@
 #if defined(_MSC_VER)
 # include <sys/types.h>
 # include <sys/stat.h>
+#include <luaengine.h>
 
 /* Microsoft has their own stat/stat64 scheme */
 # define pref_stat			_stati64
@@ -171,6 +172,7 @@ extern ATICard				atiCard;
 extern S3Card				s3Card;
 extern HerculesCard			hercCard;
 extern MachineType			machine;
+extern LuaEngine            luaEngine;
 extern bool             SDLNetInited, uselfn;
 extern bool				mono_cga;
 extern bool				DEPRECATED mainline_compatible_mapping;
@@ -378,31 +380,36 @@ void readPOD(std::istream& stream, T& data);
 void writeString(std::ostream& stream, const std::string& data);
 void readString(std::istream& stream, std::string& data);
 
-
-//Implementation of SaveState::Component for saving POD types only
 class SerializeGlobalPOD : public SaveState::Component
 {
 public:
+
     SerializeGlobalPOD(const std::string& compName)
     {
         SaveState::instance().registerComponent(compName, *this);
     }
 
+
     template <class T>
-    void registerPOD(T& pod) //register POD for serializatioin
+    void registerPOD(T& pod) // register POD for serialization
     {
         podRef.push_back(POD(pod));
     }
 
-protected:
-    virtual void getBytes(std::ostream& stream)
+    void getBytes(std::ostream& stream)
     {
-        std::for_each(podRef.begin(), podRef.end(), std::bind1st(WriteGlobalPOD(), &stream));
+        std::for_each(podRef.begin(), podRef.end(), [&stream](const POD& data) {
+            WriteGlobalPOD writer;
+            writer(stream, data);
+            });
     }
 
-    virtual void setBytes(std::istream& stream)
+    void setBytes(std::istream& stream)
     {
-        std::for_each(podRef.begin(), podRef.end(), std::bind1st(ReadGlobalPOD(), &stream));
+        std::for_each(podRef.begin(), podRef.end(), [&stream](POD& data) {
+            ReadGlobalPOD reader;
+            reader(stream, data);
+            });
     }
 
 private:
@@ -414,25 +421,24 @@ private:
         size_t size;
     };
 
-    struct WriteGlobalPOD : public std::binary_function<std::ostream*, POD, void>
+    struct WriteGlobalPOD
     {
-        void operator()(std::ostream* stream, const POD& data) const
+        void operator()(std::ostream& stream, const POD& data) const
         {
-            stream->write(static_cast<const char*>(data.address), data.size);
+            stream.write(static_cast<const char*>(data.address), data.size);
         }
     };
 
-    struct ReadGlobalPOD : public std::binary_function<std::istream*, POD, void>
+    struct ReadGlobalPOD
     {
-        void operator()(std::istream* stream, const POD& data) const
+        void operator()(std::istream& stream, POD& data) const
         {
-            stream->read(static_cast<char*>(data.address), data.size);
+            stream.read(static_cast<char*>(data.address), data.size);
         }
     };
 
     std::vector<POD> podRef;
 };
-
 //---------------- inline implementation -------------------------
 template <class T>
 inline

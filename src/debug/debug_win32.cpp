@@ -72,7 +72,7 @@ static void ResizeConsole( HANDLE hConsole, SHORT xSize, SHORT ySize ) {
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
 #endif
-void DEBUG_ShowMsg(char const* format,...);
+
 void WIN32_Console() {
 	AllocConsole();
 	SetConsoleTitle("DOSBox-X Debugger");
