@@ -5,9 +5,34 @@
 #include <string>
 #define SOL_ALL_SAFETIES_ON  1
 #include <sol/sol.hpp>
+#include <stack>
+#include <fstream>
+
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/basic_file_sink.h>
 
 struct LuaEngine
 {
+
+    struct MapChange {
+        uint8_t map;
+        uint8_t unk;
+        uint8_t x;
+        uint8_t y;
+    };
+
+    struct Symbol {
+        char type;
+        int offset;
+        int total_size;
+        int mem_type;
+        std::string name;
+    };
+
+    std::vector<Symbol> symbols;
+
+
+    void loadSymbols(char* filename);
 
     struct LogPoint {
         uint16_t cs;
@@ -15,8 +40,15 @@ struct LuaEngine
         std::string name;
     };
 
+    struct CodePos {
+        uint16_t cs;
+        uint16_t ip;
+    };
 
+    std::shared_ptr<spdlog::logger> logger;
     LuaEngine() {
+         logger = spdlog::basic_logger_mt("file_logger", "debug_output.log", true);
+         logger->set_level(spdlog::level::warn);
     };
 
     sol::state lua;
@@ -30,7 +62,7 @@ struct LuaEngine
 
     // True at the frame boundary, false otherwise.
     int frameBoundary = 0;
-
+    
     std::vector<LogPoint> logpoints;
    
 
@@ -52,6 +84,11 @@ struct LuaEngine
 
     // Transparency strength. 255=opaque, 0=so transparent it's invisible
     int transparencyModifier = 255;
+
+    bool enableIdalog = false;
+
+    std::deque<CodePos> position;
+    std::stack<CodePos> stack;
 
     // Our zapper.
     int luazapperx = -1;
@@ -76,6 +113,8 @@ struct LuaEngine
 
     char* rawToCString(lua_State* L, int idx = 0);
     const char* toCString(lua_State* L, int idx = 0);
+    bool forceChangeMao = false;
+    MapChange mc = { 0x4,0x2,0x8,0x18 };
 
     int exitScheduled = 0;
 
@@ -93,12 +132,13 @@ struct LuaEngine
         REGI_IP, REGI_EIP, REGI_FLAGS, REGI_CS, REGI_DS,REGI_SS,REGI_ES
 
     };
-
+    void createWindow(const std::string& title, int width, int height);
+    void windowCreationThread(const std::string& title, int width, int height);
     enum AddressLabel {
         BZ_EXEC_LOAD,
         FUN_3000_1396,
         FUN_3000_1401,
-        LAB_3000_1418,
+        PLAYBGM,
         BZ_LOAD_LIB,
         NORMAL_LOAD_LIB,
         UNPACK_CALL,

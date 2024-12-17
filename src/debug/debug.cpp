@@ -4272,6 +4272,7 @@ Bitu DEBUG_Loop(void) {
     }
     else {
         //TODO Disable sound
+
         GFX_Events();
         // Interrupt started ? - then skip it
         uint16_t oldCS	= SegValue(cs);
@@ -5103,11 +5104,7 @@ void DEBUG_SetupConsole(void) {
         LOG(LOG_MISC, LOG_DEBUG)("DEBUG_SetupConsole initializing GUI");
 
         dbg.set_data_view(DBGBlock::DATV_SEGMENTED);
-        SDL_Window* window = SDL_CreateWindow("Hello, SDL2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 800, 600, SDL_WINDOW_SHOWN);
-        if(window == NULL) {
-            printf("SDL_CreateWindow Error: %s\n", SDL_GetError());
-            SDL_Quit();
-        }
+    
 #ifdef WIN32
 		WIN32_Console();
 #else
@@ -5402,6 +5399,33 @@ struct TLogInst {
 };
 
 TLogInst logInst[LOGCPUMAX];
+
+
+const char* getFunctionName(int index) {
+    switch(index) {
+    case 0: return "BZ_EXEC_LOAD";
+    case 1: return "nullsub_1";
+    case 2: return "nullsub_2";
+    case 3: return "sub_BC020";
+    case 4: return "BZ_LOAD_LIB";
+    case 5: return "NORMAL_LOAD_LIB";
+    case 6: return "UNPACK_CALL";
+    case 7: return "NORMAL_LOAD";
+    case 8: return "NORMAL_SAVE";
+    case 9: return "NORMAL_SAVE_LIB";
+    case 10: return "DELETE_FILE";
+    case 11: return "CHECK_DISK_NUMBER2";
+    case 12: return "BZ_LOAD_LIB2";
+    case 13: return "DATA_FILE_COPY";
+    case 14: return "NORMAL_LOAD2";
+    case 15: return "NORMAL_SAVE2";
+    case 16: return "DELETE_FILE2";
+    case 17: return "DISK_ERROR";
+    case 18: return "DATA_FILE_COPY2";
+    case 19: return "locret_BC052";
+    default: return "Invalid index";
+    }
+}
 
 void DEBUG_HeavyLogInstruction(void) {
 
