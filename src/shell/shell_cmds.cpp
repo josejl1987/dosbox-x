@@ -51,6 +51,7 @@
 #include "sdlmain.h"
 #include "menudef.h"
 #include "build_timestamp.h"
+#include "version_string.h"
 
 #include <output/output_ttf.h>
 
@@ -118,7 +119,7 @@ SHELL_Cmd cmd_list[]={
 // Advanced commands specific to DOSBox-X
 //{	"ADDKEY",		1,		&DOS_Shell::CMD_ADDKEY,		"SHELL_CMD_ADDKEY_HELP"}, // ADDKEY as a program (Z:\BIN\ADDKEY.COM) instead of shell command
 {	"DX-CAPTURE",	1,		&DOS_Shell::CMD_DXCAPTURE,  "SHELL_CMD_DXCAPTURE_HELP"},
-{0,0,0,0}
+{ nullptr, 0, nullptr, nullptr }
 };
 
 const char *GetCmdName(int i) {
@@ -134,11 +135,15 @@ extern uint16_t countryNo, altcp_to_unicode[256];
 extern bool isDBCSCP(), isKanji1(uint8_t chr), shiftjis_lead_byte(int c), TTF_using(void), Network_IsNetworkResource(const char * filename);
 extern bool CheckBoxDrawing(uint8_t c1, uint8_t c2, uint8_t c3, uint8_t c4), GFX_GetPreventFullscreen(void), DOS_SetAnsiAttr(uint8_t attr);
 extern bool systemmessagebox(char const * aTitle, char const * aMessage, char const * aDialogType, char const * aIconType, int aDefaultButton);
-extern void Load_Language(std::string name), SwitchLanguage(int oldcp, int newcp, bool confirm), GetExpandedPath(std::string &path);
+extern void Load_Language(std::string name), GetExpandedPath(std::string &path);
 extern void MAPPER_AutoType(std::vector<std::string> &sequence, const uint32_t wait_ms, const uint32_t pace_ms, bool choice);
 extern void DOS_SetCountry(uint16_t countryNo), DOSV_FillScreen(void);
 std::string GetDOSBoxXPath(bool withexe=false);
 FILE *testLoadLangFile(const char *fname);
+Bitu DOS_ChangeCodepage(int32_t codepage, const char* codepagefile);
+bool CheckDBCSCP(int32_t codepage), SwitchLanguage(int oldcp, int newcp, bool confirm);
+static int32_t lastsetcp = 0;
+bool CHCP_changed = false;
 
 /* support functions */
 static char empty_char = 0;
@@ -235,7 +240,7 @@ bool DOS_Shell::CheckConfig(char* cmd_in,char*line) {
 bool enable_config_as_shell_commands = false;
 
 bool DOS_Shell::execute_shell_cmd(char *name, char *arguments) {
-	SHELL_Cmd shell_cmd = {};
+	// SHELL_Cmd shell_cmd = {}; /* unused */
 	uint32_t cmd_index=0;
 	while (cmd_list[cmd_index].name) {
 		if (strcasecmp(cmd_list[cmd_index].name,name)==0) {
@@ -486,188 +491,193 @@ void DOS_Shell::CMD_CLS(char * args) {
    } 
 }
 
-void DOS_Shell::CMD_DELETE(char * args) {
-	HELP("DELETE");
-	bool optP=ScanCMDBool(args,"P");
-	bool optF=ScanCMDBool(args,"F");
-	bool optQ=ScanCMDBool(args,"Q");
+void DOS_Shell::CMD_DELETE(char* args) {
+    HELP("DELETE");
+    bool optP = ScanCMDBool(args, "P");
+    bool optF = ScanCMDBool(args, "F");
+    bool optQ = ScanCMDBool(args, "Q");
 
-	// ignore /f, /s, /ar, /as, /ah and /aa switches for compatibility
-	ScanCMDBool(args,"S");
-	ScanCMDBool(args,"AR");
-	ScanCMDBool(args,"AS");
-	ScanCMDBool(args,"AH");
-	ScanCMDBool(args,"AA");
+    const char ch_y = MSG_Get("INT21_6523_YESNO_CHARS")[0];
+    const char ch_n = MSG_Get("INT21_6523_YESNO_CHARS")[1];
+    const char ch_Y = toupper(ch_y);
+    const char ch_N = toupper(ch_n);
 
-	char * rem=ScanCMDRemain(args);
-	if (rem) {
-		WriteOut(MSG_Get("SHELL_ILLEGAL_SWITCH"),rem);
-		return;
-	}
-	if (!*args) {
-		WriteOut(MSG_Get("SHELL_MISSING_PARAMETER"));
-		return;
-	}
+    // ignore /f, /s, /ar, /as, /ah and /aa switches for compatibility
+    ScanCMDBool(args, "S");
+    ScanCMDBool(args, "AR");
+    ScanCMDBool(args, "AS");
+    ScanCMDBool(args, "AH");
+    ScanCMDBool(args, "AA");
 
-	StripSpaces(args);
-	args=trim(args);
+    char* rem = ScanCMDRemain(args);
+    if(rem) {
+        WriteOut(MSG_Get("SHELL_ILLEGAL_SWITCH"), rem);
+        return;
+    }
+    if(!*args) {
+        WriteOut(MSG_Get("SHELL_MISSING_PARAMETER"));
+        return;
+    }
 
-	/* Command uses dta so set it to our internal dta */
-	//DOS_DTA dta(dos.dta());
-	RealPt save_dta=dos.dta();
-	dos.dta(dos.tables.tempdta);
-	DOS_DTA dta(dos.dta());
-	/* If delete accept switches mind the space in front of them. See the dir /p code */ 
+    StripSpaces(args);
+    args = trim(args);
 
-	char full[DOS_PATHLENGTH],sfull[DOS_PATHLENGTH+2];
-	char buffer[CROSS_LEN];
-    char name[DOS_NAMELENGTH_ASCII],lname[LFN_NAMELENGTH+1];
-    uint32_t size,hsize;uint16_t time,date;uint8_t attr;
-	args = ExpandDot(args,buffer, CROSS_LEN, false);
-	StripSpaces(args);
-	if (!DOS_Canonicalize(args,full)) { WriteOut(MSG_Get("SHELL_ILLEGAL_PATH"));dos.dta(save_dta);return; }
-	if (strlen(args)&&args[strlen(args)-1]!='\\') {
-		uint16_t fattr;
-		if (strcmp(args,"*.*")&&DOS_GetFileAttr(args, &fattr) && (fattr&DOS_ATTR_DIRECTORY))
-			strcat(args, "\\");
-	}
-	if (strlen(args)&&args[strlen(args)-1]=='\\') strcat(args, "*.*");
-	else if (!strcmp(args,".")||(strlen(args)>1&&(args[strlen(args)-2]==':'||args[strlen(args)-2]=='\\')&&args[strlen(args)-1]=='.')) {
-		args[strlen(args)-1]='*';
-		strcat(args, ".*");
-	} else if (uselfn&&strchr(args, '*')) {
-		char * find_last;
-		find_last=strrchr_dbcs(args,'\\');
-		if (find_last==NULL) find_last=args;
-		else find_last++;
-		if (strlen(find_last)>0&&args[strlen(args)-1]=='*'&&strchr(find_last, '.')==NULL) strcat(args, ".*");
-	}
-	if (!strcmp(args,"*.*")||(strlen(args)>3&&(!strcmp(args+strlen(args)-4, "\\*.*") || !strcmp(args+strlen(args)-4, ":*.*")))) {
-		if (!optQ) {
-first_1:
-			WriteOut(MSG_Get("SHELL_CMD_DEL_SURE"));
-first_2:
-			uint8_t c;uint16_t n=1;
-			DOS_ReadFile (STDIN,&c,&n);
-			do switch (c) {
-			case 'n':			case 'N':
-			{
-				DOS_WriteFile (STDOUT,&c, &n);
-				DOS_ReadFile (STDIN,&c,&n);
-				do switch (c) {
-					case 0xD: WriteOut("\n");dos.dta(save_dta);return;
-					case 0x03: dos.dta(save_dta);return;
-					case 0x08: WriteOut("\b \b"); goto first_2;
-				} while (DOS_ReadFile (STDIN,&c,&n));
-			}
-			case 'y':			case 'Y':
-			{
-				DOS_WriteFile (STDOUT,&c, &n);
-				DOS_ReadFile (STDIN,&c,&n);
-				do switch (c) {
-					case 0xD: WriteOut("\n"); goto continue_1;
-					case 0x03: dos.dta(save_dta);return;
-					case 0x08: WriteOut("\b \b"); goto first_2;
-				} while (DOS_ReadFile (STDIN,&c,&n));
-			}
-			case 0xD: WriteOut("\n"); goto first_1;
-			case 0x03: dos.dta(save_dta);return;
-			case '\t':
-			case 0x08:
-				goto first_2;
-			default:
-			{
-				DOS_WriteFile (STDOUT,&c, &n);
-				DOS_ReadFile (STDIN,&c,&n);
-				do switch (c) {
-					case 0xD: WriteOut("\n"); goto first_1;
-					case 0x03: dos.dta(save_dta);return;
-					case 0x08: WriteOut("\b \b"); goto first_2;
-				} while (DOS_ReadFile (STDIN,&c,&n));
-				goto first_2;
-			}
-		} while (DOS_ReadFile (STDIN,&c,&n));
-	}
-}
+    /* Command uses dta so set it to our internal dta */
+    //DOS_DTA dta(dos.dta());
+    RealPt save_dta = dos.dta();
+    dos.dta(dos.tables.tempdta);
+    DOS_DTA dta(dos.dta());
+    /* If delete accept switches mind the space in front of them. See the dir /p code */
+
+    char full[DOS_PATHLENGTH], sfull[DOS_PATHLENGTH + 2];
+    char buffer[CROSS_LEN];
+    char name[DOS_NAMELENGTH_ASCII], lname[LFN_NAMELENGTH + 1];
+    uint32_t size, hsize; uint16_t time, date; uint8_t attr;
+    args = ExpandDot(args, buffer, CROSS_LEN, false);
+    StripSpaces(args);
+    if(!DOS_Canonicalize(args, full)) { WriteOut(MSG_Get("SHELL_ILLEGAL_PATH")); dos.dta(save_dta); return; }
+    if(strlen(args) && args[strlen(args) - 1] != '\\') {
+        uint16_t fattr;
+        if(strcmp(args, "*.*") && DOS_GetFileAttr(args, &fattr) && (fattr & DOS_ATTR_DIRECTORY))
+            strcat(args, "\\");
+    }
+    if(strlen(args) && args[strlen(args) - 1] == '\\') strcat(args, "*.*");
+    else if(!strcmp(args, ".") || (strlen(args) > 1 && (args[strlen(args) - 2] == ':' || args[strlen(args) - 2] == '\\') && args[strlen(args) - 1] == '.')) {
+        args[strlen(args) - 1] = '*';
+        strcat(args, ".*");
+    }
+    else if(uselfn && strchr(args, '*')) {
+        char* find_last;
+        find_last = strrchr_dbcs(args, '\\');
+        if(find_last == NULL) find_last = args;
+        else find_last++;
+        if(strlen(find_last) > 0 && args[strlen(args) - 1] == '*' && strchr(find_last, '.') == NULL) strcat(args, ".*");
+    }
+    if(!strcmp(args, "*.*") || (strlen(args) > 3 && (!strcmp(args + strlen(args) - 4, "\\*.*") || !strcmp(args + strlen(args) - 4, ":*.*")))) {
+        if(!optQ) {
+        first_1:
+            WriteOut(MSG_Get("SHELL_CMD_DEL_SURE"));
+        first_2:
+            uint8_t c; uint16_t n = 1;
+            DOS_ReadFile(STDIN, &c, &n);
+            do {
+                if(c == ch_n || c == ch_N) {
+                    DOS_WriteFile(STDOUT, &c, &n);
+                    DOS_ReadFile(STDIN, &c, &n);
+                    do switch(c) {
+                    case 0xD: WriteOut("\n"); dos.dta(save_dta); return;
+                    case 0x03: dos.dta(save_dta); return;
+                    case 0x08: WriteOut("\b \b"); goto first_2;
+                    } while(DOS_ReadFile(STDIN, &c, &n));
+                }
+
+                if(c == ch_y || c == ch_Y) {
+                    DOS_WriteFile(STDOUT, &c, &n);
+                    DOS_ReadFile(STDIN, &c, &n);
+                    do switch(c) {
+                    case 0xD: WriteOut("\n"); goto continue_1;
+                    case 0x03: dos.dta(save_dta); return;
+                    case 0x08: WriteOut("\b \b"); goto first_2;
+                    } while(DOS_ReadFile(STDIN, &c, &n));
+                }
+
+                if(c == 0xD) { WriteOut("\n"); goto first_1; }
+                if(c == 0x03) { dos.dta(save_dta); return; }
+                if(c == '\t' || c == 0x08) goto first_2;
+
+                DOS_WriteFile(STDOUT, &c, &n);
+                DOS_ReadFile(STDIN, &c, &n);
+                do switch(c) {
+                case 0xD: WriteOut("\n"); goto first_1;
+                case 0x03: dos.dta(save_dta); return;
+                case 0x08: WriteOut("\b \b"); goto first_2;
+                } while(DOS_ReadFile(STDIN, &c, &n));
+                goto first_2;
+            } while(DOS_ReadFile(STDIN, &c, &n));
+        }
+    }
 
 continue_1:
-	/* Command uses dta so set it to our internal dta */
-	if (!DOS_Canonicalize(args,full)) { WriteOut(MSG_Get("SHELL_ILLEGAL_PATH"));dos.dta(save_dta);return; }
-	char path[DOS_PATHLENGTH], spath[DOS_PATHLENGTH], pattern[DOS_PATHLENGTH], *r=strrchr_dbcs(full, '\\');
-	if (r!=NULL) {
-		*r=0;
-		strcpy(path, full);
-		strcat(path, "\\");
-		strcpy(pattern, r+1);
-		*r='\\';
-	} else {
-		strcpy(path, "");
-		strcpy(pattern, full);
-	}
-	int k=0;
-	for (int i=0;i<(int)strlen(pattern);i++)
-		if (pattern[i]!='\"')
-			pattern[k++]=pattern[i];
-	pattern[k]=0;
-	strcpy(spath, path);
-	if (strchr(args,'\"')||uselfn) {
-		if (!DOS_GetSFNPath(("\""+std::string(path)+"\\").c_str(), spath, false)) strcpy(spath, path);
-		if (!strlen(spath)||spath[strlen(spath)-1]!='\\') strcat(spath, "\\");
-	}
-	std::string pfull=std::string(spath)+std::string(pattern);
-	int fbak=lfn_filefind_handle;
-	lfn_filefind_handle=uselfn?LFN_FILEFIND_INTERNAL:LFN_FILEFIND_NONE;
-    bool res=DOS_FindFirst(((uselfn&&pfull.length()&&pfull[0]!='"'?"\"":"")+pfull+(uselfn&&pfull.length()&&pfull[pfull.length()-1]!='"'?"\"":"")).c_str(),0xffff & ~DOS_ATTR_VOLUME);
-	if (!res) {
-		lfn_filefind_handle=fbak;
-		WriteOut(MSG_Get("SHELL_CMD_DEL_ERROR"),args);
-		dos.dta(save_dta);
-		return;
-	}
-	lfn_filefind_handle=fbak;
-	//end can't be 0, but if it is we'll get a nice crash, who cares :)
-	strcpy(sfull,full);
-	char * end=strrchr_dbcs(full,'\\')+1;*end=0;
-	char * lend=strrchr_dbcs(sfull,'\\')+1;*lend=0;
-	dta=dos.dta();
-	bool exist=false;
-	lfn_filefind_handle=uselfn?LFN_FILEFIND_INTERNAL:LFN_FILEFIND_NONE;
-	while (res) {
-		dta.GetResult(name,lname,size,hsize,date,time,attr);
-		if (!optF && (attr & DOS_ATTR_READ_ONLY) && !(attr & DOS_ATTR_DIRECTORY)) {
-			exist=true;
-			strcpy(end,name);
-			strcpy(lend,lname);
-			WriteOut(MSG_Get("SHELL_CMD_DEL_ERROR"),uselfn?sfull:full);
-		} else if (!(attr & DOS_ATTR_DIRECTORY)) {
-			exist=true;
-			strcpy(end,name);
-			strcpy(lend,lname);
-			if (optP) {
-				WriteOut("Delete %s (Y/N)?", uselfn?sfull:full);
-				uint8_t c;
-				uint16_t n=1;
-				DOS_ReadFile (STDIN,&c,&n);
-				if (c==3) break;
-				c = c=='y'||c=='Y' ? 'Y':'N';
-				WriteOut("%c\r\n", c);
-				if (c=='N') {lfn_filefind_handle=uselfn?LFN_FILEFIND_INTERNAL:LFN_FILEFIND_NONE;res = DOS_FindNext();continue;}
-			}
-			if (strlen(full)) {
-				std::string pfull=(uselfn||strchr(full, ' ')?(full[0]!='"'?"\"":""):"")+std::string(full)+(uselfn||strchr(full, ' ')?(full[strlen(full)-1]!='"'?"\"":""):"");
-				bool reset=false;
-				if (optF && (attr & DOS_ATTR_READ_ONLY)&&DOS_SetFileAttr(pfull.c_str(), attr & ~DOS_ATTR_READ_ONLY)) reset=true;
-				if (!DOS_UnlinkFile(pfull.c_str())) {
-					if (optF&&reset) DOS_SetFileAttr(pfull.c_str(), attr);
-					WriteOut(MSG_Get("SHELL_CMD_DEL_ERROR"),uselfn?sfull:full);
-				}
-			} else WriteOut(MSG_Get("SHELL_CMD_DEL_ERROR"),uselfn?sfull:full);
-		}
-		res=DOS_FindNext();
-	}
-	lfn_filefind_handle=fbak;
-	if (!exist) WriteOut(MSG_Get("SHELL_CMD_FILE_NOT_FOUND"),args);
-	dos.dta(save_dta);
+    /* Command uses dta so set it to our internal dta */
+    if(!DOS_Canonicalize(args, full)) { WriteOut(MSG_Get("SHELL_ILLEGAL_PATH")); dos.dta(save_dta); return; }
+    char path[DOS_PATHLENGTH], spath[DOS_PATHLENGTH], pattern[DOS_PATHLENGTH], * r = strrchr_dbcs(full, '\\');
+    if(r != NULL) {
+        *r = 0;
+        strcpy(path, full);
+        strcat(path, "\\");
+        strcpy(pattern, r + 1);
+        *r = '\\';
+    }
+    else {
+        strcpy(path, "");
+        strcpy(pattern, full);
+    }
+    int k = 0;
+    for(int i = 0; i < (int)strlen(pattern); i++)
+        if(pattern[i] != '\"')
+            pattern[k++] = pattern[i];
+    pattern[k] = 0;
+    strcpy(spath, path);
+    if(strchr(args, '\"') || uselfn) {
+        if(!DOS_GetSFNPath(("\"" + std::string(path) + "\\").c_str(), spath, false)) strcpy(spath, path);
+        if(!strlen(spath) || spath[strlen(spath) - 1] != '\\') strcat(spath, "\\");
+    }
+    std::string pfull = std::string(spath) + std::string(pattern);
+    int fbak = lfn_filefind_handle;
+    lfn_filefind_handle = uselfn ? LFN_FILEFIND_INTERNAL : LFN_FILEFIND_NONE;
+    bool res = DOS_FindFirst(((uselfn && pfull.length() && pfull[0] != '"' ? "\"" : "") + pfull + (uselfn && pfull.length() && pfull[pfull.length() - 1] != '"' ? "\"" : "")).c_str(), 0xffff & ~DOS_ATTR_VOLUME);
+    if(!res) {
+        lfn_filefind_handle = fbak;
+        WriteOut(MSG_Get("SHELL_CMD_DEL_ERROR"), args);
+        dos.dta(save_dta);
+        return;
+    }
+    lfn_filefind_handle = fbak;
+    //end can't be 0, but if it is we'll get a nice crash, who cares :)
+    strcpy(sfull, full);
+    char* end = strrchr_dbcs(full, '\\') + 1; *end = 0;
+    char* lend = strrchr_dbcs(sfull, '\\') + 1; *lend = 0;
+    dta = dos.dta();
+    bool exist = false;
+    lfn_filefind_handle = uselfn ? LFN_FILEFIND_INTERNAL : LFN_FILEFIND_NONE;
+    while(res) {
+        dta.GetResult(name, lname, size, hsize, date, time, attr);
+        if(!optF && (attr & DOS_ATTR_READ_ONLY) && !(attr & DOS_ATTR_DIRECTORY)) {
+            exist = true;
+            strcpy(end, name);
+            strcpy(lend, lname);
+            WriteOut(MSG_Get("SHELL_CMD_DEL_ERROR"), uselfn ? sfull : full);
+        }
+        else if(!(attr & DOS_ATTR_DIRECTORY)) {
+            exist = true;
+            strcpy(end, name);
+            strcpy(lend, lname);
+            if(optP) {
+                WriteOut(MSG_Get("SHELL_CMD_DEL_CONFIRM"), uselfn ? sfull : full);
+                uint8_t c;
+                uint16_t n = 1;
+                DOS_ReadFile(STDIN, &c, &n);
+                if(c == 3) break;
+                c = c == ch_y || c == ch_Y ? ch_Y : ch_N;
+                WriteOut("%c\r\n", c);
+                if(c == ch_N) { lfn_filefind_handle = uselfn ? LFN_FILEFIND_INTERNAL : LFN_FILEFIND_NONE; res = DOS_FindNext(); continue; }
+            }
+            if(strlen(full)) {
+                std::string pfull = (uselfn || strchr(full, ' ') ? (full[0] != '"' ? "\"" : "") : "") + std::string(full) + (uselfn || strchr(full, ' ') ? (full[strlen(full) - 1] != '"' ? "\"" : "") : "");
+                bool reset = false;
+                if(optF && (attr & DOS_ATTR_READ_ONLY) && DOS_SetFileAttr(pfull.c_str(), attr & ~DOS_ATTR_READ_ONLY)) reset = true;
+                if(!DOS_UnlinkFile(pfull.c_str())) {
+                    if(optF && reset) DOS_SetFileAttr(pfull.c_str(), attr);
+                    WriteOut(MSG_Get("SHELL_CMD_DEL_ERROR"), uselfn ? sfull : full);
+                }
+            }
+            else WriteOut(MSG_Get("SHELL_CMD_DEL_ERROR"), uselfn ? sfull : full);
+        }
+        res = DOS_FindNext();
+    }
+    lfn_filefind_handle = fbak;
+    if(!exist) WriteOut(MSG_Get("SHELL_CMD_FILE_NOT_FOUND"), args);
+    dos.dta(save_dta);
 }
 
 size_t GetPauseCount() {
@@ -717,6 +727,10 @@ extern bool ctrlbrk;
 std::vector<std::string> tdirs;
 
 static bool doDeltree(DOS_Shell * shell, char * args, DOS_DTA dta, bool optY, bool first) {
+    const char ch_y = MSG_Get("INT21_6523_YESNO_CHARS")[0];
+    const char ch_n = MSG_Get("INT21_6523_YESNO_CHARS")[1];
+    const char ch_Y = toupper(ch_y);
+    const char ch_N = toupper(ch_n);
     char spath[DOS_PATHLENGTH],sargs[DOS_PATHLENGTH+4],path[DOS_PATHLENGTH+4],full[DOS_PATHLENGTH],sfull[DOS_PATHLENGTH+2];
 	if (!DOS_Canonicalize(args,full)||strrchr_dbcs(full,'\\')==NULL) { shell->WriteOut(MSG_Get("SHELL_ILLEGAL_PATH"));return false; }
 	if (!DOS_GetSFNPath(args,spath,false)) {
@@ -764,12 +778,12 @@ static bool doDeltree(DOS_Shell * shell, char * args, DOS_DTA dta, bool optY, bo
                 if(attr&DOS_ATTR_DIRECTORY) {
                     if (strcmp(name, ".")&&strcmp(name, "..")) {
                         if (!optY&&first) {
-                            shell->WriteOut("Delete directory \"%s\" and all its subdirectories? (Y/N)?", uselfn?sfull:full);
+                            shell->WriteOut(MSG_Get("SHELL_CMD_RMDIR_FULLTREE_CONFIRM"), uselfn ? sfull : full);
                             DOS_ReadFile (STDIN,&c,&n);
                             if (c==3) {shell->WriteOut("^C\r\n");break;}
-                            c = c=='y'||c=='Y' ? 'Y':'N';
+                            c = c==ch_y||c==ch_Y ? ch_Y:ch_N;
                             shell->WriteOut("%c\r\n", c);
-                            if (c=='N') {res = DOS_FindNext();continue;}
+                            if (c==ch_N) {res = DOS_FindNext();continue;}
                         }
                         fdir=true;
                         strcat(spath, name);
@@ -778,12 +792,12 @@ static bool doDeltree(DOS_Shell * shell, char * args, DOS_DTA dta, bool optY, bo
                     }
                 } else {
                     if (!optY&&first) {
-                        shell->WriteOut("Delete file \"%s\" (Y/N)?", uselfn?sfull:full);
+                        shell->WriteOut(MSG_Get("SHELL_CMD_RMDIR_SINGLE_CONFIRM"), uselfn ? sfull : full);
                         DOS_ReadFile (STDIN,&c,&n);
                         if (c==3) {shell->WriteOut("^C\r\n");break;}
-                        c = c=='y'||c=='Y' ? 'Y':'N';
+                        c = c==ch_y||c==ch_Y ? ch_Y:ch_N;
                         shell->WriteOut("%c\r\n", c);
-                        if (c=='N') {res = DOS_FindNext();continue;}
+                        if (c==ch_N) {res = DOS_FindNext();continue;}
                     }
                     pfull=(uselfn||strchr(uselfn?sfull:full, ' ')?((uselfn?sfull:full)[0]!='"'?"\"":""):"")+std::string(uselfn?sfull:full)+(uselfn||strchr(uselfn?sfull:full, ' ')?((uselfn?sfull:full)[strlen(uselfn?sfull:full)-1]!='"'?"\"":""):"");
                     cfiles.push_back(pfull);
@@ -1409,7 +1423,7 @@ void DOS_Shell::CMD_CHDIR(char * args) {
 		if(drive == 'Z')
 			WriteOut(MSG_Get("SHELL_CMD_CHDIR_HINT"),toupper(targetdisplay));
 	} else if (!DOS_ChangeDir(sargs)) {
-		/* Changedir failed. Check if the filename is longer then 8 and/or contains spaces */
+		/* Changedir failed. Check if the filename is longer than 8 and/or contains spaces */
 	   
 		std::string temps(args),slashpart;
 		std::string::size_type separator = temps.find_first_of("\\/");
@@ -2079,21 +2093,29 @@ void DOS_Shell::CMD_DIR(char * args) {
 		if (!dirPaused(this, w_size, optP, optW)) {dos.dta(save_dta);return;}
 		uint8_t drive=dta.GetSearchDrive();
 		uint64_t free_space=1024u*1024u*100u;
-		if (Drives[drive]) {
-			uint32_t bytes_sector32;uint32_t sectors_cluster32;uint32_t total_clusters32;uint32_t free_clusters32;
-			if ((dos.version.major > 7 || (dos.version.major == 7 && dos.version.minor >= 10)) &&
-				Drives[drive]->AllocationInfo32(&bytes_sector32,&sectors_cluster32,&total_clusters32,&free_clusters32)) { /* FAT32 aware extended API */
-				freec=0;
-				free_space=(uint64_t)bytes_sector32 * (Bitu)sectors_cluster32 * (Bitu)free_clusters32;
-			} else {
-				uint16_t bytes_sector;uint8_t sectors_cluster;uint16_t total_clusters;uint16_t free_clusters;
-				rsize=true;
-				freec=0;
-				Drives[drive]->AllocationInfo(&bytes_sector,&sectors_cluster,&total_clusters,&free_clusters);
-				free_space=(uint64_t)bytes_sector * (Bitu)sectors_cluster * (Bitu)(freec?freec:free_clusters);
-				rsize=false;
-			}
-		}
+
+        if(Drives[drive]) {
+            uint32_t bytes_sector32; uint32_t sectors_cluster32; uint32_t total_clusters32; uint32_t free_clusters32;
+            uint64_t total_clusters64; uint64_t free_clusters64;
+            // Since this is the *internal* shell, we want use maximum available query capability at first
+            if(Drives[drive]->AllocationInfo64(&bytes_sector32, &sectors_cluster32, &total_clusters64, &free_clusters64)) {
+                freec = 0;
+                free_space = (uint64_t)bytes_sector32 * (Bitu)sectors_cluster32 * (Bitu)free_clusters64;
+            }
+            else if((dos.version.major > 7 || (dos.version.major == 7 && dos.version.minor >= 10)) &&
+                Drives[drive]->AllocationInfo32(&bytes_sector32, &sectors_cluster32, &total_clusters32, &free_clusters32)) { /* FAT32 aware extended API */
+                freec = 0;
+                free_space = (uint64_t)bytes_sector32 * (Bitu)sectors_cluster32 * (Bitu)free_clusters32;
+            }
+            else {
+                uint16_t bytes_sector; uint8_t sectors_cluster; uint16_t total_clusters; uint16_t free_clusters;
+                rsize = true;
+                freec = 0;
+                Drives[drive]->AllocationInfo(&bytes_sector, &sectors_cluster, &total_clusters, &free_clusters);
+                free_space = (uint64_t)bytes_sector * (Bitu)sectors_cluster * (Bitu)(freec ? freec : free_clusters);
+                rsize = false;
+            }
+        }
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
 		if (Network_IsNetworkResource(args)) {
 			std::string str = MSG_Get("SHELL_CMD_DIR_BYTES_FREE");
@@ -2273,10 +2295,15 @@ struct copysource {
 	copysource():filename(""),concat(false){ };
 };
 
-
 void DOS_Shell::CMD_COPY(char * args) {
 	HELP("COPY");
 	static std::string defaulttarget = ".";
+    const char ch_y = MSG_Get("INT21_6523_YESNO_CHARS")[0];
+    const char ch_n = MSG_Get("INT21_6523_YESNO_CHARS")[1];
+    const char ch_Y = toupper(ch_y);
+    const char ch_N = toupper(ch_n);
+    const char ch_a = MSG_Get("SHELL_ALLFILES_CHAR")[0];
+    const char ch_A = toupper(ch_a);
 	StripSpaces(args);
 	/* Command uses dta so set it to our internal dta */
 	RealPt save_dta=dos.dta();
@@ -2308,7 +2335,7 @@ void DOS_Shell::CMD_COPY(char * args) {
 		dos.dta(save_dta);
 		return;
 	}
-	// Gather all sources (extension to copy more then 1 file specified at command line)
+	// Gather all sources (extension to copy more than 1 file specified at command line)
 	// Concatenating files go as follows: All parts except for the last bear the concat flag.
 	// This construction allows them to be counted (only the non concat set)
 	char q[]="\"";
@@ -2378,7 +2405,7 @@ void DOS_Shell::CMD_COPY(char * args) {
 	}
 
 	copysource target;
-	// If more then one object exists and last target is not part of a 
+	// If more than one object exists and last target is not part of a 
 	// concat sequence then make it the target.
 	if(sources.size()>1 && !sources[sources.size()-2].concat){
 		target = sources.back();
@@ -2454,7 +2481,7 @@ void DOS_Shell::CMD_COPY(char * args) {
 		size_t pathTargetLen = strlen(pathTarget);
 		
 		// See if we have to substitute filename or extension
-		char *ext = 0;
+		char * ext = nullptr;
 		size_t replacementOffset = 0;
 		if (pathTarget[pathTargetLen-1]!='\\') { 
 				// only if it's not a directory
@@ -2496,7 +2523,7 @@ void DOS_Shell::CMD_COPY(char * args) {
 					*ext = 0;
 				} else if (ext[-1]) {
 					// we don't substitute anything, clear up
-					ext = 0;
+					ext = nullptr;
 				}
 			}
 		}
@@ -2555,7 +2582,7 @@ void DOS_Shell::CMD_COPY(char * args) {
 						strcpy(nametmp, nameSource);
 					if (!oldsource.concat && (!strcasecmp(nameSource, nameTarget) || !strcasecmp(nametmp, nameTarget)))
 						{
-						WriteOut("File cannot be copied onto itself\r\n");
+						WriteOut(MSG_Get("SHELL_CMD_COPY_NOSELF"));
 						dos.dta(save_dta);
 						DOS_CloseFile(sourceHandle);
 						if (targetHandle)
@@ -2574,21 +2601,34 @@ void DOS_Shell::CMD_COPY(char * args) {
 								{
 								DOS_ReadFile (STDIN,&c,&n);
 								if (c==3) {dos.dta(save_dta);DOS_CloseFile(sourceHandle);dos.echo=echo;return;}
-								if (c=='y'||c=='Y') {WriteOut("Y\r\n", c);break;}
-								if (c=='n'||c=='N') {WriteOut("N\r\n", c);break;}
-								if (c=='a'||c=='A') {WriteOut("A\r\n", c);optY=true;break;}
+								if (c==ch_y||c==ch_Y) {WriteOut("%c\r\n", ch_Y);break;}
+								if (c==ch_n||c==ch_N) {WriteOut("%c\r\n", ch_N);break;}
+								if (c==ch_a||c==ch_A) {WriteOut("%c\r\n", ch_A);optY=true;break;}
 								}
-							if (c=='n'||c=='N') {DOS_CloseFile(sourceHandle);ret = DOS_FindNext();continue;}
+							if (c==ch_n||c==ch_N) {DOS_CloseFile(sourceHandle);ret = DOS_FindNext();continue;}
 						}
 						if (!exist&&size) {
 							int drive=strlen(nameTarget)>1&&(nameTarget[1]==':'||nameTarget[2]==':')?(toupper(nameTarget[nameTarget[0]=='"'?1:0])-'A'):-1;
-							if (drive>=0&&Drives[drive]) {
-								uint16_t bytes_sector;uint8_t sectors_cluster;uint16_t total_clusters;uint16_t free_clusters;
-								rsize=true;
-								freec=0;
-								Drives[drive]->AllocationInfo(&bytes_sector,&sectors_cluster,&total_clusters,&free_clusters);
-								rsize=false;
-								if ((Bitu)bytes_sector * (Bitu)sectors_cluster * (Bitu)(freec?freec:free_clusters)<size) {
+                            if(drive >= 0 && Drives[drive]) {
+                                uint16_t bytes_sector; uint8_t sectors_cluster; uint16_t total_clusters; uint16_t free_clusters;
+                                uint32_t bytes32 = 0, sectors32 = 0, clusters32 = 0, free32 = 0;
+                                bool no_free_space = true;
+                                rsize = true;
+                                freec = 0;
+                                if(dos.version.major > 7 || (dos.version.major == 7 && dos.version.minor >= 10)) {
+                                    Drives[drive]->AllocationInfo32(&bytes32, &sectors32, &clusters32, &free32);
+                                    no_free_space = (uint64_t)bytes32 * (uint64_t)sectors32 * (uint64_t)free32 < size ? true : false;
+                                    //LOG_MSG("drive=%u, no_free_space = %d bytes32=%u, sectors32=%u, free32 =%u, free_space=%u, size=%u",
+                                    //  drive, no_free_space ? 1 : 0, bytes32, sectors32, free32, bytes32*sectors32*free32, size);
+                                }
+                                if(bytes32 == 0 || sectors32 == 0 || dos.version.major < 7 || (dos.version.major == 7 && dos.version.minor < 10)) {
+                                    Drives[drive]->AllocationInfo(&bytes_sector, &sectors_cluster, &total_clusters, &free_clusters);
+                                    no_free_space = (Bitu)bytes_sector* (Bitu)sectors_cluster* (Bitu)(freec ? freec : free_clusters) < size ? true : false;
+                                    //LOG_MSG("no_free_space = %d bytes=%u, sectors=%u, free =%u, free_space=%u, size=%u",
+                                    // no_free_space ? 1 : 0, bytes_sector, sectors_cluster, freec, bytes_sector*sectors_cluster*free_clusters, size);
+                                }
+                                rsize = false;
+								if (no_free_space) {
 									WriteOut(MSG_Get("SHELL_CMD_COPY_NOSPACE"), uselfn?lname:name);
 									DOS_CloseFile(sourceHandle);
 									ret = DOS_FindNext();
@@ -2674,51 +2714,125 @@ void DOS_Shell::CMD_COPY(char * args) {
 	Drives[DOS_GetDefaultDrive()]->EmptyCache();
 }
 
+static void skipspc(char* &pcheck) {
+	while (*pcheck != 0 && (*pcheck == ' ' || *pcheck == '\t')) pcheck++;
+}
+
+static void readnonspcu(std::string &s,char* &pcheck) {
+	s.clear();
+	while (*pcheck != 0 && !(*pcheck == ' ' || *pcheck == '\t')) s += toupper( *(pcheck++) );
+}
+
+static void readnonspc(std::string &s,char* &pcheck) {
+	s.clear();
+	while (*pcheck != 0 && !(*pcheck == ' ' || *pcheck == '\t')) s += *(pcheck++);
+}
+
 /* NTS: WARNING, this function modifies the buffer pointed to by char *args */
 void DOS_Shell::CMD_SET(char * args) {
 	HELP("SET");
 	StripSpaces(args);
 
-	std::string line;
-	if (*args == 0) { /* "SET" by itself means to show the environment block */
-		Bitu count = GetEnvCount();
+	enum op_mode_t {
+		show_all_env,
+		set_env,
+		show_env,
+		erase_env,
+		first_env
+	};
 
-		for (Bitu a = 0;a < count;a++) {
-			if (GetEnvNum(a,line))
-				WriteOut("%s\n",line.c_str());			
+	op_mode_t op_mode = show_all_env;
+	std::string env_name,env_value;
+
+	const bool zdirpath = static_cast<Section_prop *>(control->GetSection("dos"))->Get_bool("drive z expand path");
+
+	{
+		std::string sw;
+
+		/* parse arguments at the start */
+		skipspc(args);
+		while (*args == '/') {
+			args++; /* skip / */
+			readnonspcu(sw,args);
+
+			if (sw == "P") {
+				WriteOut("Set /P is not supported. Use Choice!"); /* TODO: What is SET /P supposed to do? */
+				return;
+			}
+			else if (sw == "ERASE") { /* DOSBox-X extension: Completely erase the environment block */
+				op_mode = erase_env;
+			}
+			else if (sw == "FIRST") { /* DOSBox-X extension: Move the specified variable to the front of the environment block */
+				op_mode = first_env;
+			}
+			else {
+				WriteOut("Unknown switch /");
+				WriteOut(sw.c_str());
+				WriteOut("\n");
+				return;
+			}
+
+			skipspc(args);
 		}
-
 	}
-	else {
-		char *p;
 
-		{ /* parse arguments at the start */
-			char *pcheck = args;
-
-			while (*pcheck != 0 && (*pcheck == ' ' || *pcheck == '\t')) pcheck++;
-			if (*pcheck != 0 && strlen(pcheck) > 3 && (strncasecmp(pcheck,"/p ",3) == 0))
-				E_Exit("Set /P is not supported. Use Choice!"); /* TODO: What is SET /P supposed to do? */
-		}
-
-		/* Most SET commands take the form NAME=VALUE */
-		p = strchr(args,'=');
-		if (p == NULL) {
-			/* SET <variable> without assignment prints the variable instead */
-			if (!GetEnvStr(args,line)) WriteOut(MSG_Get("SHELL_CMD_SET_NOT_SET"),args);
-			WriteOut("%s\n",line.c_str());
-		} else {
-			/* ASCIIZ snip the args string in two, so that args is C-string name of the variable,
-			 * and "p" is C-string value of the variable */
-			*p++ = 0;
-            std::string vstr = p;
-            bool zdirpath = static_cast<Section_prop *>(control->GetSection("dos"))->Get_bool("drive z expand path");
-            if (zdirpath && !strcasecmp(args, "path")) GetExpandedPath(vstr);
-			/* No parsing is needed. The command interpreter does the variable substitution for us */
-			if (!SetEnv(args,vstr.c_str())) {
-				/* NTS: If Win95 is any example, the command interpreter expands the variables for us */
-				WriteOut(MSG_Get("SHELL_CMD_SET_OUT_OF_SPACE"));
+	if (op_mode == first_env) {
+		if (*args == 0) return;
+		readnonspc(env_name,args);
+	}
+	else if (op_mode == show_all_env) {
+		if (*args != 0) {
+			/* Most SET commands take the form NAME=VALUE */
+			char *p = strchr(args,'=');
+			if (p == NULL) {
+				/* SET <variable> without assignment prints the variable instead */
+				op_mode = show_env;
+				readnonspc(env_name,args);
+			} else {
+				/* ASCIIZ snip the args string in two, so that args is C-string name of the variable,
+				 * and "p" is C-string value of the variable */
+				op_mode = set_env;
+				*p++ = 0; env_name = args; env_value = p;
 			}
 		}
+	}
+
+	switch (op_mode) {
+		case show_all_env: {
+			const Bitu count = GetEnvCount();
+			std::string line;
+
+			for (Bitu a = 0;a < count;a++) {
+				if (GetEnvNum(a,line))
+					WriteOut("%s\n",line.c_str());
+			}
+			break; }
+		case show_env:
+			if (GetEnvStr(env_name.c_str(),env_value))
+				WriteOut("%s\n",env_value.c_str());
+			else
+				WriteOut(MSG_Get("SHELL_CMD_SET_NOT_SET"),env_name.c_str());
+			break;
+		case set_env:
+            if(zdirpath && !strcasecmp(env_name.c_str(), "path")) GetExpandedPath(env_value);
+
+			/* No parsing is needed. The command interpreter does the variable substitution for us */
+			/* NTS: If Win95 is any example, the command interpreter expands the variables for us */
+			if (!SetEnv(env_name.c_str(),env_value.c_str()))
+				WriteOut(MSG_Get("SHELL_CMD_SET_OUT_OF_SPACE"));
+
+			break;
+		case erase_env:
+			if (!EraseEnv())
+				WriteOut("Unable to erase environment block\n");
+			break;
+		case first_env:
+			if (!FirstEnv(env_name.c_str()))
+				WriteOut("Unable to move environment variable\n");
+			break;
+		default:
+			abort();
+			break;
 	}
 }
 
@@ -2947,8 +3061,9 @@ void DOS_Shell::CMD_MORE(char * args) {
 	uint16_t n=1;
 	StripSpaces(args);
 	if (IS_PC98_ARCH) {
-		LINES=real_readb(0x60,0x113) & 0x01 ? 25 : 20;
-		COLS=80;
+        LINES=real_readb(0x60,0x113) & 0x01 ? 25 : 20;
+        COLS=80;
+        if (real_readb(0x60,0x111)) LINES--; // Function keys displayed
 	} else {
 		LINES=(IS_EGAVGA_ARCH?real_readb(BIOSMEM_SEG,BIOSMEM_NB_ROWS):24)+1;
 		COLS=real_readw(BIOSMEM_SEG,BIOSMEM_NB_COLS);
@@ -3233,7 +3348,7 @@ void DOS_Shell::CMD_SUBST(char * args) {
 		strcpy(mountstring,"MOUNT ");
 		StripSpaces(args);
 		std::string arg;
-		CommandLine command(0,args);
+		CommandLine command(nullptr, args);
 		if (!command.GetCount()) {
 			char name[DOS_NAMELENGTH_ASCII],lname[LFN_NAMELENGTH];
 			uint32_t size,hsize;uint16_t date;uint16_t time;uint8_t attr;
@@ -3297,8 +3412,8 @@ void DOS_Shell::CMD_SUBST(char * args) {
         else strcpy(dir,arg.c_str());
         if (!DOS_MakeName(dir,fulldir,&drive)) throw 3;
 	
-		localDrive* ldp=0;
-		if( ( ldp=dynamic_cast<localDrive*>(Drives[drive])) == 0 ) throw 4;
+		localDrive * const ldp = dynamic_cast<localDrive*>(Drives[drive]);
+		if (!ldp) throw 4;
 		char newname[CROSS_LEN];   
 		strcpy(newname, ldp->basedir);	   
 		strcat(newname,fulldir);
@@ -3384,10 +3499,11 @@ bool get_param(char *&args, char *&rem, char *&temp, char &wait_char, int &wait_
 
 void DOS_Shell::CMD_CHOICE(char * args){
 	HELP("CHOICE");
-	static char defchoice[3] = {'y','n',0};
-	char *rem1 = NULL, *rem2 = NULL, *rem = NULL, *temp = NULL, waitchar = 0, *ptr;
+	static char defchoice[3] = {MSG_Get("INT21_6523_YESNO_CHARS")[0],MSG_Get("INT21_6523_YESNO_CHARS")[1],0};
+	//char *rem1 = NULL, *rem2 = NULL; /* unused */
+	char *rem = NULL, *temp = NULL, waitchar = 0, *ptr;
 	int waitsec = 0;
-	bool optC = false, optT = false;
+	//bool optC = false, optT = false; /* unused */
 	bool optN = ScanCMDBool(args,"N");
 	bool optS = ScanCMDBool(args,"S"); //Case-sensitive matching
 	// ignore /b and /m switches for compatibility
@@ -3401,7 +3517,7 @@ void DOS_Shell::CMD_CHOICE(char * args){
 			return;
 		}
 	}
-	if (!rem || !*rem) rem = defchoice; /* No choices specified use YN */
+	if (!rem || !*rem) rem = defchoice; /* No choices specified use (national) YN */
 	ptr = rem;
 	uint8_t c;
 	if(!optS) while ((c = (uint8_t)(*ptr))) *ptr++ = (char)toupper(c); /* When in no case-sensitive mode. make everything upcase */
@@ -3442,6 +3558,7 @@ void DOS_Shell::CMD_CHOICE(char * args){
 	} while (!c || !(ptr = strchr(rem,(optS?c:toupper(c)))));
 	c = optS?c:(uint8_t)toupper(c);
 	DOS_WriteFile (STDOUT,&c, &n);
+	c = '\r'; DOS_WriteFile (STDOUT,&c, &n);
 	c = '\n'; DOS_WriteFile (STDOUT,&c, &n);
 	dos.return_code = (uint8_t)(ptr-rem+1);
 }
@@ -3688,7 +3805,7 @@ void DOS_Shell::CMD_VER(char *args) {
 		dos_ver_menu(false);
 	} else {
 		WriteOut(MSG_Get("SHELL_CMD_VER_VER"),VERSION,SDL_STRING,dos.version.major,dos.version.minor);
-		if (optR) WriteOut("DOSBox-X Git commit %s, built on %s\n", GIT_COMMIT_HASH, UPDATED_STR);
+		if (optR) WriteOut("DOSBox-X Git commit %s, built on %s\nPlatform: %s %d-bit", GIT_COMMIT_HASH, UPDATED_STR, OS_PLATFORM_LONG, OS_BIT_INT);
 	}
 }
 
@@ -4167,10 +4284,9 @@ void DOS_Shell::CMD_ALIAS(char* args) {
         }
     } else {
         char alias_name[256] = { 0 };
-        char* cmd = 0;
         for (unsigned int offset = 0; *args && offset < sizeof(alias_name)-1; ++offset, ++args) {
             if (*args == '=') {
-                cmd = trim(alias_name);
+                char * const cmd = trim(alias_name);
                 ++args;
                 args = trim(args);
                 size_t args_len = strlen(args);
@@ -4203,10 +4319,9 @@ void DOS_Shell::CMD_ASSOC(char* args) {
         }
     } else {
         char assoc_name[256] = { 0 };
-        char* cmd = 0;
         for (unsigned int offset = 0; *args && offset < sizeof(assoc_name)-1; ++offset, ++args) {
             if (*args == '=') {
-                cmd = trim(assoc_name);
+                char * const cmd = trim(assoc_name);
                 if (!*cmd || cmd[0] != '.') {
                     WriteOut(MSG_Get("SHELL_INVALID_PARAMETER"), cmd);
                     break;
@@ -4252,6 +4367,9 @@ void CAPTURE_StopWave(void);
 void CAPTURE_StartMTWave(void);
 void CAPTURE_StopMTWave(void);
 
+void CAPTURE_StartOPL(void);
+void CAPTURE_StopOPL(void);
+
 // Explanation: Start capture, run program, stop capture when program exits.
 //              Great for gameplay footage or demoscene capture.
 //
@@ -4265,6 +4383,7 @@ void DOS_Shell::CMD_DXCAPTURE(char * args) {
     bool cap_video = false;
     bool cap_audio = false;
     bool cap_mtaudio = false;
+    bool cap_opl = false;
     unsigned long post_exit_delay_ms = 3000; /* 3 sec */
 
     if (!strcmp(args,"-?")) {
@@ -4284,8 +4403,12 @@ void DOS_Shell::CMD_DXCAPTURE(char * args) {
 			cap_video = false;
 		else if (!(strcmp(arg1,"/A")))
 			cap_audio = true;
+        else if (!(strcmp(arg1,"/O")))
+			cap_opl = true;
 		else if (!(strcmp(arg1,"/-A")))
 			cap_audio = false;
+        else if (!(strcmp(arg1,"/-O")))
+			cap_opl = false;
 		else if (!(strcmp(arg1,"/M")))
 			cap_mtaudio = true;
 		else if (!(strcmp(arg1,"/-M")))
@@ -4296,7 +4419,7 @@ void DOS_Shell::CMD_DXCAPTURE(char * args) {
 		}
     }
 
-    if (!cap_video && !cap_audio && !cap_mtaudio)
+    if (!cap_video && !cap_audio && !cap_mtaudio && !cap_opl)
         cap_video = true;
 
     if (cap_video)
@@ -4305,6 +4428,8 @@ void DOS_Shell::CMD_DXCAPTURE(char * args) {
         CAPTURE_StartWave();
     if (cap_mtaudio)
         CAPTURE_StartMTWave();
+    if (cap_opl)
+        CAPTURE_StartOPL();
 
     DoCommand(args);
 
@@ -4347,6 +4472,8 @@ void DOS_Shell::CMD_DXCAPTURE(char * args) {
         CAPTURE_StopWave();
     if (cap_mtaudio)
         CAPTURE_StopMTWave();
+    if (cap_opl)
+        CAPTURE_StopOPL();
 }
 
 void DOS_Shell::CMD_CTTY(char * args) {
@@ -4399,18 +4526,30 @@ void DOS_Shell::CMD_COUNTRY(char * args) {
 	return;
 }
 
-extern bool jfont_init, isDBCSCP();
+extern bool jfont_init, finish_prepare, isDBCSCP();
 extern Bitu DOS_LoadKeyboardLayout(const char * layoutname, int32_t codepage, const char * codepagefile);
 void runRescan(const char *str), MSG_Init(), JFONT_Init(), InitFontHandle(), ShutFontHandle(), initcodepagefont(), DOSBox_SetSysMenu();
 int toSetCodePage(DOS_Shell *shell, int newCP, int opt) {
-    if (isSupportedCP(newCP)) {
-		dos.loaded_codepage = newCP;
+    if((TTF_using() && isSupportedCP(newCP)) || !TTF_using()) {
+        int32_t oldcp = dos.loaded_codepage;
+        Bitu keyb_error;
+        if (!CheckDBCSCP(newCP)){
+            keyb_error = DOS_ChangeCodepage(newCP, "auto");
+            if (keyb_error != KEYB_NOERROR) {
+                dos.loaded_codepage = oldcp;
+                return -1;
+            }
+        }
+        else {
+            dos.loaded_codepage = newCP;
+        }
         int missing = 0;
 #if defined(USE_TTF)
 		missing = TTF_using() ? setTTFCodePage() : 0;
 #endif
         if (!TTF_using()) initcodepagefont();
-        if (dos.loaded_codepage==437) DOS_LoadKeyboardLayout("us", 437, "auto");
+        //if (dos.loaded_codepage==437) DOS_LoadKeyboardLayout("us", 437, "auto");
+        //LOG_MSG("toSetCodePage opt=%d, loadlangnew=%d", opt, loadlangnew?1:0);
         if (opt==-1) {
             MSG_Init();
 #if DOSBOXMENU_TYPE == DOSBOXMENU_HMENU
@@ -4426,11 +4565,11 @@ int toSetCodePage(DOS_Shell *shell, int newCP, int opt) {
             ShutFontHandle();
             InitFontHandle();
             JFONT_Init();
+            SetupDBCSTable();
         }
-        SetupDBCSTable();
-        runRescan("-A -Q");
+        if (finish_prepare) runRescan("-A -Q");
 #if defined(USE_TTF)
-        if ((opt==-1||opt==-2)&&TTF_using()&&(newCP==932||newCP==936||newCP==949||newCP==950||newCP==951)) {
+        if ((opt==-1||opt==-2)&&TTF_using()) {
             Section_prop * ttf_section = static_cast<Section_prop *>(control->GetSection("ttf"));
             const char *font = ttf_section->Get_string("font");
             if (!font || !*font) {
@@ -4441,6 +4580,10 @@ int toSetCodePage(DOS_Shell *shell, int newCP, int opt) {
             }
         }
 #endif
+        if(newCP != lastsetcp) {
+            LOG_MSG("Codepage set to %d", newCP);
+            lastsetcp = newCP;
+        }
         return missing;
     } else if (opt<1 && shell) {
        shell->WriteOut(MSG_Get("SHELL_CMD_CHCP_INVALID"), std::to_string(newCP).c_str());
@@ -4476,73 +4619,51 @@ void DOS_Shell::CMD_CHCP(char * args) {
     int32_t cp = dos.loaded_codepage;
     Bitu keyb_error;
     if(n == 1) {
-        if(newCP == 932 || newCP == 936 || newCP == 949 || newCP == 950 || newCP == 951
-#if defined(USE_TTF)
-            || (ttf.inUse && (newCP >= 1250 && newCP <= 1258))
-#endif
-            ) {
-            missing = toSetCodePage(this, newCP, -1);
-            if(missing > -1) SwitchLanguage(cp, newCP, true);
+        if (!TTF_using() || (TTF_using() && isSupportedCP(newCP))){
+            bool load_language = SwitchLanguage(cp, newCP, true);
+            CHCP_changed = true;
+            missing = toSetCodePage(this, newCP, load_language ? -1: -2);
             if(missing > 0) WriteOut(MSG_Get("SHELL_CMD_CHCP_MISSING"), missing);
-        }
-        else {
-#if defined(USE_TTF)
-            if(ttf.inUse && !isSupportedCP(newCP)) {
+            else if(missing < 0) {
                 WriteOut(MSG_Get("SHELL_CMD_CHCP_INVALID"), StripArg(args));
-                LOG_MSG("CHCP: Codepage %d not supported for TTF output", newCP);
+                CHCP_changed = false;
                 return;
             }
-#endif
-            keyb_error = DOS_ChangeCodepage(newCP, "auto");
-            if(keyb_error == KEYB_NOERROR) {
-                SwitchLanguage(cp, newCP, true);
-                if(layout_name != NULL) {
-                    keyb_error = DOS_ChangeKeyboardLayout(layout_name, cp);
-                }
-            }
-            else
-                WriteOut(MSG_Get("SHELL_CMD_CHCP_INVALID"), StripArg(args));
         }
+        else {
+            if(TTF_using() && !isSupportedCP(newCP)) {
+                WriteOut(MSG_Get("SHELL_CMD_CHCP_INVALID"), StripArg(args));
+                LOG_MSG("CHCP: Codepage %d not supported for TTF output", newCP);
+            }
+            else {
+                WriteOut(MSG_Get("SHELL_CMD_CHCP_INVALID"), StripArg(args));
+            }
+            CHCP_changed = false;
+            return;
+        }
+        CHCP_changed = false;
         WriteOut(MSG_Get("SHELL_CMD_CHCP_ACTIVE"), dos.loaded_codepage);
     }
     else if(n == 2 && strlen(buff)) {
         if(*buff == ':' && strchr(StripArg(args), ':')) {
             std::string name = buff + 1;
             if(name.empty() && iter != langcp_map.end()) name = iter->second;
-            if(newCP == 932 || newCP == 936 || newCP == 949 || newCP == 950 || newCP == 951) {
+            if(!TTF_using() || (TTF_using() && isSupportedCP(newCP))) {
+                CHCP_changed = true;
                 missing = toSetCodePage(this, newCP, -1);
-                if(missing > -1) SwitchLanguage(cp, newCP, true);
                 if(missing > 0) WriteOut(MSG_Get("SHELL_CMD_CHCP_MISSING"), missing);
-            }
-#if defined(USE_TTF)
-            else if(ttf.inUse) {
-                if(newCP >= 1250 && newCP <= 1258) {
-                    missing = toSetCodePage(this, newCP, -1);
-                    if(missing > -1) SwitchLanguage(cp, newCP, true);
-                    if(missing > 0) WriteOut(MSG_Get("SHELL_CMD_CHCP_MISSING"), missing);
-                }
-                else if(!isSupportedCP(newCP)) {
+                else if(missing < 0) {
                     WriteOut(MSG_Get("SHELL_CMD_CHCP_INVALID"), StripArg(args));
-                    LOG_MSG("CHCP: Codepage %d not supported for TTF output", newCP);
+                    CHCP_changed = false;
                     return;
                 }
-            }
-#endif
-            else {
-                keyb_error = DOS_ChangeCodepage(newCP, "auto");
-                if(keyb_error == KEYB_NOERROR) {
-                    if(layout_name != NULL) {
-                        keyb_error = DOS_ChangeKeyboardLayout(layout_name, cp);
-                    }
-                }
-                else
-                    WriteOut(MSG_Get("SHELL_CMD_CHCP_INVALID"), StripArg(args));
             }
             if(name.size() && dos.loaded_codepage == newCP) {
                 SetVal("dosbox", "language", name);
                 Load_Language(name);
             }
             WriteOut(MSG_Get("SHELL_CMD_CHCP_ACTIVE"), dos.loaded_codepage);
+            CHCP_changed = false;
             return;
         }
 #if defined(USE_TTF)
@@ -4567,7 +4688,7 @@ void DOS_Shell::CMD_CHCP(char * args) {
             FILE* file = fopen(cpfile.c_str(), "r"); /* should check the result */
             std::string exepath = GetDOSBoxXPath();
             if(!file && exepath.size()) file = fopen((exepath + CROSS_FILESPLIT + cpfile).c_str(), "r");
-            if(file && newCP > 0 && newCP != 932 && newCP != 936 && newCP != 949 && newCP != 950 && newCP != 951) {
+            if(file && newCP > 0 && !CheckDBCSCP(newCP)) {
                 altcp = newCP;
                 char line[256], * l = line;
                 while(fgets(line, sizeof(line), file)) {

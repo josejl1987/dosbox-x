@@ -1,5 +1,5 @@
 dnl Init.
-AC_INIT(dosbox-x,2023.09.01,[https://github.com/joncampbell123/dosbox-x/issues],[],[https://dosbox-x.com])
+AC_INIT(dosbox-x,2024.12.04,[https://github.com/joncampbell123/dosbox-x/issues],[],[https://dosbox-x.com])
 AC_PREREQ(2.60)
 AC_CONFIG_SRCDIR(README.md)
 
@@ -123,8 +123,8 @@ AC_CHECK_HEADERS([sys/socket.h  netinet/in.h pwd.h], [], [],
 #endif
 ])
 
-dnl C++11 is mandatory in this codebase.
-dnl C++14 is optional at this time, will eventually become mandatory.
+dnl C++11 is deprecated in this codebase.
+dnl C++14 is recommended at this time, will eventually become mandatory.
 
 dnl AC_CHECK_CXXFLAGS will prepend gnu++11 to CXXFLAGS if supported, for us.
 OLDCFLAGS="$CFLAGS"
@@ -157,7 +157,7 @@ dnl Allow devs to force compile as C++11 as long as this code supports C++11 as 
 AC_ARG_ENABLE(force-cxx11,AC_HELP_STRING([--enable-force-cxx11],[Force compile as C++11]),force_cxx11=yes)
 
 if test x$warn_cpp11 = x1; then
-    AC_MSG_WARN([ Your compiler does not support C++14. Currently it is optional. At some point in the future, it will be required ])
+    AC_MSG_WARN([ Your compiler does not support C++14. Currently it is recommended. At some point in the future, it will be required ])
     CFLAGS="$CFLAGS -std=gnu11";
     CXXFLAGS="$CXXFLAGS -std=gnu++11";
 elif test x$force_cxx11 = xyes; then
@@ -176,6 +176,13 @@ AC_ARG_ENABLE(force-menu-sdldraw,AC_HELP_STRING([--enable-force-menu-sdldraw],[F
 dnl This is how the build script can specify a HX DOS extender target
 AH_TEMPLATE(C_HX_DOS,[Define to 1 to target HX DOS])
 AC_ARG_ENABLE(hx-dos,AC_HELP_STRING([--enable-hx-dos],[Enable HX target]),enable_hx=yes)
+
+dnl This is how the build script can use libopencow for win9x unicode 
+# AH_TEMPLATE(C_OPENCOW,[Define to 1 to enable opencow])
+AC_ARG_ENABLE(opencow,AC_HELP_STRING([--enable-opencow],[Enable OpenCOW]),enable_opencow=yes)
+
+dnl Disable SDLnet for win9x builds
+AC_ARG_ENABLE(sdlnet,AC_HELP_STRING([--disable-sdlnet],[Disable SDLNet]),disable_sdl_net=yes)
 
 dnl Let me know if you're targeting Emscripten
 AH_TEMPLATE(C_EMSCRIPTEN,[Define to 1 to target Emscripten])
@@ -358,8 +365,8 @@ else
     esac
 fi
 
-dnl Some needed libaries for OS2
-dnl perharps join this with the other target depended checks. move them upwards
+dnl Some needed libraries for OS2
+dnl perhaps join this with the other target depended checks. move them upwards
 if test x$host = xi386-pc-os2-emx ; then
     CXXFLAGS="$CXXFLAGS -Zmt"
     LDFLAGS="$LDFLAGS -Zomf -Zmt"
@@ -372,12 +379,15 @@ AC_CHECK_CXXFLAGS([ -Wextra ])
 AC_CHECK_CXXFLAGS([ -Wunused ])
 AC_CHECK_CXXFLAGS([ -pedantic ])
 AC_CHECK_CXXFLAGS([ -Wno-error=format-security ])     # imfc.cpp and later versions of GCC, see https://github.com/joncampbell123/dosbox-x/issues/4436
+AC_CHECK_CXXFLAGS([ -Wno-error=incompatible-pointer-types ]) # required to compile speexdsp/fftwrap.c with GCC 14
 #AC_CHECK_CXXFLAGS([ -Wconversion ])      DO NOT ENABLE. THIS WARNING IS WAY TOO PEDANTIC TO BE USEFUL, EXCEPT FOR SPECIFIC CASES
 #AC_CHECK_CXXFLAGS([ -Wsign-conversion ])
 AC_CHECK_CXXFLAGS([ -Wlogical-op ])
 AC_CHECK_CXXFLAGS([ -Wsign-promo ])
 AC_CHECK_CXXFLAGS([ -Wconversion-null ])
 #AC_CHECK_CXXFLAGS([ -Woverloaded-virtual ])    NOT TOO USEFUL
+AC_CHECK_CXXFLAGS([ -Wsuggest-override ])
+AC_CHECK_CXXFLAGS([ -Wnon-virtual-dtor ])
 AC_CHECK_CXXFLAGS([ -Wno-deprecated-declarations ])
 
 dnl Let GCC 7.3.x know that the "fall through" switch cases in this codebase
@@ -622,6 +632,12 @@ case "$host_cpu" in
     c_targetcpu="m68k"
     c_unalignedmemory=yes
     ;;
+   loongarch64*)
+    AC_DEFINE(C_TARGETCPU,LOONGARCH64)
+    AC_MSG_RESULT(LoongArch)
+    c_targetcpu="loongarch64"
+    c_unalignedmemory=yes
+    ;;
    armv7*)
     AC_DEFINE(C_TARGETCPU,ARMV7LE)
     AC_MSG_RESULT(ARMv7 Little Endian)
@@ -653,7 +669,7 @@ case "$host_cpu" in
     ;;
 esac
 
-dnl TODO: Need GCC to know this code is using C++ lamda functions
+dnl TODO: Need GCC to know this code is using C++ lambda functions
 
 dnl LIBRARY TEST: ALSA
 AM_PATH_ALSA(0.9.0, AC_DEFINE(HAVE_ALSA,1,[Define to 1 to use ALSA for MIDI]) , : )
@@ -863,6 +879,10 @@ if test x$enable_mt32 = xyes ; then
       AC_MSG_RESULT(yes)
       AC_DEFINE(C_MT32,1)
       ;;
+    loongarch64)
+      AC_MSG_RESULT(yes)
+      AC_DEFINE(C_MT32,1)
+      ;;
     *)
       enable_mt32=no
       AC_MSG_RESULT(no)
@@ -1035,7 +1055,9 @@ case "$host" in
 esac
 dnl enable SDL2 net if SDL2
 if test -n "$SDL2_LIBS"; then
- if test x$have_sdl2_net_lib = xyes -a x$have_sdl_net_h = xyes ; then
+ if test x$disable_sdl_net = xyes ; then
+  AC_MSG_WARN([SDL_net is disabled in parameters])
+ elif test x$have_sdl2_net_lib = xyes -a x$have_sdl_net_h = xyes ; then
   LIBS="$LIBS -lSDL2_net"
   AC_DEFINE(C_SDL_NET,1)
   AC_DEFINE(C_MODEM,1)
@@ -1051,7 +1073,9 @@ if test -n "$SDL2_LIBS"; then
   AC_MSG_WARN([Can't find SDL_net, internal modem and ipx disabled])
  fi
 else
- if test x$have_sdl_net_lib = xyes -a x$have_sdl_net_h = xyes ; then
+ if test x$disable_sdl_net = xyes ; then
+  AC_MSG_WARN([SDL_net is disabled in parameters])
+ elif test x$have_sdl_net_lib = xyes -a x$have_sdl_net_h = xyes ; then
   LIBS="$LIBS -lSDL_net"
   AC_DEFINE(C_SDL_NET,1)
   AC_DEFINE(C_MODEM,1)
@@ -1074,17 +1098,17 @@ AH_TEMPLATE(C_LIBPNG,[Define to 1 if you have libpng])
 AH_TEMPLATE(C_SSHOT,[Define to 1 to enable screenshots, requires libpng])
 AC_ARG_ENABLE(screenshots,AC_HELP_STRING([--disable-screenshots],[Disable screenshots and movie recording]),,enable_screenshots=yes)
 AC_MSG_CHECKING([whether screenshots will be enabled])
-if test x$enable_screenshots = xyes; then 
-    if test x$have_png_lib = xyes -a x$have_png_h = xyes ; then
+if test x$have_png_lib = xyes -a x$have_png_h = xyes ; then
     LIBS="$LIBS -lpng -lz"
     AC_DEFINE(C_LIBPNG,1)
-    AC_DEFINE(C_SSHOT,1)
-    AC_MSG_RESULT([yes])
-  else
-    AC_MSG_RESULT([no, can't find libpng.])
-  fi
+    if test x$enable_screenshots = xyes; then 
+        AC_DEFINE(C_SSHOT,1)
+        AC_MSG_RESULT([yes])
+    else
+        AC_MSG_RESULT([no])
+    fi
 else
-  AC_MSG_RESULT([no])
+    AC_MSG_ERROR([Can't find libpng, install or try building the in-tree code])
 fi
 
 dnl FEATURE: Whether to use libpcap, and enable ethernet pass-through
@@ -1120,8 +1144,8 @@ if test x$enable_libslirp = xyes ; then
     have_slirp=yes
     AC_DEFINE(C_SLIRP,1)
     LIBS="$LIBS "`pkg-config slirp --libs`
-    CFLAGS="$CFLAGS "`pkg-config slirp --cflags`
-    CPPFLAGS="$CPPFLAGS "`pkg-config slirp --cflags`
+    CFLAGS="$CFLAGS -DLIBSLIRP_STATIC "`pkg-config slirp --cflags`
+    CPPFLAGS="$CPPFLAGS -DLIBSLIRP_STATIC "`pkg-config slirp --cflags`
     case "$host" in
       *-*-cygwin* | *-*-mingw32*)
          LIBS="$LIBS -lintl"
@@ -1273,6 +1297,20 @@ case "$host" in
     ;;
 esac
 fi
+
+dnl LIBRARY USE: opencow
+case "$host" in
+    *-*-cygwin* | *-*-mingw32*)
+    if test x$enable_opencow = xyes; then
+      LIBS="-lopencow $LIBS -lstdc++ -lopencow" #need to put at the first, also better at the last too.
+      LDFLAGS="$LDFLAGS -Wl,--allow-multiple-definition "
+      if test -n "$SDL_LIBS"; then
+        LIBS="${LIBS//-luser32/-lopencow -luser32}"
+        #SDL_LIBS="${SDL_LIBS//-luser32/\-lopencow -luser32}"
+      fi
+    fi
+    ;;
+esac
 
 dnl BUILD: whether to enable universal binary support
 if test x"$macosx" = x"1" && test x"$host_cpu" = x"arm"; then

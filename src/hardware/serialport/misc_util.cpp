@@ -244,7 +244,11 @@ ENETServerSocket::~ENETServerSocket()
 static char *enet_address_to_string(const ENetAddress &address)
 {
 	static char ip_buf[INET_ADDRSTRLEN];
+    #if !defined(_WIN32_WINDOWS)
 	enet_address_get_host_ip_new(&address, ip_buf, sizeof(ip_buf));
+    #else
+    ip_buf[0] = 0;
+    #endif
 	return ip_buf;
 }
 
@@ -475,7 +479,11 @@ bool ENETClientSocket::GetRemoteAddressString(char *buffer)
 {
 	updateState();
 	assert(buffer);
+    #if !defined(_WIN32_WINDOWS)
 	enet_address_get_host_ip(&address, buffer, 16);
+    #else
+    buffer[0] = 0;
+    #endif
 	return true;
 }
 
@@ -621,7 +629,7 @@ TCPClientSocket::TCPClientSocket(TCPsocket source)
 	if (!NetWrapper_InitializeSDLNet())
 		return;
 
-	if(source!=0) {
+	if (source) {
 		mysock = source;
 		listensocketset = SDLNet_AllocSocketSet(1);
 		if(!listensocketset) return;
@@ -763,7 +771,7 @@ NETClientSocket *TCPServerSocket::Accept()
 	new_tcpsock=SDLNet_TCP_Accept(mysock);
 	if(!new_tcpsock) {
 		//printf("SDLNet_TCP_Accept: %s\n", SDLNet_GetError());
-		return 0;
+		return nullptr;
 	}
 	
 	return new TCPClientSocket(new_tcpsock);

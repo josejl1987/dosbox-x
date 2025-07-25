@@ -333,6 +333,7 @@ bool DOS_AllocateMemory(uint16_t * segment,uint16_t * blocks) {
 	return false;
 }
 
+extern bool freed_mcb_allocate_on_resize;
 
 bool DOS_ResizeMemory(uint16_t segment,uint16_t * blocks) {
 	if (segment < DOS_MEM_START+1) {
@@ -349,6 +350,13 @@ bool DOS_ResizeMemory(uint16_t segment,uint16_t * blocks) {
 		return false;
 	}
 
+	if (mcb.GetPSPSeg()==MCB_FREE && !freed_mcb_allocate_on_resize) {
+		*blocks=0;
+		DOS_SetError(DOSERR_MCB_DESTROYED);
+		LOG(LOG_DOSMISC,LOG_DEBUG)("DOS application attempted to resize freed memory block at segment 0x%x",(unsigned int)segment);
+		return false;
+	}
+
 	uint16_t total=mcb.GetSize();
 	DOS_MCB	mcb_next(segment+total);
 
@@ -359,7 +367,10 @@ bool DOS_ResizeMemory(uint16_t segment,uint16_t * blocks) {
 
 	if (*blocks<=total) {
 		if (GCC_UNLIKELY(*blocks==total)) {
-			/* Nothing to do */
+			/* Nothing to do, however if the block is freed, canonical MS-DOS behavior is to assign your PSP segment as if allocated (Incentiv by DID, party '94) */
+			if (mcb.GetPSPSeg()==MCB_FREE && freed_mcb_allocate_on_resize)
+				mcb.SetPSPSeg(dos.psp());
+
 			return true;
 		}
 		/* Shrinking MCB */
@@ -405,6 +416,7 @@ bool DOS_ResizeMemory(uint16_t segment,uint16_t * blocks) {
 		/* adjust type of joined MCB */
 		mcb.SetType(mcb_next.GetType());
 	}
+
 	mcb.SetSize(total);
 	mcb.SetPSPSeg(dos.psp());
 	if (*blocks==total) return true;	/* block fit exactly */
@@ -569,7 +581,7 @@ void DOS_SetupMemory(void) {
 
 	assert(DOS_IHSEG != 0);
 	ihseg = DOS_IHSEG;
-	ihofs = 0xF4;
+	ihofs = 0x0E; /* DOS_IHSEG is one paragraph (16 bytes) and code below may write with negative offsets below */
 
 	real_writeb(ihseg,ihofs,(uint8_t)0xCF);		//An IRET Instruction
 	if (machine != MCH_PCJR) RealSetVec(0x02,RealMake(ihseg,ihofs)); //BioMenace (segment<0x8000). Else, taken by BIOS NMI interrupt

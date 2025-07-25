@@ -111,7 +111,7 @@ std::string ldir[256];
 static host_cnv_char_t cpcnv_temp[4096];
 static host_cnv_char_t cpcnv_ltemp[4096];
 host_cnv_char_t *CodePageGuestToHost(const char *s);
-extern bool isDBCSCP(), isKanji1(uint8_t chr), shiftjis_lead_byte(int c);
+bool isDBCSCP(), isKanji1(uint8_t chr), shiftjis_lead_byte(int c), CheckDBCSCP(int32_t codepage);
 extern bool rsize, morelen, force_sfn, enable_share_exe, chinasea, uao, halfwidthkana, dbcs_sbcs, inmsg, forceswk;
 extern int lfn_filefind_handle, freesizecap, file_access_tries;
 extern unsigned long totalc, freec;
@@ -1010,7 +1010,7 @@ bool CodePageGuestToHostUTF8(char *d/*CROSS_LEN*/,const char *s/*CROSS_LEN*/) {
 host_cnv_char_t *CodePageGuestToHost(const char *s) {
 #if defined(host_cnv_use_wchar)
     uint16_t cp = GetACP(), cpbak = dos.loaded_codepage;
-    if (tryconvertcp && !notrycp && cpbak == 437 && (cp == 932 || cp == 936 || cp == 949 || cp == 950 || cp == 951)) {
+    if (tryconvertcp && !notrycp && cpbak == 437 && CheckDBCSCP(cp)) {
         dos.loaded_codepage = cp;
         if (CodePageGuestToHostUTF16((uint16_t *)cpcnv_temp,s)) {
             dos.loaded_codepage = cpbak;
@@ -1030,7 +1030,7 @@ host_cnv_char_t *CodePageGuestToHost(const char *s) {
 char *CodePageHostToGuest(const host_cnv_char_t *s) {
 #if defined(host_cnv_use_wchar)
     uint16_t cp = GetACP(), cpbak = dos.loaded_codepage;
-    if (tryconvertcp && !notrycp && cpbak == 437 && (cp == 932 || cp == 936 || cp == 949 || cp == 950 || cp == 951)) {
+    if (tryconvertcp && !notrycp && cpbak == 437 && CheckDBCSCP(cp)) {
         dos.loaded_codepage = cp;
         if (CodePageHostToGuestUTF16((char *)cpcnv_temp,(const uint16_t *)s)) {
             dos.loaded_codepage = cpbak;
@@ -1050,7 +1050,7 @@ char *CodePageHostToGuest(const host_cnv_char_t *s) {
 char *CodePageHostToGuestL(const host_cnv_char_t *s) {
 #if defined(host_cnv_use_wchar)
     uint16_t cp = GetACP(), cpbak = dos.loaded_codepage;
-    if (tryconvertcp && !notrycp && cpbak == 437 && (cp == 932 || cp == 936 || cp == 949 || cp == 950 || cp == 951)) {
+    if (tryconvertcp && !notrycp && cpbak == 437 && CheckDBCSCP(cp)) {
         dos.loaded_codepage = cp;
         if (CodePageHostToGuestUTF16((char *)cpcnv_ltemp,(const uint16_t *)s)) {
             dos.loaded_codepage = cpbak;
@@ -1206,16 +1206,16 @@ void drivezRegister(std::string const& path, std::string const& dir, bool usecp)
                 res = ht_stat(host_name,&temp_stat);
             }
             if (res==0&&(ltime=
-#if defined(__MINGW32__) && !defined(HX_DOS)
+#if defined(__MINGW32__) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
             _localtime64
 #else
             localtime
 #endif
-            (&temp_stat.st_mtime))!=0) {
+            (&temp_stat.st_mtime))!=nullptr) {
                 fztime=DOS_PackTime((uint16_t)ltime->tm_hour,(uint16_t)ltime->tm_min,(uint16_t)ltime->tm_sec);
                 fzdate=DOS_PackDate((uint16_t)(ltime->tm_year+1900),(uint16_t)(ltime->tm_mon+1),(uint16_t)ltime->tm_mday);
             }
-            VFILE_Register(name.substr(0, name.size()-1).c_str(), 0, 0, dir.c_str());
+            VFILE_Register(name.substr(0, name.size()-1).c_str(), nullptr, 0, dir.c_str());
             fztime = fzdate = 0;
             drivezRegister(path+CROSS_FILESPLIT+name.substr(0, name.size()-1), dir+name, usecp);
             continue;
@@ -1245,7 +1245,7 @@ void drivezRegister(std::string const& path, std::string const& dir, bool usecp)
         f_data = NULL;
         if (f != NULL) {
             res=fstat(fileno(f),&temp_stat);
-            if (res==0&&(ltime=localtime(&temp_stat.st_mtime))!=0) {
+            if (res==0&&(ltime=localtime(&temp_stat.st_mtime))!=nullptr) {
                 fztime=DOS_PackTime((uint16_t)ltime->tm_hour,(uint16_t)ltime->tm_min,(uint16_t)ltime->tm_sec);
                 fzdate=DOS_PackDate((uint16_t)(ltime->tm_year+1900),(uint16_t)(ltime->tm_mon+1),(uint16_t)ltime->tm_mday);
             }
@@ -1303,6 +1303,9 @@ bool localDrive::FileCreate(DOS_File * * file,const char * name,uint16_t attribu
     const char* temp_name = dirCache.GetExpandName(newname); // Can only be used until a new drive_cache action is performed
 	/* Test if file exists (so we need to truncate it). don't add to dirCache then */
 	bool existing_file=false;
+#   // Windows: If the file to create already exists and is hidden OR we're being asked to create a hidden file,
+    //          then CreateFile() MUST be used or Windows might deny access.
+    bool special_attributes=false;
 
     // guest to host code page translation
     const host_cnv_char_t* host_name = CodePageGuestToHost(temp_name);
@@ -1322,12 +1325,23 @@ bool localDrive::FileCreate(DOS_File * * file,const char * name,uint16_t attribu
 		existing_file=true;
 	}
 
+#if defined(WIN32)
+    if(attributes & 2) { /* attempting to create a hidden file */
+        /* The CreateFileW path MUST be used to correctly specify the file attribute.
+           Else, a file intended to be hidden will be fully visible, or even worse,
+           an attempt to create a hidden file when the file already exists as a hidden file will fail.
+
+           Fix for "Facts of Life" by Witan, which always creates hidden file WITAN.92 */
+        special_attributes = true;
+    }
+#endif
+
     FILE * hand;
-    if (enable_share_exe && !existing_file) {
+    if (enable_share_exe && (!existing_file || special_attributes)) {
 #if defined(WIN32)
         int attribs = FILE_ATTRIBUTE_NORMAL;
         if (attributes&3) attribs = attributes&3;
-        HANDLE handle = CreateFileW(host_name, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, attribs, NULL);
+        HANDLE handle = CreateFileW(host_name, GENERIC_READ|GENERIC_WRITE, enable_share_exe?(FILE_SHARE_READ|FILE_SHARE_WRITE):0, NULL, CREATE_ALWAYS, attribs, NULL);
         if (handle == INVALID_HANDLE_VALUE) return false;
         int nHandle = _open_osfhandle((intptr_t)handle, _O_RDONLY);
         if (nHandle == -1) {CloseHandle(handle);return false;}
@@ -1364,7 +1378,7 @@ bool localDrive::FileCreate(DOS_File * * file,const char * name,uint16_t attribu
 	}
 
 	/* Make the 16 bit device information */
-	*file=new localFile(name,hand);
+	*file=new LocalFile(name,hand);
 	(*file)->flags=OPEN_READWRITE;
 
 	return true;
@@ -1493,7 +1507,7 @@ bool localDrive::FileOpen(DOS_File * * file,const char * name,uint32_t flags) {
 
 	//Flush the buffer of handles for the same file. (Betrayal in Antara)
 	uint8_t i,drive=DOS_DRIVES;
-	localFile *lfp;
+	LocalFile *lfp;
 	for (i=0;i<DOS_DRIVES;i++) {
 		if (Drives[i]==this) {
 			drive=i;
@@ -1503,7 +1517,7 @@ bool localDrive::FileOpen(DOS_File * * file,const char * name,uint32_t flags) {
     if(!dos_kernel_disabled)
         for(i = 0; i < DOS_FILES; i++) {
             if(Files[i] && Files[i]->IsOpen() && Files[i]->GetDrive() == drive && Files[i]->IsName(name)) {
-                lfp = dynamic_cast<localFile*>(Files[i]);
+                lfp = dynamic_cast<LocalFile*>(Files[i]);
                 if(lfp) lfp->Flush();
             }
         }
@@ -1529,7 +1543,12 @@ bool localDrive::FileOpen(DOS_File * * file,const char * name,uint32_t flags) {
 #else
         uint16_t unix_mode = (flags&0xf)==OPEN_READ||(flags&0xf)==OPEN_READ_NO_MOD?O_RDONLY:((flags&0xf)==OPEN_WRITE?O_WRONLY:O_RDWR);
         int fd = open(host_name, unix_mode);
-        if (fd<0 || !share(fd, unix_mode & O_ACCMODE, flags)) {if (fd >= 0) close(fd);return false;}
+        if (fd < 0)
+            return false;
+        if (!share(fd, unix_mode & O_ACCMODE, flags)) {
+            close(fd);
+            return false;
+        }
         hand = fdopen(fd, (flags&0xf)==OPEN_WRITE?_HT("wb"):type);
 #endif
     } else {
@@ -1559,7 +1578,7 @@ bool localDrive::FileOpen(DOS_File * * file,const char * name,uint32_t flags) {
 		return false;
 	}
 
-	*file=new localFile(name,hand);
+	*file=new LocalFile(name,hand);
 	(*file)->flags=flags;  //for the inheritance flag and maybe check for others.
 //	(*file)->SetFileName(host_name);
 	return true;
@@ -1845,12 +1864,12 @@ again:
 	find_size=(uint32_t) (stat_block.st_size % 0x100000000);
     const struct tm* time;
 	if((time=
-#if defined(__MINGW32__) && !defined(HX_DOS)
+#if defined(__MINGW32__) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
     _localtime64
 #else
     localtime
 #endif
-    (&stat_block.st_mtime))!=0){
+    (&stat_block.st_mtime))!=nullptr){
 		find_date=DOS_PackDate((uint16_t)(time->tm_year+1900),(uint16_t)(time->tm_mon+1),(uint16_t)time->tm_mday);
 		find_time=DOS_PackTime((uint16_t)time->tm_hour,(uint16_t)time->tm_min,(uint16_t)time->tm_sec);
 	} else {
@@ -2244,36 +2263,155 @@ bool localDrive::Rename(const char * oldname,const char * newname) {
 #if !defined(WIN32)
 #include <sys/statvfs.h>
 #endif
-bool localDrive::AllocationInfo(uint16_t * _bytes_sector,uint8_t * _sectors_cluster,uint16_t * _total_clusters,uint16_t * _free_clusters) {
-	*_bytes_sector=allocation.bytes_sector;
-	*_sectors_cluster=allocation.sectors_cluster;
-	*_total_clusters=allocation.total_clusters;
-	*_free_clusters=allocation.free_clusters;
-	if ((!allocation.total_clusters && !allocation.free_clusters) || freesizecap) {
-		bool res=false;
+
+bool localDrive::AllocationInfo64(uint32_t* _bytes_sector, uint32_t* _sectors_cluster, uint64_t* _total_clusters, uint64_t* _free_clusters) {
+    *_bytes_sector = allocation.bytes_sector;
+    *_sectors_cluster = allocation.sectors_cluster;
+    *_total_clusters = allocation.total_clusters;
+    *_free_clusters = allocation.free_clusters;
+    if((!allocation.total_clusters && !allocation.free_clusters) || freesizecap) {
+        bool res = false;
 #if defined(WIN32)
-		long unsigned int dwSectPerClust, dwBytesPerSect, dwFreeClusters, dwTotalClusters;
-		uint8_t drive=strlen(basedir)>1&&basedir[1]==':'?toupper(basedir[0])-'A'+1:0;
-		if (drive>26) drive=0;
-		char root[4]="A:\\";
-		root[0]='A'+drive-1;
-        if (basedir[0]=='\\' && basedir[1]=='\\')
-            res = GetDiskFreeSpace(basedir, &dwSectPerClust, &dwBytesPerSect, &dwFreeClusters, &dwTotalClusters);
+        DWORD dwSectPerClust, dwBytesPerSect, dwFreeClusters, dwTotalClusters;
+        uint64_t qwFreeClusters, qwTotalClusters;
+        uint8_t drive = strlen(basedir) > 1 && basedir[1] == ':' ? toupper(basedir[0]) - 'A' + 1 : 0;
+        if(drive > 26) drive = 0;
+        char root[4] = "A:\\";
+        root[0] = 'A' + drive - 1;
+        char* diskToQuery;
+
+        if(basedir[0] == '\\' && basedir[1] == '\\')
+            diskToQuery = basedir;
         else
-            res = GetDiskFreeSpace(drive?root:NULL, &dwSectPerClust, &dwBytesPerSect, &dwFreeClusters, &dwTotalClusters);
-		if (res) {
-			unsigned long total = dwTotalClusters * dwSectPerClust;
-			int ratio = total > 2097120 ? 64 : (total > 1048560 ? 32 : (total > 524280 ? 16 : (total > 262140 ? 8 : (total > 131070 ? 4 : (total > 65535 ? 2 : 1))))), ratio2 = ratio * dwBytesPerSect / 512;
-			*_bytes_sector = 512;
-			*_sectors_cluster = ratio;
-			*_total_clusters = total > 4194240? 65535 : (uint16_t)(dwTotalClusters * dwSectPerClust / ratio2);
-			*_free_clusters = dwFreeClusters ? (total > 4194240? 61440 : (uint16_t)(dwFreeClusters * dwSectPerClust / ratio2)) : 0;
-			if (rsize) {
-				totalc=dwTotalClusters * dwSectPerClust / ratio;
-				freec=dwFreeClusters * dwSectPerClust / ratio;
-			}
+            diskToQuery = drive ? root : NULL;
+
+        res = GetDiskFreeSpace(diskToQuery, &dwSectPerClust, &dwBytesPerSect, &dwFreeClusters, &dwTotalClusters);
+        ULARGE_INTEGER FreeBytesAvailableToCaller, TotalNumberOfBytes;
+        GetDiskFreeSpaceEx(diskToQuery, &FreeBytesAvailableToCaller, &TotalNumberOfBytes, NULL);
+        qwTotalClusters = TotalNumberOfBytes.QuadPart / (dwSectPerClust * dwBytesPerSect);
+        qwFreeClusters = FreeBytesAvailableToCaller.QuadPart / (dwSectPerClust * dwBytesPerSect);
+
+        *_bytes_sector = dwBytesPerSect;
+        *_sectors_cluster = dwSectPerClust;
+        *_total_clusters = qwTotalClusters;
+        *_free_clusters = qwFreeClusters;
+
+        if(res) {
+            Bitu total = qwTotalClusters * dwSectPerClust;
+            int ratio = total > 2097120 ? 64 : (total > 1048560 ? 32 : (total > 524280 ? 16 : (total > 262140 ? 8 : (total > 131070 ? 4 : (total > 65535 ? 2 : 1))))), ratio2 = ratio * dwBytesPerSect / 512;
+            if(rsize) {
+                totalc = qwTotalClusters * dwSectPerClust / ratio;
+                freec = qwFreeClusters * dwSectPerClust / ratio;
+            }
 #else
-		struct statvfs stat;
+        struct statvfs stat;
+        res = statvfs(basedir, &stat) == 0;
+        if(res) {
+            int ratio = stat.f_blocks / 65536, tmp = ratio;
+            *_bytes_sector = 512;
+            *_sectors_cluster = stat.f_frsize / 512 > 64 ? 64 : stat.f_frsize / 512;
+            if(ratio > 1) {
+                if(ratio * (*_sectors_cluster) > 64) tmp = (*_sectors_cluster + 63) / (*_sectors_cluster);
+                *_sectors_cluster = ratio * (*_sectors_cluster) > 64 ? 64 : ratio * (*_sectors_cluster);
+                ratio = tmp;
+            }
+            *_total_clusters = stat.f_blocks > 65535 ? 65535 : stat.f_blocks;
+            *_free_clusters = stat.f_bavail > 61440 ? 61440 : stat.f_bavail;
+            if(rsize) {
+                totalc = stat.f_blocks;
+                freec = stat.f_bavail;
+                if(ratio > 1) {
+                    totalc /= ratio;
+                    freec /= ratio;
+                }
+            }
+#endif
+            if((allocation.total_clusters || allocation.free_clusters) && freesizecap < 3) {
+                long diff = 0;
+                if(freesizecap == 2) diff = (freec ? freec : *_free_clusters) - allocation.initfree;
+                bool g1 = *_bytes_sector * *_sectors_cluster * *_total_clusters > allocation.bytes_sector * allocation.sectors_cluster * allocation.total_clusters;
+                bool g2 = *_bytes_sector * *_sectors_cluster * *_free_clusters > allocation.bytes_sector * allocation.sectors_cluster * allocation.free_clusters;
+                if(g1 || g2) {
+                    if(freesizecap == 2) diff *= (*_bytes_sector * *_sectors_cluster) / (allocation.bytes_sector * allocation.sectors_cluster);
+                    *_bytes_sector = allocation.bytes_sector;
+                    *_sectors_cluster = allocation.sectors_cluster;
+                    if(g1) *_total_clusters = allocation.total_clusters;
+                    if(g2) *_free_clusters = allocation.free_clusters;
+                    if(freesizecap == 2) {
+                        if(diff<0 && (-diff)>*_free_clusters)
+                            *_free_clusters = 0;
+                        else
+                            *_free_clusters += (uint16_t)diff;
+                    }
+                    if(*_total_clusters < *_free_clusters) {
+                        if(*_free_clusters > 65525)
+                            *_total_clusters = 65535;
+                        else
+                            *_total_clusters = *_free_clusters + 10;
+                    }
+                    if(rsize) {
+                        if(g1) totalc = *_total_clusters;
+                        if(g2) freec = *_free_clusters;
+                    }
+                }
+            }
+        }
+        else if(!allocation.total_clusters && !allocation.free_clusters) {
+            if(allocation.mediaid == 0xF0) {
+                *_bytes_sector = 512;
+                *_sectors_cluster = 1;
+                *_total_clusters = 2880;
+                *_free_clusters = 2880;
+            }
+            else if(allocation.bytes_sector == 2048) {
+                *_bytes_sector = 2048;
+                *_sectors_cluster = 1;
+                *_total_clusters = 65535;
+                *_free_clusters = 0;
+            }
+            else {
+                // 512*32*32765==~500MB total size
+                // 512*32*16000==~250MB total free size
+                *_bytes_sector = 512;
+                *_sectors_cluster = 32;
+                *_total_clusters = 32765;
+                *_free_clusters = 16000;
+            }
+        }
+        }
+    return true;
+ }
+
+ bool localDrive::AllocationInfo(uint16_t* _bytes_sector, uint8_t* _sectors_cluster, uint16_t* _total_clusters, uint16_t* _free_clusters) {
+     *_bytes_sector = allocation.bytes_sector;
+     *_sectors_cluster = allocation.sectors_cluster;
+     *_total_clusters = allocation.total_clusters;
+     *_free_clusters = allocation.free_clusters;
+     if((!allocation.total_clusters && !allocation.free_clusters) || freesizecap) {
+         bool res = false;
+#if defined(WIN32)
+         long unsigned int dwSectPerClust, dwBytesPerSect, dwFreeClusters, dwTotalClusters;
+         uint8_t drive = strlen(basedir) > 1 && basedir[1] == ':' ? toupper(basedir[0]) - 'A' + 1 : 0;
+         if(drive > 26) drive = 0;
+         char root[4] = "A:\\";
+         root[0] = 'A' + drive - 1;
+         if(basedir[0] == '\\' && basedir[1] == '\\')
+             res = GetDiskFreeSpace(basedir, &dwSectPerClust, &dwBytesPerSect, &dwFreeClusters, &dwTotalClusters);
+         else
+             res = GetDiskFreeSpace(drive ? root : NULL, &dwSectPerClust, &dwBytesPerSect, &dwFreeClusters, &dwTotalClusters);
+         if(res) {
+             unsigned long total = dwTotalClusters * dwSectPerClust;
+             int ratio = total > 2097120 ? 64 : (total > 1048560 ? 32 : (total > 524280 ? 16 : (total > 262140 ? 8 : (total > 131070 ? 4 : (total > 65535 ? 2 : 1))))), ratio2 = ratio * dwBytesPerSect / 512;
+             *_bytes_sector = 512;
+             *_sectors_cluster = ratio;
+             *_total_clusters = total > 4194240 ? 65535 : (uint16_t)(dwTotalClusters * dwSectPerClust / ratio2);
+             *_free_clusters = dwFreeClusters ? (total > 4194240 ? 61440 : (uint16_t)(dwFreeClusters * dwSectPerClust / ratio2)) : 0;
+             if(rsize) {
+                 totalc = dwTotalClusters * dwSectPerClust / ratio;
+                 freec = dwFreeClusters * dwSectPerClust / ratio;
+             }
+#else
+        struct statvfs stat;
 		res = statvfs(basedir, &stat) == 0;
 		if (res) {
 			int ratio = stat.f_blocks / 65536, tmp=ratio;
@@ -2392,12 +2530,12 @@ bool localDrive::FileStat(const char* name, FileStat_Block * const stat_block) {
 	/* Convert the stat to a FileStat */
     const struct tm* time;
 	if((time=
-#if defined(__MINGW32__) && !defined(HX_DOS)
+#if defined(__MINGW32__) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
     _localtime64
 #else
     localtime
 #endif
-    (&temp_stat.st_mtime))!=0) {
+    (&temp_stat.st_mtime))!=nullptr) {
 		stat_block->time=DOS_PackTime((uint16_t)time->tm_hour,(uint16_t)time->tm_min,(uint16_t)time->tm_sec);
 		stat_block->date=DOS_PackDate((uint16_t)(time->tm_year+1900),(uint16_t)(time->tm_mon+1),(uint16_t)time->tm_mday);
 	}
@@ -2571,7 +2709,7 @@ localDrive::localDrive(const char * startdir,uint16_t _bytes_sector,uint8_t _sec
 
 
 //TODO Maybe use fflush, but that seemed to fuck up in visual c
-bool localFile::Read(uint8_t * data,uint16_t * size) {
+bool LocalFile::Read(uint8_t * data,uint16_t * size) {
 	if ((this->flags & 0xf) == OPEN_WRITE) {	// check if file opened in write-only mode
 		DOS_SetError(DOSERR_ACCESS_DENIED);
 		return false;
@@ -2613,7 +2751,7 @@ bool localFile::Read(uint8_t * data,uint16_t * size) {
 	return true;
 }
 
-bool localFile::Write(const uint8_t * data,uint16_t * size) {
+bool LocalFile::Write(const uint8_t * data,uint16_t * size) {
 	uint32_t lastflags = this->flags & 0xf;
 	if (lastflags == OPEN_READ || lastflags == OPEN_READ_NO_MOD) {	// check if file opened in read-only mode
 		DOS_SetError(DOSERR_ACCESS_DENIED);
@@ -2684,7 +2822,7 @@ bool toLock(int fd, bool is_lock, uint32_t pos, uint16_t size) {
 
 // ert, 20100711: Locking extensions
 // Wengier, 20201230: All platforms
-bool localFile::LockFile(uint8_t mode, uint32_t pos, uint16_t size) {
+bool LocalFile::LockFile(uint8_t mode, uint32_t pos, uint16_t size) {
 #if defined(WIN32)
     static bool lockWarn = true;
 	HANDLE hFile = (HANDLE)_get_osfhandle(_fileno(fhandle));
@@ -2706,7 +2844,7 @@ bool localFile::LockFile(uint8_t mode, uint32_t pos, uint16_t size) {
                 }
                 Sleep(25);																// If failed, wait 25 millisecs
             }
-        else if (::UnlockFile(hFile, pos, 0, size, 0))									// This is a somewhat permanet condition!
+        else if (::UnlockFile(hFile, pos, 0, size, 0))									// This is a somewhat permanent condition!
             return true;
         DOS_SetError((uint16_t)GetLastError());
         return false;
@@ -2775,7 +2913,7 @@ bool localFile::LockFile(uint8_t mode, uint32_t pos, uint16_t size) {
 }
 
 extern const char* RunningProgram;
-bool localFile::Seek(uint32_t * pos,uint32_t type) {
+bool LocalFile::Seek(uint32_t * pos,uint32_t type) {
 	int seektype;
 	switch (type) {
 	case DOS_SEEK_SET:seektype=SEEK_SET;break;
@@ -2821,7 +2959,7 @@ bool localFile::Seek(uint32_t * pos,uint32_t type) {
 	return true;
 }
 
-bool localFile::Close() {
+bool LocalFile::Close() {
     if (!newtime && fhandle && last_action == WRITE) UpdateLocalDateTime();
 	if (newtime && fhandle) {
         // force STDIO to flush buffers on this file handle, or else fclose() will write buffered data
@@ -2874,45 +3012,45 @@ bool localFile::Close() {
 	// only close if one reference left
 	if (refCtr==1) {
 		if(fhandle) fclose(fhandle); 
-		fhandle = 0;
+		fhandle = nullptr;
 		open = false;
 	}
 
 	return true;
 }
 
-uint16_t localFile::GetInformation(void) {
+uint16_t LocalFile::GetInformation(void) {
 	return read_only_medium ? DeviceInfoFlags::NotWritten : 0;
 }
 
 
-uint32_t localFile::GetSeekPos() {
+uint32_t LocalFile::GetSeekPos() {
 	return file_access_tries>0?(uint32_t)lseek(fileno(fhandle),0,SEEK_CUR):(uint32_t)ftell( fhandle );
 }
 
-localFile::localFile() {}
+LocalFile::LocalFile() {}
 
-localFile::localFile(const char* _name, FILE* handle) : fhandle(handle) {
+LocalFile::LocalFile(const char* _name, FILE* handle) : fhandle(handle) {
 	open=true;
-	localFile::UpdateDateTimeFromHost();
+	LocalFile::UpdateDateTimeFromHost();
 
 	attr=DOS_ATTR_ARCHIVE;
 	last_action=NONE;
 
-	name=0;
+	name=nullptr;
 	SetName(_name);
 }
 
-void localFile::FlagReadOnlyMedium(void) {
+void LocalFile::FlagReadOnlyMedium(void) {
 	read_only_medium = true;
 }
 
-bool localFile::UpdateDateTimeFromHost(void) {
+bool LocalFile::UpdateDateTimeFromHost(void) {
 	if(!open) return false;
 	struct stat temp_stat;
 	fstat(fileno(fhandle),&temp_stat);
     const struct tm* ltime;
-	if((ltime=localtime(&temp_stat.st_mtime))!=0) {
+	if((ltime=localtime(&temp_stat.st_mtime))!=nullptr) {
 		time=DOS_PackTime((uint16_t)ltime->tm_hour,(uint16_t)ltime->tm_min,(uint16_t)ltime->tm_sec);
 		date=DOS_PackDate((uint16_t)(ltime->tm_year+1900),(uint16_t)(ltime->tm_mon+1),(uint16_t)ltime->tm_mday);
 	} else {
@@ -2921,7 +3059,7 @@ bool localFile::UpdateDateTimeFromHost(void) {
 	return true;
 }
 
-bool localFile::UpdateLocalDateTime(void) {
+bool LocalFile::UpdateLocalDateTime(void) {
     time_t timet = ::time(NULL);
     struct tm *tm = localtime(&timet);
     tm->tm_isdst = -1;
@@ -2956,7 +3094,7 @@ bool localFile::UpdateLocalDateTime(void) {
 }
 
 
-void localFile::Flush(void) {
+void LocalFile::Flush(void) {
 #if defined(WIN32)
     if (file_access_tries>0) return;
 #endif
@@ -3003,7 +3141,7 @@ bool cdromDrive::FileOpen(DOS_File * * file,const char * name,uint32_t flags) {
 		return false;
 	}
 	bool retcode = localDrive::FileOpen(file,name,flags);
-	if(retcode) (dynamic_cast<localFile*>(*file))->FlagReadOnlyMedium();
+	if(retcode) (dynamic_cast<LocalFile*>(*file))->FlagReadOnlyMedium();
 	return retcode;
 }
 

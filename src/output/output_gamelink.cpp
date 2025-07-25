@@ -16,7 +16,8 @@
 #include "mixer.h"
 #include "mapper.h"
 #include "../gamelink/scancodes_windows.h"
-#include "../output/output_surface.h"
+#include "output/output_surface.h"
+#include "output/output_opengl.h"
 #include <output/output_tools_xbrz.h>
 
 using namespace std;
@@ -36,9 +37,14 @@ void OUTPUT_GAMELINK_Select()
         MessageBoxA( NULL, "ERROR: Game Link output disabled.",
                                 "DOSBox \"Game Link\" Error", MB_OK | MB_ICONSTOP );
 #else // WIN32
+#if defined(MACOSX) && !defined(__arm64__) && C_OPENGL
+        LOG_MSG( "OUTPUT_GAMELINK: Not enabled via `gamelink master = true`, falling back to `output=opengl`." );
+        OUTPUT_OPENGL_Select(GLBilinear);
+#else // MACOSX
         LOG_MSG( "OUTPUT_GAMELINK: Not enabled via `gamelink master = true`, falling back to `output=surface`." );
-#endif // WIN32
         OUTPUT_SURFACE_Select();
+#endif //!MACOSX
+#endif
         return;
     }
 
@@ -162,13 +168,13 @@ Bitu OUTPUT_GAMELINK_SetSize()
 
     if (sdl.desktop.fullscreen) GFX_ForceFullscreenExit();
 
-    sdl.surface = 0;
+    sdl.surface = nullptr;
     sdl.clip.w = sdl.draw.width;
     sdl.clip.h = sdl.draw.height;
     sdl.clip.x = 0;
     sdl.clip.y = 0;
 
-    if (sdl.gamelink.framebuf == 0 ) {
+    if (!sdl.gamelink.framebuf) {
         sdl.gamelink.framebuf = malloc(SCALER_MAXWIDTH * SCALER_MAXHEIGHT * 4);   // 32 bit color frame buffer
     }
     sdl.gamelink.pitch = sdl.draw.width*4;

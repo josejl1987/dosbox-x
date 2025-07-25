@@ -845,7 +845,6 @@ bool dos_hdd_rate_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
 
-    Section_prop * section = static_cast<Section_prop *>(control->GetSection("dos"));
     if (disk_data_rate == 0) {
         if (pcibus_enable)
             disk_data_rate = 8333333; /* Probably an average IDE data rate for mid 1990s PCI IDE controllers in PIO mode */
@@ -863,7 +862,6 @@ bool dos_floppy_rate_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * co
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
 
-    Section_prop * section = static_cast<Section_prop *>(control->GetSection("dos"));
     if(floppy_data_rate == 0)
         floppy_data_rate = 22400; // 175 kbps
     else
@@ -1975,6 +1973,34 @@ void aspect_ratio_menu() {
     mainMenu.get_item("video_ratio_original").check(aspect_ratio_x==-1&&aspect_ratio_y==-1).enable(true).refresh_item(mainMenu);
 }
 
+void ApplyPreventCapMenu(void) {
+#if defined(WIN32) || defined(MACOSX)
+    mainMenu.get_item("prevcap_none").check(preventcap == PREVCAP_NONE).enable(true).refresh_item(mainMenu);
+    mainMenu.get_item("prevcap_blank").check(preventcap == PREVCAP_BLANK).enable(true).refresh_item(mainMenu);
+    mainMenu.get_item("prevcap_invisible").check(preventcap == PREVCAP_INVISIBLE).enable(true).refresh_item(mainMenu);
+#endif
+}
+
+bool preventcapture_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
+#if defined(WIN32) || defined(MACOSX)
+    (void)menu;//UNUSED
+    const char *mname = menuitem->get_name().c_str();
+    if (!strcmp(mname, "prevcap_none")) {
+        SetVal("video", "prevent capture", "none");
+        preventcap = PREVCAP_NONE;
+    } else if (!strcmp(mname, "prevcap_blank")) {
+        SetVal("video", "prevent capture", "blank");
+        preventcap = PREVCAP_BLANK;
+    } else if (!strcmp(mname, "prevcap_invisible")) {
+        SetVal("video", "prevent capture", "invisible");
+        preventcap = PREVCAP_INVISIBLE;
+    }
+    ApplyPreventCapMenu();
+    ApplyPreventCap();
+#endif
+    return true;
+}
+
 bool aspect_ratio_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
     (void)menu;//UNUSED
     const char *mname = menuitem->get_name().c_str();
@@ -2042,6 +2068,15 @@ bool vsync_set_syncrate_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item *
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
     GUI_Shortcut(17);
+    return true;
+}
+
+bool center_window_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+#if defined(C_SDL2)
+    SDL_SetWindowPosition(sdl.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+#endif
     return true;
 }
 
@@ -2149,7 +2184,7 @@ int GetNumScreen() {
     int numscreen = 1;
 #if defined(C_SDL2)
     numscreen = SDL_GetNumVideoDisplays();
-#elif defined(WIN32) && !defined(HX_DOS)
+#elif defined(WIN32) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
     xyp xy={0};
     xy.x=-1;
     xy.y=-1;
@@ -2307,7 +2342,7 @@ bool video_frameskip_common_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::it
 bool show_console_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
-#if !defined(C_EMSCRIPTEN) && defined(WIN32) && !defined(HX_DOS)
+#if !defined(C_EMSCRIPTEN) && defined(WIN32) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
 #if C_DEBUG
     bool DEBUG_IsDebuggerConsoleVisible(void);
     if (DEBUG_IsDebuggerConsoleVisible())
@@ -2532,6 +2567,7 @@ bool autolock_mouse_menu_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * co
     (void)menuitem;//UNUSED
     sdl.mouse.autoenable = !sdl.mouse.autoenable;
     mainMenu.get_item("auto_lock_mouse").check(sdl.mouse.autoenable).refresh_item(mainMenu);
+    Mouse_AutoLock(sdl.mouse.autoenable);
     return true;
 }
 
@@ -2629,8 +2665,8 @@ bool doublebuf_menu_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * const m
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
     std::string doubleBufString = std::string("desktop.doublebuf");
-    SetVal("sdl", "fulldouble", (GetSetSDLValue(1, doubleBufString, 0)) ? "false" : "true"); res_init();
-    mainMenu.get_item("doublebuf").check(!!GetSetSDLValue(1, doubleBufString, 0)).refresh_item(mainMenu);
+    SetVal("sdl", "fulldouble", (GetSetSDLValue(1, doubleBufString, nullptr)) ? "false" : "true"); res_init();
+    mainMenu.get_item("doublebuf").check(!!GetSetSDLValue(1, doubleBufString, nullptr)).refresh_item(mainMenu);
     return true;
 }
 
@@ -3182,6 +3218,19 @@ void AllocCallback1() {
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"video_ratio_set").set_text("Set ratio").
                     set_callback_function(aspect_ratio_edit_menu_callback);
             }
+#if defined(WIN32) || defined(MACOSX)
+            {
+                DOSBoxMenu::item &item = mainMenu.alloc_item(DOSBoxMenu::submenu_type_id,"VideoPreventCaptureMenu");
+                item.set_text("Screen capture control");
+
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"prevcap_none").set_text("Allow").
+                    set_callback_function(preventcapture_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"prevcap_blank").set_text("Show as blank").
+                    set_callback_function(preventcapture_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"prevcap_invisible").set_text("Make invisible").
+                    set_callback_function(preventcapture_menu_callback);
+            }
+#endif
             {
                 DOSBoxMenu::item &item = mainMenu.alloc_item(DOSBoxMenu::submenu_type_id,"VideoScalerMenu");
                 item.set_text("Scaler");
@@ -3192,6 +3241,11 @@ void AllocCallback1() {
                     mainMenu.alloc_item(DOSBoxMenu::item_type_id,name).set_text(scaler_menu_opts[i][1]).
                         set_callback_function(scaler_set_menu_callback);
                 }
+
+#if defined(C_SDL2)
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"center_window").set_text("Center window").
+                    set_callback_function(center_window_menu_callback);
+#endif
 
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"set_titletext").set_text("Set title bar text...").
                     set_callback_function(set_titletext_menu_callback);
@@ -3739,7 +3793,7 @@ void AllocCallback2() {
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"wheel_ctrlpageupdown").set_text("Convert to Ctrl+PgUp/PgDn keys").set_callback_function(wheel_move_menu_callback);
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"wheel_ctrlwz").set_text("Convert to Ctrl+W/Z keys").set_callback_function(wheel_move_menu_callback);
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"wheel_guest").set_text("Enable for guest systems also").set_callback_function(wheel_guest_menu_callback);
-        mainMenu.alloc_item(DOSBoxMenu::item_type_id,"doublebuf").set_text("Double buffering (fullscreen)").set_callback_function(doublebuf_menu_callback).check(!!GetSetSDLValue(1, doubleBufString, 0));
+        mainMenu.alloc_item(DOSBoxMenu::item_type_id,"doublebuf").set_text("Double buffering (fullscreen)").set_callback_function(doublebuf_menu_callback).check(!!GetSetSDLValue(1, doubleBufString, nullptr));
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"alwaysontop").set_text("Always on top").set_callback_function(alwaysontop_menu_callback).check(is_always_on_top());
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"highdpienable").set_text("High DPI enable").set_callback_function(highdpienable_menu_callback).check(dpi_aware_enable);
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"sync_host_datetime").set_text("Synchronize host date/time").set_callback_function(sync_host_datetime_menu_callback).check(sync_time);

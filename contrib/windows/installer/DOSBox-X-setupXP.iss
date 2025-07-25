@@ -1,5 +1,5 @@
 ﻿#define MyAppName "DOSBox-X"
-#define MyAppVersion "2023.09.01"
+#define MyAppVersion "2024.12.04"
 #define MyAppBit "(32/64bit for XP)"
 #define MyAppPublisher "joncampbell123 [DOSBox-X Team]"
 #define MyAppURL "https://dosbox-x.com/"
@@ -104,11 +104,16 @@ Source: "..\..\fonts\wqy_1?pt.bdf"; DestDir: "{app}"; Flags: ignoreversion; Comp
 Source: "..\..\fonts\Nouveau_IBM.ttf"; DestDir: "{app}"; Flags: ignoreversion; Components: full typical compact
 Source: "..\..\fonts\SarasaGothicFixed.ttf"; DestDir: "{app}"; Flags: ignoreversion; Components: full typical compact
 Source: "..\..\translations\de\de_DE.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
+Source: "..\..\translations\de\de_pc98.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
 Source: "..\..\translations\en\en_US.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
 Source: "..\..\translations\es\es_ES.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
 Source: "..\..\translations\fr\fr_FR.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
+Source: "..\..\translations\hu\hu_HU.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
+Source: "..\..\translations\it\it_IT.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
 Source: "..\..\translations\ja\ja_JP.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
 Source: "..\..\translations\ko\ko_KR.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
+Source: "..\..\translations\nl\nl_NL.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
+Source: "..\..\translations\ru\ru_RU.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
 Source: "..\..\translations\tr\tr_TR.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
 Source: "..\..\translations\zh\zh_CN.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
 Source: "..\..\translations\zh\zh_TW.lng"; DestDir: "{app}\languages"; Flags: ignoreversion; Components: full typical compact
@@ -238,7 +243,7 @@ begin
 end;
 procedure HelpButtonOnClick(Sender: TObject);
 begin
-  MsgBox('The Setup pre-selects a Windows build for you according to your platform automatically, but you can change the default build to run if you encounter specific problem(s) with the pre-selected one.' #13#13 'For example, while the SDL1 version is the default version to run, the SDL2 version may be preferred over the SDL1 version for certain features such as improved keyboard and touchscreen support. Also, MinGW builds may work better with certain features (such as the Slirp backend for the NE2000 networking in standard MinGW builds) than Visual Studio builds even though they do not come with the debugger.' #13#13 'If you are not sure about which build to use, then you can just leave it unmodified and use the pre-selected one as the default build.', mbConfirmation, MB_OK);
+  MsgBox('The Setup pre-selects a Windows build for you according to your platform automatically, but you can change the default build to run if you encounter specific problem(s) with the pre-selected one.' #13#13 'For example, while the SDL1 version is the default version to run, the SDL2 version may be preferred over the SDL1 version for certain features such as improved keyboard and touchscreen support. ' #13#13 'If you are not sure about which build to use, then you can just leave it unmodified and use the pre-selected one as the default build.', mbConfirmation, MB_OK);
 end;
 procedure CreateHelpButton(X: integer; Y: integer; W: integer; H: integer);
 begin

@@ -1011,7 +1011,7 @@ public:
         if (!w) vol1=vol0;
     }
 
-    void Run(void) {
+    void Run(void) override {
         if (cmd->FindExist("-?", false) || cmd->FindExist("/?", false)) {
 			WriteOut("Displays or changes the current sound mixer volumes.\n\n"
                     "MIXER [/GUI|/NOSHOW] [/LISTMIDI [handler]] [channel volume]\n\n"
@@ -1074,7 +1074,7 @@ MixerChannel* MixerObject::Install(MIXER_Handler handler,Bitu freq,const char * 
         return MIXER_AddChannel(handler,freq,name);
     } else {
         E_Exit("already added mixer channel.");
-        return 0; //Compiler happy
+        return nullptr; //Compiler happy
     }
 }
 
@@ -1188,7 +1188,7 @@ void MIXER_Init() {
     /* Initialize the internal stuff */
     mixer.prebuffer_samples=0;
     mixer.prebuffer_wait=true;
-    mixer.channels=0;
+    mixer.channels = nullptr;
     mixer.pos=0;
     mixer.done=0;
     memset(mixer.work,0,sizeof(mixer.work));
@@ -1332,7 +1332,7 @@ public:
 	{}
 
 private:
-	virtual void getBytes(std::ostream& stream)
+	void getBytes(std::ostream& stream) override
 	{
 
 		//*************************************************
@@ -1351,7 +1351,7 @@ private:
 		POD_Save_Tandy_Sound(stream);
 	}
 
-	virtual void setBytes(std::istream& stream)
+	void setBytes(std::istream& stream) override
 	{
 
 		//*************************************************

@@ -164,7 +164,7 @@ Bitu ROMBIOS_GetMemory(Bitu bytes,const char *who=NULL,Bitu alignment=1,Bitu mus
 extern RegionAllocTracking rombios_alloc;
 
 /* maximum of scancodes handled by keyboard bios routines */
-#define MAX_SCAN_CODE 0x93
+#define MAX_SCAN_CODE 0x7F
 
 /* The Section handling Bios Disk Access */
 //#define BIOS_MAX_DISK 10
@@ -324,6 +324,19 @@ public:
     unsigned char*      alloc_res = NULL;
     size_t              alloc_sz = 0;
 };
+
+extern bool ACPI_enabled;
+extern uint32_t ACPI_BASE;
+extern uint32_t ACPI_REGION_SIZE; // power of 2
+extern uint32_t ACPI_version;
+extern unsigned char *ACPI_buffer;
+extern size_t ACPI_buffer_size;
+extern int ACPI_IRQ;
+extern unsigned int ACPI_SMI_CMD;
+
+void ACPI_mem_enable(const bool enable);
+void ACPI_free();
+bool ACPI_init();
 
 /* abc = ASCII letters of the alphabet
  * defg = hexadecimal digits */

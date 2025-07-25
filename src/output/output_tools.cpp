@@ -50,10 +50,12 @@ extern int initgl, posx, posy;
 extern bool rtl, gbk, chinasea, window_was_maximized, dpi_aware_enable, isVirtualBox;
 
 void refreshExtChar() {
-    mainMenu.get_item("ttf_extcharset").enable(TTF_using()&&!IS_PC98_ARCH&&!IS_JEGA_ARCH&&enable_dbcs_tables);
-    if (dos.loaded_codepage == 936) mainMenu.get_item("ttf_extcharset").check(gbk).refresh_item(mainMenu);
-    else if (dos.loaded_codepage == 950 || dos.loaded_codepage == 951) mainMenu.get_item("ttf_extcharset").check(chinasea).refresh_item(mainMenu);
-    else mainMenu.get_item("ttf_extcharset").check(gbk&&chinasea).refresh_item(mainMenu);
+    if (mainMenu.item_exists("ttf_extcharset")) {
+        mainMenu.get_item("ttf_extcharset").enable(TTF_using()&&!IS_PC98_ARCH&&!IS_JEGA_ARCH&&enable_dbcs_tables);
+        if (dos.loaded_codepage == 936) mainMenu.get_item("ttf_extcharset").check(gbk).refresh_item(mainMenu);
+        else if (dos.loaded_codepage == 950 || dos.loaded_codepage == 951) mainMenu.get_item("ttf_extcharset").check(chinasea).refresh_item(mainMenu);
+        else mainMenu.get_item("ttf_extcharset").check(gbk&&chinasea).refresh_item(mainMenu);
+    }
 }
 
 std::string GetDefaultOutput() {
@@ -80,7 +82,7 @@ std::string GetDefaultOutput() {
 # else
     output = "surface";
 # endif
-#elif defined(C_OPENGL) && !(defined(LINUX) && !defined(C_SDL2)) && !(defined(MACOSX) && defined(C_SDL2))
+#elif defined(C_OPENGL) && (!(defined(LINUX) && !defined(C_SDL2)) || (defined(MACOSX) && !defined(__arm64__)))
     /* NTS: Lately, especially on Macbooks with Retina displays, OpenGL gives better performance
             than the CG bitmap-based "surface" output.
 
@@ -273,6 +275,11 @@ void change_output(int output) {
     GFX_LogSDLState();
 
     UpdateWindowDimensions();
+
+#ifdef C_SDL2
+    // UX: always center window after changing output
+    SDL_SetWindowPosition(sdl.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+#endif
 }
 
 void OutputSettingMenuUpdate(void) {

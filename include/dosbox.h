@@ -297,6 +297,18 @@ static inline constexpr bytecount_t _tebibytes(const bytecount_t x) {
     return x << bytecount_t(40u);
 }
 
+enum {
+	PREVCAP_NONE=0,
+	PREVCAP_BLANK,
+	PREVCAP_INVISIBLE
+};
+
+extern unsigned int preventcap;
+
+bool CheckPreventCap(void);
+void ApplyPreventCap(void);
+void ApplyPreventCapMenu(void);
+
 #endif /* DOSBOX_DOSBOX_H */
 
 #ifndef SAVE_STATE_H_INCLUDED
@@ -333,6 +345,7 @@ public:
     //initialization: register relevant components on program startup
     struct Component
     {
+        virtual ~Component() noexcept = default;
         virtual void getBytes(std::ostream& stream) = 0;
         virtual void setBytes(std::istream& stream) = 0;
     };
@@ -389,27 +402,21 @@ public:
         SaveState::instance().registerComponent(compName, *this);
     }
 
-
     template <class T>
-    void registerPOD(T& pod) // register POD for serialization
+    void registerPOD(T& pod) //register POD for serialization
     {
         podRef.push_back(POD(pod));
     }
 
-    void getBytes(std::ostream& stream)
+protected:
+    void getBytes(std::ostream& stream) override
     {
-        std::for_each(podRef.begin(), podRef.end(), [&stream](const POD& data) {
-            WriteGlobalPOD writer;
-            writer(stream, data);
-            });
+        std::for_each(podRef.begin(), podRef.end(), std::bind1st(WriteGlobalPOD(), &stream));
     }
 
-    void setBytes(std::istream& stream)
+    void setBytes(std::istream& stream) override
     {
-        std::for_each(podRef.begin(), podRef.end(), [&stream](POD& data) {
-            ReadGlobalPOD reader;
-            reader(stream, data);
-            });
+        std::for_each(podRef.begin(), podRef.end(), std::bind1st(ReadGlobalPOD(), &stream));
     }
 
 private:

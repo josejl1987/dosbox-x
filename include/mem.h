@@ -34,6 +34,8 @@ typedef uint32_t              LinearPt;    /* guest linear memory address */
 typedef uint32_t              RealPt;      /* guest real-mode memory address (16:16 -> seg:offset) */
 typedef uint16_t              SegmentVal;  /* guest segment value */
 
+typedef uint64_t              PhysPt64;    /* guest physical memory pointer */
+
 typedef int32_t              MemHandle;
 
 extern HostPt               MemBase;
@@ -57,7 +59,7 @@ MemHandle                   MEM_NextHandle(MemHandle handle);
 MemHandle                   MEM_NextHandleAt(MemHandle handle,Bitu where);
 
 /* 
-    The folowing six functions are used everywhere in the end so these should be changed for
+    The following six functions are used everywhere in the end so these should be changed for
     Working on big or little endian machines 
 */
 
@@ -166,7 +168,7 @@ static INLINE uint32_t var_read(uint32_t * var) {
     return host_readd((ConstHostPt)var);
 }
 
-/* The Folowing six functions are slower but they recognize the paged memory system */
+/* The Following six functions are slower but they recognize the paged memory system */
 
 uint8_t  mem_readb(const PhysPt address);
 uint16_t mem_readw(const PhysPt address);
@@ -214,7 +216,7 @@ void mem_memcpy(PhysPt dest,PhysPt src,Bitu size);
 Bitu mem_strlen(PhysPt pt);
 void mem_strcpy(PhysPt dest,PhysPt src);
 
-/* The folowing functions are all shortcuts to the above functions using physical addressing */
+/* The following functions are all shortcuts to the above functions using physical addressing */
 
 static inline constexpr PhysPt PhysMake(const uint16_t seg,const uint16_t off) {
     return ((PhysPt)seg << 4U) + (PhysPt)off;

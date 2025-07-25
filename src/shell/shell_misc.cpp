@@ -452,9 +452,9 @@ void DOS_Shell::InputCommand(char * line) {
     uint16_t cr;
 
 #if defined(USE_TTF)
-	if(IS_DOSV || ttf_dosv) {
+	if(IS_DOSV || IS_PC98_ARCH || ttf_dosv) {
 #else
-	if(IS_DOSV) {
+	if(IS_DOSV || IS_PC98_ARCH) {
 #endif
 		uint16_t int21_seg = mem_readw(0x0086);
 		if(int21_seg != 0xf000) {
@@ -1266,7 +1266,9 @@ bool DOS_Shell::Execute(char* name, const char* args) {
 	/* check for a drive change */
 	if (((strcmp(name + 1, ":") == 0) || (strcmp(name + 1, ":\\") == 0)) && isalpha(*name) && !control->SecureMode())
 	{
+#ifdef WIN32
 		uint8_t c;uint16_t n;
+#endif
 		if (strrchr_dbcs(name,'\\')) { WriteOut(MSG_Get("SHELL_EXECUTE_ILLEGAL_COMMAND"),name); return true; }
 		if (!DOS_SetDrive(toupper(name[0])-'A')) {
 #ifdef WIN32
@@ -1358,8 +1360,7 @@ continue_1:
 
 	/*always disallow files without extension from being executed. */
 	/*only internal commands can be run this way and they never get in this handler */
-	if(extension == 0)
-	{
+	if (!extension) {
 		//Check if the result will fit in the parameters. Else abort
 		if(strlen(fullname) >( DOS_PATHLENGTH - 1) ) return false;
         char temp_name[DOS_PATHLENGTH + 4];
@@ -1571,7 +1572,7 @@ bool DOS_Shell::hasExecutableExtension(const char* name) {
 
 char * DOS_Shell::Which(char * name) {
 	size_t name_len = strlen(name);
-	if(name_len >= DOS_PATHLENGTH) return 0;
+	if(name_len >= DOS_PATHLENGTH) return nullptr;
 
 	/* Parse through the Path to find the correct entry */
 	/* Check if name is already ok but just misses an extension */
@@ -1602,11 +1603,11 @@ char * DOS_Shell::Which(char * name) {
 
 	/* No Path in filename look through path environment string */
 	char path[DOS_PATHLENGTH];std::string temp;
-	if (!GetEnvStr("PATH",temp)) return 0;
+	if (!GetEnvStr("PATH",temp)) return nullptr;
 	const char * pathenv=temp.c_str();
-	if (!pathenv) return 0;
+	if (!pathenv) return nullptr;
 	pathenv = strchr(pathenv,'=');
-	if (!pathenv) return 0;
+	if (!pathenv) return nullptr;
 	pathenv++;
 	while (*pathenv) {
 		/* remove ; and ;; at the beginning. (and from the second entry etc) */
@@ -1670,5 +1671,5 @@ char * DOS_Shell::Which(char * name) {
 			}
 		}
 	}
-	return 0;
+	return nullptr;
 }

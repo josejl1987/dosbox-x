@@ -83,7 +83,7 @@
 
 #define MAXSTICKS               8
 #define MAXACTIVE               16
-#define MAXBUTTON               32
+#define MAXBUTTON               96
 #define MAXBUTTON_CAP           16
 #define MAXAXIS                 8
 #define MAXHAT                  2
@@ -460,13 +460,13 @@ public:
 
     // methods below this line have sufficient documentation inherited from the base class
 
-    virtual ~CTriggeredEvent() {}
+    ~CTriggeredEvent() {}
 
-    virtual bool IsTrigger(void) {
+    bool IsTrigger(void) override {
         return true;
     }
 
-    virtual void ActivateEvent(bool ev_trigger,bool skip_action) {
+    void ActivateEvent(bool ev_trigger,bool skip_action) override {
         if (current_value>25000) {
             /* value exceeds boundary, trigger event if not active */
             if (!activity && !skip_action) Active(true);
@@ -480,7 +480,7 @@ public:
         }
     }
 
-    virtual void DeActivateEvent(bool /*ev_trigger*/) {
+    void DeActivateEvent(bool /*ev_trigger*/) override {
         if (activity > 0) activity--;
         if (!activity) Active(false);
     }
@@ -494,13 +494,13 @@ public:
 
     // methods below this line have sufficient documentation inherited from the base class
 
-    virtual ~CContinuousEvent() {}
+    ~CContinuousEvent() {}
 
-    virtual bool IsTrigger(void) {
+    bool IsTrigger(void) override {
         return false;
     }
 
-    virtual void ActivateEvent(bool ev_trigger,bool skip_action) {
+    void ActivateEvent(bool ev_trigger,bool skip_action) override {
         if (ev_trigger) {
             activity++;
             if (!skip_action) Active(true);
@@ -511,7 +511,7 @@ public:
         }
     }
 
-    virtual void DeActivateEvent(bool ev_trigger) {
+    void DeActivateEvent(bool ev_trigger) override {
         if (ev_trigger) {
             if (activity>0) activity--;
             if (activity==0) {
@@ -552,7 +552,7 @@ public:
         list=_list;
         _list->push_back(this);
         mods=flags=0;
-        event=0;
+        event = nullptr;
         active=holding=false;
         type = _type;
         value = 0;
@@ -1322,8 +1322,8 @@ Bitu GetKeyCode(SDL_keysym keysym) {
             default:
 #elif defined (__linux__)
             switch(keysym.scancode) { // Workaround for some of the keys return incorrect virtual keycodes 
-            //case 0x56:
-            //    return SDLK_LESS;
+            case 0x5E:
+                return SDLK_LESS;    //DE Keyboard on Debian GNU/Linux 12 (bookworm) Debian 1:6.1.63-1+rpt1 (2023-11-24) aarch64 Linux 6.1.0-rpi7-rpi-v8
             case 0x60:
                 return SDLK_F12;
             case 0x61:
@@ -1537,8 +1537,8 @@ public:
         configname="key";
     }
     virtual ~CKeyBindGroup() { delete[] lists; }
-    CBind * CreateConfigBind(char *& buf) {
-        if (strncasecmp(buf,configname,strlen(configname))) return 0;
+    CBind * CreateConfigBind(char *& buf) override {
+        if (strncasecmp(buf,configname,strlen(configname))) return nullptr;
         StripWord(buf);char * num=StripWord(buf);
         Bitu code=(Bitu)ConvDecWord(num);
 #if defined(C_SDL2)
@@ -1552,8 +1552,8 @@ public:
 #endif
         return bind;
     }
-    CBind * CreateEventBind(SDL_Event * event) {
-        if (event->type!=SDL_KEYDOWN) return 0;
+    CBind * CreateEventBind(SDL_Event * event) override {
+        if (event->type!=SDL_KEYDOWN) return nullptr;
 #if defined(C_SDL2)
         SDL_Scancode key = event->key.keysym.scancode;
 #if defined(WIN32)
@@ -1566,7 +1566,7 @@ public:
 	return CreateKeyBind((SDLKey)GetKeyCode(event->key.keysym));
 #endif
     };
-    bool CheckEvent(SDL_Event * event) {
+    bool CheckEvent(SDL_Event * event) override {
         if (event->type!=SDL_KEYDOWN && event->type!=SDL_KEYUP) return false;
 #if defined(C_SDL2)
         Bitu key = event->key.keysym.scancode;
@@ -1665,10 +1665,10 @@ public:
         return new CKeyBind(&lists[(Bitu)_key],_key);
     }
 private:
-    const char * ConfigStart(void) {
+    const char * ConfigStart(void) override {
         return configname;
     }
-    const char * BindStart(void) {
+    const char * BindStart(void) override {
         return "Key";
     }
 protected:
@@ -1870,11 +1870,11 @@ public:
         if (hat_lists != NULL) delete[] hat_lists;
     }
 
-    CBind * CreateConfigBind(char *& buf) {
-        if (is_dummy) return 0;
-        if (strncasecmp(configname,buf,strlen(configname))) return 0;
+    CBind * CreateConfigBind(char *& buf) override {
+        if (is_dummy) return nullptr;
+        if (strncasecmp(configname,buf,strlen(configname))) return nullptr;
         StripWord(buf);char * type=StripWord(buf);
-        CBind * bind=0;
+        CBind * bind = nullptr;
         if (!strcasecmp(type,"axis")) {
             Bitu ax=(Bitu)ConvDecWord(StripWord(buf));
             bool pos=ConvDecWord(StripWord(buf)) > 0;
@@ -1889,30 +1889,30 @@ public:
         }
         return bind;
     }
-    CBind * CreateEventBind(SDL_Event * event) {
+    CBind * CreateEventBind(SDL_Event * event) override {
         if (event->type==SDL_JOYAXISMOTION) {
-            if ((unsigned int)event->jaxis.which!=(unsigned int)stick) return 0;
+            if ((unsigned int)event->jaxis.which!=(unsigned int)stick) return nullptr;
 #if defined (REDUCE_JOYSTICK_POLLING)
-            if (event->jaxis.axis>=axes) return 0;
+            if (event->jaxis.axis>=axes) return nullptr;
 #endif
-            if (abs(event->jaxis.value)<25000) return 0;
+            if (abs(event->jaxis.value)<25000) return nullptr;
             return CreateAxisBind(event->jaxis.axis,event->jaxis.value>0);
         } else if (event->type==SDL_JOYBUTTONDOWN) {
-            if ((unsigned int)event->jbutton.which!=(unsigned int)stick) return 0;
+            if ((unsigned int)event->jbutton.which!=(unsigned int)stick) return nullptr;
 #if defined (REDUCE_JOYSTICK_POLLING)
             return CreateButtonBind(event->jbutton.button%button_wrap);
 #else
             return CreateButtonBind(event->jbutton.button);
 #endif
         } else if (event->type==SDL_JOYHATMOTION) {
-            if ((unsigned int)event->jhat.which!=(unsigned int)stick) return 0;
-            if (event->jhat.value==0) return 0;
-            if (event->jhat.value>(SDL_HAT_UP|SDL_HAT_RIGHT|SDL_HAT_DOWN|SDL_HAT_LEFT)) return 0;
+            if ((unsigned int)event->jhat.which!=(unsigned int)stick) return nullptr;
+            if (event->jhat.value==0) return nullptr;
+            if (event->jhat.value>(SDL_HAT_UP|SDL_HAT_RIGHT|SDL_HAT_DOWN|SDL_HAT_LEFT)) return nullptr;
             return CreateHatBind(event->jhat.hat,event->jhat.value);
-        } else return 0;
+        } else return nullptr;
     }
 
-    virtual bool CheckEvent(SDL_Event * event) {
+    bool CheckEvent(SDL_Event * event) override {
         SDL_JoyAxisEvent * jaxis = NULL;
         SDL_JoyButtonEvent * jbutton = NULL;
 
@@ -2069,10 +2069,10 @@ private:
         else return NULL;
         return new CJHatBind(&hat_lists[(hat<<2)+hat_dir],this,hat,value);
     }
-    const char * ConfigStart(void) {
+    const char * ConfigStart(void) override {
         return configname;
     }
-    const char * BindStart(void) {
+    const char * BindStart(void) override {
 #if defined(C_SDL2)
         if (sdl_joystick!=NULL) return SDL_JoystickNameForIndex((int)stick);
 #else
@@ -2179,7 +2179,7 @@ public:
     }
     virtual ~C4AxisBindGroup() {}
 
-    bool CheckEvent(SDL_Event * event) {
+    bool CheckEvent(SDL_Event * event) override {
         SDL_JoyAxisEvent * jaxis = NULL;
         SDL_JoyButtonEvent * jbutton = NULL;
         Bitu but = 0;
@@ -2208,7 +2208,7 @@ public:
         return false;
     }
 
-    virtual void UpdateJoystick() {
+    void UpdateJoystick() override {
         /* query SDL joystick and activate bindings */
         ActivateJoystickBoundEvents();
 
@@ -2255,7 +2255,7 @@ public:
     }
     virtual ~CFCSBindGroup() {}
 
-    bool CheckEvent(SDL_Event * event) {
+    bool CheckEvent(SDL_Event * event) override {
         SDL_JoyAxisEvent * jaxis = NULL;
         SDL_JoyButtonEvent * jbutton = NULL;
         SDL_JoyHatEvent * jhat = NULL;
@@ -2291,7 +2291,7 @@ public:
         return false;
     }
 
-    virtual void UpdateJoystick() {
+    void UpdateJoystick() override {
         /* query SDL joystick and activate bindings */
         ActivateJoystickBoundEvents();
 
@@ -2394,7 +2394,7 @@ public:
     }
     virtual ~CCHBindGroup() {}
 
-    bool CheckEvent(SDL_Event * event) {
+    bool CheckEvent(SDL_Event * event) override {
         SDL_JoyAxisEvent * jaxis = NULL;
         SDL_JoyButtonEvent * jbutton = NULL;
         SDL_JoyHatEvent * jhat = NULL;
@@ -2452,7 +2452,7 @@ public:
         return false;
     }
 
-    void UpdateJoystick() {
+    void UpdateJoystick() override {
         static unsigned const button_priority[6]={7,11,13,14,5,6};
         static unsigned const hat_priority[2][4]={{0,1,2,3},{8,9,10,12}};
 
@@ -2686,8 +2686,8 @@ public:
         else {strncpy(text, _text, 99);text[99]=0;}
         invertw=0;
     }
-    virtual ~CTextButton() {}
-    void Draw(void) {
+    ~CTextButton() {}
+    void Draw(void) override {
         uint8_t fg,bg;
 
         if (!enabled) return;
@@ -2755,11 +2755,11 @@ public:
     : CTextButton(_x,_y,_dx,_dy,_text)  { 
         event=_event;   
     }
-    virtual ~CEventButton() {}
-    void BindColor(void) {
+    ~CEventButton() {}
+    void BindColor(void) override {
         this->SetColor(event->bindlist.begin() == event->bindlist.end() ? CLR_GREY : CLR_WHITE);
     }
-    void ClickImpl(void) {
+    void ClickImpl(void) override {
         if (last_clicked) last_clicked->BindColor();
         this->SetColor(event->bindlist.begin() == event->bindlist.end() ? CLR_DARKGREEN : CLR_GREEN);
         SetActiveEvent(event);
@@ -2768,7 +2768,7 @@ public:
     CEvent *GetEvent() {
         return event;
     }
-    void RebindRedraw(void) {
+    void RebindRedraw(void) override {
         Click();//HACK!
     }
 protected:
@@ -2813,12 +2813,12 @@ public:
     : CTextButton(_x,_y,_dx,_dy,_text)  { 
         type=_type;
     }
-    virtual ~CBindButton() {}
-    void ClickImpl(void) {
+    ~CBindButton() {}
+    void ClickImpl(void) override {
         switch (type) {
         case BB_Add: 
             mapper.addbind=true;
-            SetActiveBind(0);
+            SetActiveBind(nullptr);
             change_action_text(MSG_Get("PRESS_JOYSTICK_KEY"),CLR_RED);
             break;
         case BB_Del:
@@ -2830,7 +2830,7 @@ public:
                     mapper.abindit=mapper.aevent->bindlist.begin();
             }
             if (mapper.abindit!=mapper.aevent->bindlist.end()) SetActiveBind(*(mapper.abindit));
-            else SetActiveBind(0);
+            else SetActiveBind(nullptr);
             RedrawMapperBindButton(mapper.aevent);
             break;
         case BB_Next:
@@ -2876,9 +2876,9 @@ public:
         type = wmod==4?event_t:mod_event_t;
     }
 
-    virtual ~CModEvent() {}
+    ~CModEvent() {}
 
-    virtual void Active(bool yesno) {
+    void Active(bool yesno) override {
         if (notify_button != NULL)
             notify_button->SetInvert(yesno);
 
@@ -2891,7 +2891,7 @@ public:
         notify_button = n;
     }
 
-    virtual void RebindRedraw(void) {
+    void RebindRedraw(void) override {
         if (notify_button != NULL)
             notify_button->RebindRedraw();
     }
@@ -2909,8 +2909,8 @@ public:
     : CTextButton(_x,_y,_dx,_dy,_text)  { 
         type=_type;
     }
-    virtual ~CCheckButton() {}
-    void Draw(void) {
+    ~CCheckButton() {}
+    void Draw(void) override {
         if (!enabled) return;
         bool checked=false;
         std::string str = "";
@@ -2954,7 +2954,7 @@ public:
             }
         }
     }
-    void ClickImpl(void) {
+    void ClickImpl(void) override {
         switch (type) {
         case BC_Mod1:
             mapper.abind->mods^=BMOD_Mod1;
@@ -2986,9 +2986,9 @@ public:
         key=_key;
     }
 
-    virtual ~CKeyEvent() {}
+    ~CKeyEvent() {}
 
-    virtual void Active(bool yesno) {
+    void Active(bool yesno) override {
         if (MAPPER_DemoOnly()) {
             if (notify_button != NULL)
                 notify_button->SetInvert(yesno);
@@ -3005,7 +3005,7 @@ public:
         notify_button = n;
     }
 
-    virtual void RebindRedraw(void) {
+    void RebindRedraw(void) override {
         if (notify_button != NULL)
             notify_button->RebindRedraw();
     }
@@ -3023,7 +3023,7 @@ public:
 		button=_button;
         notify_button=NULL;
 	}
-	void Active(bool yesno) {
+	void Active(bool yesno) override {
 		if (yesno)
 			Mouse_ButtonPressed(button);
 		else
@@ -3034,7 +3034,7 @@ public:
         notify_button = n;
     }
 
-    virtual void RebindRedraw(void) {
+    void RebindRedraw(void) override {
         if (notify_button != NULL)
             notify_button->RebindRedraw();
     }
@@ -3060,20 +3060,20 @@ public:
         }
     }
 
-    virtual ~CJAxisEvent() {}
+    ~CJAxisEvent() {}
 
-    virtual void Active(bool /*moved*/) {
+    void Active(bool /*moved*/) override {
         if (notify_button != NULL)
             notify_button->SetPartialInvert(GetValue()/32768.0);
 
         virtual_joysticks[stick].axis_pos[axis]=(int16_t)(GetValue()*(positive?1:-1));
     }
 
-    virtual Bitu GetActivityCount(void) {
+    Bitu GetActivityCount(void) override {
         return activity|opposite_axis->activity;
     }
 
-    virtual void RepostActivity(void) {
+    void RepostActivity(void) override {
         /* caring for joystick movement into the opposite direction */
         opposite_axis->Active(true);
     }
@@ -3083,7 +3083,7 @@ public:
         notify_button = n;
     }
 
-    virtual void RebindRedraw(void) {
+    void RebindRedraw(void) override {
         if (notify_button != NULL)
             notify_button->RebindRedraw();
     }
@@ -3119,9 +3119,9 @@ public:
         notify_button=NULL;
     }
 
-    virtual ~CJButtonEvent() {}
+    ~CJButtonEvent() {}
     
-    virtual void Active(bool pressed) {
+    void Active(bool pressed) override {
         if (notify_button != NULL)
             notify_button->SetInvert(pressed);
 
@@ -3134,7 +3134,7 @@ public:
         notify_button = n;
     }
 
-    virtual void RebindRedraw(void) {
+    void RebindRedraw(void) override {
         if (notify_button != NULL)
             notify_button->RebindRedraw();
     }
@@ -3160,9 +3160,9 @@ public:
         notify_button = NULL;
     }
 
-    virtual ~CJHatEvent() {}
+    ~CJHatEvent() {}
 
-    virtual void Active(bool pressed) {
+    void Active(bool pressed) override {
         if (notify_button != NULL)
             notify_button->SetInvert(pressed);
         virtual_joysticks[stick].hat_pressed[(hat<<2)+dir]=pressed;
@@ -3172,7 +3172,7 @@ public:
         notify_button = n;
     }
 
-    virtual void RebindRedraw(void) {
+    void RebindRedraw(void) override {
         if (notify_button != NULL)
             notify_button->RebindRedraw();
     }
@@ -3217,14 +3217,14 @@ public:
         type = handler_event_t;
     }
 
-    virtual ~CHandlerEvent() {}
+    ~CHandlerEvent() {}
 
-    virtual void RebindRedraw(void) {
+    void RebindRedraw(void) override {
         if (notify_button != NULL)
             notify_button->RebindRedraw();
     }
 
-    virtual void Active(bool yesno) {
+    void Active(bool yesno) override {
         if (MAPPER_DemoOnly()) {
             if (notify_button != NULL)
                 notify_button->SetInvert(yesno);
@@ -3856,13 +3856,13 @@ static void SetActiveEvent(CEvent * event) {
     if (!event) {
         change_action_text(MSG_Get("SELECT_EVENT"),CLR_WHITE);
         bind_but.add->Enable(false);
-        SetActiveBind(0);
+        SetActiveBind(nullptr);
     } else {
         change_action_text(MSG_Get("SELECT_DIFFERENT_EVENT"),CLR_WHITE);
         mapper.abindit=event->bindlist.begin();
         if (mapper.abindit!=event->bindlist.end()) {
             SetActiveBind(*(mapper.abindit));
-        } else SetActiveBind(0);
+        } else SetActiveBind(nullptr);
         bind_but.add->Enable(true);
     }
 
@@ -3877,7 +3877,7 @@ extern void GFX_UpdateDisplayDimensions(int width, int height);
 
 static void DrawButtons(void) {
 #if defined(C_SDL2)
-    SDL_FillRect(mapper.draw_surface,0,0);
+    SDL_FillRect(mapper.draw_surface, nullptr, 0);
 #else
     SDL_FillRect(mapper.surface,0,CLR_BLACK);
     SDL_LockSurface(mapper.surface);
@@ -4541,7 +4541,7 @@ static struct {
     {"caret", SDLK_CARET },
     {"atsign", SDLK_AT },
 #endif
-    {0,0}
+    {nullptr, 0}
 };
 #else
 
@@ -5344,7 +5344,7 @@ void MAPPER_RunInternal() {
     }
 
     /* Be sure that there is no update in progress */
-    GFX_EndUpdate( 0 );
+    GFX_EndUpdate(nullptr);
 #if defined(C_SDL2)
     void GFX_SetResizeable(bool enable);
     GFX_SetResizeable(false);
@@ -5376,13 +5376,14 @@ void MAPPER_RunInternal() {
     }
 #endif
 
-#if defined(WIN32) && !defined(HX_DOS)
+#if defined(WIN32) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
     WindowsTaskbarResetPreviewRegion();
 #endif
 
 #ifdef DOSBOXMENU_EXTERNALLY_MANAGED
     DOSBox_SetMenu(mapperMenu);
 #endif
+    ApplyPreventCap();
 
 #if defined(MACOSX)
     macosx_reload_touchbar();
@@ -5391,7 +5392,7 @@ void MAPPER_RunInternal() {
     /* Go in the event loop */
     mapper.exit=false;  
     mapper.redraw=true;
-    SetActiveEvent(0);
+    SetActiveEvent(nullptr);
 #if defined (REDUCE_JOYSTICK_POLLING)
     SDL_JoystickEventState(SDL_ENABLE);
 #endif
@@ -5434,7 +5435,7 @@ void MAPPER_RunInternal() {
     SDL_ShowCursor(cursor);
     DOSBox_RefreshMenu();
     if(!menu_gui) GFX_RestoreMode();
-#if defined(__WIN32__) && !defined(HX_DOS)
+#if defined(__WIN32__) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
     if(GetAsyncKeyState(0x11)) {
         INPUT ip;
 
@@ -5454,7 +5455,7 @@ void MAPPER_RunInternal() {
     }
 #endif
 
-#if defined(WIN32) && !defined(HX_DOS)
+#if defined(WIN32) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
     WindowsTaskbarUpdatePreviewRegion();
 #endif
 

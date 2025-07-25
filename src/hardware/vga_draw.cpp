@@ -66,9 +66,11 @@ bool dbg_event_scanstep = false;
 bool dbg_event_hretrace = false;
 bool dbg_event_color_select = false;
 bool dbg_event_color_plane_enable = false;
+bool enable_supermegazeux_256colortext = false;
 
 extern bool vga_render_on_demand;
 extern signed char vga_render_on_demand_user;
+extern bool vga_ignore_extended_memory_bit;
 
 /* S3 streams processor state.
  * Registers are only loaded into hardware on vertical sync anyway. */
@@ -472,6 +474,8 @@ static uint8_t * VGA_Draw_1BPP_Line(Bitu vidstart, Bitu line) {
 	return VGA_Draw_1BPP_Line_Common<MCH_CGA,uint8_t>(TempLine,vidstart,line);
 }
 
+extern uint32_t HercBlend_2_Table[16];
+
 static uint8_t * VGA_Draw_1BPP_Blend_Line(Bitu vidstart, Bitu line) {
     const uint8_t *base = vga.tandy.draw_base + ((line & vga.tandy.line_mask) << vga.tandy.line_shift);
     uint32_t *draw = (uint32_t *)TempLine;
@@ -480,8 +484,8 @@ static uint8_t * VGA_Draw_1BPP_Blend_Line(Bitu vidstart, Bitu line) {
         Bitu val1 = base[vidstart & (8 * 1024 -1)];
         Bitu val2 = (val1 >> 1) + carry;
         carry = (val1 & 1) << 7;
-        *draw++=CGA_2_Table[val1 >> 4] + CGA_2_Table[val2 >> 4];
-        *draw++=CGA_2_Table[val1 & 0xf] + CGA_2_Table[val2 & 0xf];
+        *draw++=HercBlend_2_Table[val1 >> 4] + HercBlend_2_Table[val2 >> 4];
+        *draw++=HercBlend_2_Table[val1 & 0xf] + HercBlend_2_Table[val2 & 0xf];
     }
     return TempLine;
 }
@@ -1052,8 +1056,71 @@ template <const unsigned int card,typename templine_type_t> static uint8_t * EGA
         return NULL;
 }
 
+template <const unsigned int card,typename templine_type_t> static uint8_t * EGA_Planar_Common_LineOddEven(uint8_t *dst,Bitu vidstart, Bitu line) {
+    if (vga.crtc.maximum_scan_line & 0x80) line >>= 1u; /* CGA modes (and 200-line EGA) have the VGA doublescan bit set. We need to compensate to properly map lines. */
+    uint8_t *vram = vga.draw.linear_base + ((line & vga.tandy.line_mask) << (2+vga.tandy.line_shift));
+    Bitu vidmask = vga.tandy.line_mask ? ((vga.tandy.addr_mask << 2) | 3) : vga.draw.linear_mask;
+    templine_type_t* temps = (templine_type_t*)dst;
+    Bitu count = vga.draw.blocks + ((vga.draw.panning + 7u) >> 3u);
+    Bitu i = 0;
+
+    /* This code assumes addr_shift != 0 */
+
+    /* Odd/even wraparound */
+    if (vidstart & (vidmask + 1u)) vidstart += 4u;
+
+    /* All EGA/VGA modes obey the MEM13 bits and other bits present in the hardware that
+     * exist purely for CGA backwards compatibility. CGA graphics modes are just EGA planar
+     * modes with fewer bitplanes enabled, and for 4-color mode, an odd bit in the graphics
+     * controller that tells the hardware to make 2-bit groups of the 1-bit pixels in the
+     * bitplanes. That's it.
+     *
+     * Also, Prehistorik likes to abuse the CGA memory mapping in the difficulty select
+     * screen (text with a rapidly panning repeating background) when starting a game.
+     *
+     * Also, even though it is rarely used, EGA/VGA do have another bit that enables a
+     * 4-way interleave that was obviously added with Hercules graphics mode in mind. */
+
+    while (count > 0u) {
+        uint32_t t1,t2,r;
+
+	r = *((uint32_t*)(&vram[ vidstart & vidmask ]));
+
+	t1 = t2 = r;
+        t1 = (t1 >> 4) & 0x0f0f0f0f;
+        t2 &= 0x0f0f0f0f;
+        EGA_Planar_Common_Block<card,templine_type_t>(temps+i,t1,t2);
+        i += 8;
+
+	r = (r >> 8) + (r << 24);
+
+	t1 = t2 = r;
+        t1 = (t1 >> 4) & 0x0f0f0f0f;
+        t2 &= 0x0f0f0f0f;
+        EGA_Planar_Common_Block<card,templine_type_t>(temps+i,t1,t2);
+        i += 8;
+
+        vidstart += (uintptr_t)4 << (uintptr_t)vga.config.addr_shift;
+        if ((vidstart & vidmask & (~4u)) == 0) vidstart ^= 4u;
+        count--;
+    }
+
+    if (card != MCH_RAW_SNAPSHOT)
+        return dst + (vga.draw.panning*sizeof(templine_type_t));
+    else
+        return NULL;
+}
+
+static uint8_t * EGA_Draw_VGA_Planar_Xlat8_LineOddEven(Bitu vidstart, Bitu line) {
+    return EGA_Planar_Common_LineOddEven<MCH_EGA,uint8_t>(TempLine,vidstart,line);
+}
+
 static uint8_t * EGA_Draw_VGA_Planar_Xlat8_Line(Bitu vidstart, Bitu line) {
     return EGA_Planar_Common_Line<MCH_EGA,uint8_t>(TempLine,vidstart,line);
+}
+
+static uint8_t * VGA_Draw_VGA_Planar_Xlat8_LineOddEven(Bitu vidstart, Bitu line) {
+    return EGA_Planar_Common_LineOddEven<MCH_VGA,uint32_t>(TempLine,vidstart,line);
 }
 
 static uint8_t * VGA_Draw_VGA_Planar_Xlat32_Line(Bitu vidstart, Bitu line) {
@@ -2012,7 +2079,8 @@ template <const unsigned int renderMode,const bool color> static void VGA_TEXT_H
 				bg = fg = 0;
 			} else {
 				if ((attrib&0x77)==0x70) {
-					bg = TXT_BG_Table[0x7];
+					if (attrib&attrmask&0x80) bg = TXT_BG_Table[0xF];
+					else bg = TXT_BG_Table[0x7];
 					if (attrib&0x8) fg = TXT_FG_Table[0x8];
 					else fg = TXT_FG_Table[0x0];
 				} else {
@@ -2356,6 +2424,7 @@ struct first_equal {
 };
 
 template <const unsigned int card,typename templine_type_t> static inline uint8_t* EGAVGA_TEXT_Combined_Draw_Line(uint8_t *dst,Bitu vidstart,Bitu line) {
+    if (vga.crtc.maximum_scan_line & 0x80) line >>= 1u; /* CGA modes (and 200-line EGA) have the VGA doublescan bit set. We need to compensate to properly map lines. */
     // keep it aligned:
     templine_type_t* draw = (card == MCH_RAW_SNAPSHOT) ? ((templine_type_t*)dst) : (((templine_type_t*)dst) + 16 - vga.draw.panning);
     const uint32_t* vidmem = VGA_Planar_Memwrap(vidstart); // pointer to chars+attribs
@@ -2598,6 +2667,60 @@ template <const unsigned int card,typename templine_type_t> static inline uint8_
         return NULL;
 }
 
+static uint8_t* EGAVGA_TEXT_Combined_Draw_Line_SuperMegazeux(uint8_t *dst,Bitu vidstart,Bitu line) {
+	/* Render it like EGA so that only that part of the VGA pipeline is simulated, to produce
+	 * the 6-bit attribute controller values PRIOR to color palette translation that this
+	 * function needs to pair, take the low 4 bits, and combine into an 8-bit value in the
+	 * same manner that 256-color mode normally works, except that instead it's the 4-bit
+	 * output of the VGA character generator logic in text mode. A rather odd tweakmode in
+	 * MegaZeux known as Super Megazeux mode, apparently.
+	 *
+	 * [https://github.com/joncampbell123/dosbox-x/issues/4764]
+	 *
+	 * See ref code from [https://github.com/AliceLR/megazeux/blob/88a20a39ac50e70eabd4925a6a1433ae0be0e127/arch/djgpp/render_ega.c#L98]:
+	 *
+	 * static void ega_set_smzx(boolean is_ati)
+{
+  // Super MegaZeux mode:
+  // In a nutshell, this sets bit 6 of the VGA Mode Control Register.
+  // Bit 6 controls the pixel width - if 1, the pixel width is doubled,
+  // creating one 8-bit pixel instead of two 4-bit pixels. HOWEVER,
+  // normally, this is only done in Mode 13h.
+  //
+  // nVidia and some Cirrus Logic cards support this; ATI cards
+  // also "support" it, but swap the order of joining the pixels
+  // and require a weird horizontal pixel shift value - see below.
+  outportb(0x3C0, 0x10);
+  outportb(0x3C0, 0x4C);
+
+  if(is_ati)
+  {
+    // set horizontal pixel shift to Undefined (0.5 pixels, in theory)
+    outportb(0x3C0, 0x13);
+    outportb(0x3C0, 0x01);
+  }
+}
+	 */
+	uint8_t *row = EGAVGA_TEXT_Combined_Draw_Line<MCH_EGA,uint8_t>(dst,vidstart,line); /* internally divides line by 2 if doublescan */
+	uint32_t *row32 = (uint32_t*)row;
+	if (vga.draw.width >= 4) {
+		/* then convert it in place to 8-bit value as two four-bit values and then through the palette.
+		 * it's a form of EXPANSION so the conversion must be done backwards */
+		size_t i=(vga.draw.width&(~1u))-2u;
+		do {
+			const uint8_t b = ((row[i+1u] & 0xfu) << 4u) + (row[i+2u] & 0xfu);
+			row32[i] = row32[i+1u] =
+				((vga.dac.rgb[b].red&0x3fu) << (GFX_Rshift+2u)) +
+				((vga.dac.rgb[b].green&0x3fu) << (GFX_Gshift+2u)) +
+				((vga.dac.rgb[b].blue&0x3fu) << (GFX_Bshift+2u));
+			if (i == 0) break;
+			i -= 2u;
+		} while (1);
+	}
+
+	return row;
+}
+
 // combined 8/9-dot wide text mode 16bpp line drawing function
 static uint8_t* EGA_TEXT_Xlat8_Draw_Line(Bitu vidstart, Bitu line) {
     return EGAVGA_TEXT_Combined_Draw_Line<MCH_EGA,uint8_t>(TempLine,vidstart,line);
@@ -2605,6 +2728,9 @@ static uint8_t* EGA_TEXT_Xlat8_Draw_Line(Bitu vidstart, Bitu line) {
 
 // combined 8/9-dot wide text mode 16bpp line drawing function
 static uint8_t* VGA_TEXT_Xlat32_Draw_Line(Bitu vidstart, Bitu line) {
+    /* Pixels are 8 bits wide (two four), which is NORMALLY used in 256-color mode.
+     * Why would anyone set this bit in text mode? Super Megazeux tweakmode, 256-color text mode, of course! */
+    if ((vga.attr.mode_control & 0x40) && enable_supermegazeux_256colortext) return EGAVGA_TEXT_Combined_Draw_Line_SuperMegazeux(TempLine,vidstart,line);
     return EGAVGA_TEXT_Combined_Draw_Line<MCH_VGA,uint32_t>(TempLine,vidstart,line);
 }
 
@@ -2747,7 +2873,7 @@ Text_Draw_State     pc98_text_draw;
  * packed framebuffer.
  *
  * Since PC-98 also has planar memory, it wouldn't surprise me if the 256-color mode is just the
- * same trick except with 16-bit quantitites loaded from memory instead of VGA's 8-bit quantities.
+ * same trick except with 16-bit quantities loaded from memory instead of VGA's 8-bit quantities.
  *
  * The behavior of the hardware suggest to me that it also allowed NEC to change as little about
  * the video hardware as possible, except how it shifts and interprets the planar word data.
@@ -3318,6 +3444,125 @@ void VGA_DAC_DeferredUpdateColorPalette();
 void VGA_DebugAddEvent(debugline_event &ev);
 void VGA_DrawDebugLine(uint8_t *line,unsigned int w);
 
+/* BIOS logo overlay */
+struct BIOSlogo_t {
+	unsigned char*		bmp = NULL;
+	unsigned int		x = 0,y = 0;
+	unsigned int		width = 0,height = 0;
+	unsigned char*		palette = NULL; /* 256 colors (NOTE: Except for VGA and PC-98, not all 256 colors available!) */
+	VGA_Line_Handler	DrawLine = NULL;
+
+	BIOSlogo_t() {
+	}
+	~BIOSlogo_t() {
+		free();
+	}
+	void free(void) {
+		if (bmp) delete[] bmp;
+		bmp = NULL;
+		if (palette) delete[] palette;
+		palette = NULL;
+	}
+	void position(unsigned int new_x,unsigned int new_y) {
+		x = new_x;
+		y = new_y;
+	}
+	void allocate(unsigned int w,unsigned int h) {
+		if (bmp == NULL) {
+			if (w == 0 || w > 512 || h == 0 || h > 512) return;
+			bmp = new unsigned char[w*h];
+			height = h;
+			width = w;
+		}
+		if (palette == NULL) {
+			palette = new unsigned char[256*3];
+		}
+	}
+};
+
+static BIOSlogo_t BIOSlogo;
+
+static uint8_t *VGA_DrawLineBiosLogoOverlay(Bitu vidstart, Bitu line) {
+	uint8_t *r = BIOSlogo.DrawLine(vidstart,line);
+
+	/* FIXME: Need to copy scanline if "r" points directly at video memory, which is
+	 *        very unlikely in all standard MDA/CGA/Herc/PCjr/Tandy/EGA/VGA modes,
+	 *        but might happen if the BIOS startup screen were to use SVGA modes,
+	 *        but that isn't going to happen because there isn't any need to. */
+
+	if (BIOSlogo.bmp != NULL && BIOSlogo.palette != NULL) {
+		if (vga.draw.lines_done >= BIOSlogo.y) {
+			const unsigned int rel = vga.draw.lines_done - BIOSlogo.y;
+			if (rel < BIOSlogo.height) {
+				const unsigned char *src = BIOSlogo.bmp + (rel * BIOSlogo.width);
+				if (vga.draw.bpp == 32) {
+					const unsigned int m = BIOSlogo.x + BIOSlogo.width;
+					uint32_t *dst = (uint32_t*)r + BIOSlogo.x;
+					unsigned int x = BIOSlogo.x;
+					while (x < m && x < vga.draw.width) {
+						const unsigned char pixel = *src++;
+						const unsigned char *p = BIOSlogo.palette + (pixel * 3u);
+						*dst++ = (p[0] << GFX_Rshift) + (p[1] << GFX_Gshift) + (p[2] + GFX_Bshift); x++;
+					}
+				}
+				else if (vga.draw.bpp == 8) {
+					const unsigned int m = BIOSlogo.x + BIOSlogo.width;
+					uint8_t *dst = (uint8_t*)r + BIOSlogo.x;
+					unsigned int x = BIOSlogo.x;
+					while (x < m && x < vga.draw.width) {
+						const unsigned char pixel = *src++;
+						*dst++ = (pixel & 0x3Fu) + 0xC0u; x++; /* use the last 64 colors, first 64 used by rendering */
+					}
+				}
+			}
+		}
+	}
+
+	return r;
+}
+
+void BiosLogoHookVGADrawLine(void) {
+	if (VGA_DrawLine != VGA_DrawLineBiosLogoOverlay) {
+		BIOSlogo.DrawLine = VGA_DrawLine;
+		VGA_DrawLine = VGA_DrawLineBiosLogoOverlay;
+
+		if (vga.draw.bpp == 8) {
+			for (unsigned int i=0;i < 0x40;i++) {
+				RENDER_SetPal(0xC0+i,
+					BIOSlogo.palette[(i*3)+0],
+					BIOSlogo.palette[(i*3)+1],
+					BIOSlogo.palette[(i*3)+2]);
+			}
+		}
+	}
+}
+
+bool VGA_InitBiosLogo(unsigned int w,unsigned int h,unsigned int x,unsigned int y) {
+	BIOSlogo.allocate(w,h);
+	BIOSlogo.position(x,y);
+	BiosLogoHookVGADrawLine();
+	return BIOSlogo.bmp != NULL && BIOSlogo.palette;
+}
+
+void VGA_WriteBiosLogoBMP(unsigned int y,unsigned char *scanline,unsigned int w) {
+	if (BIOSlogo.bmp != NULL && y < BIOSlogo.height && w != 0 && w <= BIOSlogo.width)
+		memcpy(BIOSlogo.bmp+(y*BIOSlogo.width),scanline,w);
+}
+
+void VGA_WriteBiosLogoPalette(unsigned int start,unsigned int count,unsigned char *rgb) {
+	if ((start+count) <= 256) {
+		for (unsigned int i=0;i < count;i++) {
+			BIOSlogo.palette[((i+start)*3)+0] = rgb[(i*3)+0];
+			BIOSlogo.palette[((i+start)*3)+1] = rgb[(i*3)+1];
+			BIOSlogo.palette[((i+start)*3)+2] = rgb[(i*3)+2];
+		}
+	}
+}
+
+void VGA_FreeBiosLogo(void) {
+	BIOSlogo.free();
+}
+
 static void VGA_DrawSingleLine(Bitu /*blah*/) {
     unsigned int lines = 0;
     bool skiprender;
@@ -3432,7 +3677,7 @@ again:
                 }
             }
             uint8_t * data=VGA_DrawLine( vga.draw.address, vga.draw.address_line );
-            /* WARNING: For magic reasons possibly related to gremlins added by the GNU C++ compiler or other otherwordly phenomona,
+            /* WARNING: For magic reasons possibly related to gremlins added by the GNU C++ compiler or other otherworldly phenomena,
              *          modifying the rendered scanline pointed to by *data somehow corrupts the video memory of the guest, even though
              *          *data is 8bpp or 32bpp pixel data that was translated FROM the guest video memory TO a host bitmap and writing
              *          over *data in any way should have no effect on the guest video memory it rendered from, but somehow, it does.
@@ -3445,21 +3690,38 @@ again:
              *
              *          For this reason, this code never uses the data pointer, it requires an offset relative to TempLine to avoid this
              *          weird flaw. */
-            if (video_debug_overlay && vga.draw.width < render.src.width) {
-                if (data >= TempLine && data < (TempLine+(64*4))) {
-                    VGA_DrawDebugLine(TempLine+size_t(data-TempLine)+(vga.draw.width*((vga.draw.bpp+7u)>>3u)),render.src.width-vga.draw.width);
+
+            /* NTS: SVGA modes M_LIN15/16/24/32 DrawLine(), if not rendering the hardware cursor, often point directly at video RAM!
+             *      Rendering past it will just corrupt video RAM! Make a copy if any such overlays will occur! */
+            bool renderOK = true;
+
+            if (!(data >= TempLine && data < (TempLine+(64*4)))) {
+                renderOK = false;
+
+                if (video_debug_overlay || vga_page_flip_occurred || vga_3da_polled) {
+                   memcpy(TempLine,data,vga.draw.width*((vga.draw.bpp+7u)>>3u));
+                   data = TempLine;
+                   renderOK = true;
                 }
-	    }
-            if (vga_page_flip_occurred) {
-                memxor(data,0xFF,vga.draw.width*(vga.draw.bpp>>3));
-                vga_page_flip_occurred = false;
             }
-            if (vga_3da_polled) {
-                if (vga.draw.bpp==32)
-                    memxor_greendotted_32bpp((uint32_t*)data,(vga.draw.width>>1)*(vga.draw.bpp>>3),vga.draw.lines_done);
-                else
-                    memxor_greendotted_16bpp((uint16_t*)data,(vga.draw.width>>1)*(vga.draw.bpp>>3),vga.draw.lines_done);
-                vga_3da_polled = false;
+
+            if (renderOK) {
+                if (video_debug_overlay && vga.draw.width < render.src.width)
+                    VGA_DrawDebugLine(TempLine+size_t(data-TempLine)+(vga.draw.width*((vga.draw.bpp+7u)>>3u)),render.src.width-vga.draw.width);
+
+                if (vga_page_flip_occurred) {
+                    memxor(data,0xFF,vga.draw.width*(vga.draw.bpp>>3));
+                    vga_page_flip_occurred = false;
+                }
+
+                if (vga_3da_polled) {
+                    if (vga.draw.bpp==32)
+                        memxor_greendotted_32bpp((uint32_t*)data,(vga.draw.width>>1)*(vga.draw.bpp>>3),vga.draw.lines_done);
+                    else
+                        memxor_greendotted_16bpp((uint16_t*)data,(vga.draw.width>>1)*(vga.draw.bpp>>3),vga.draw.lines_done);
+
+                    vga_3da_polled = false;
+                }
             }
 
             if (VGA_IsCaptureEnabled())
@@ -3962,6 +4224,7 @@ static void VGA_debug_screen_alloc(size_t w,size_t h,size_t bpp) {
 		case 8:
 			VGA_debug_screen_func = &VGA_debug_screen_funcs8;
 			break;
+		case 15:
 		case 16:
 			VGA_debug_screen_func = &VGA_debug_screen_funcs16;
 			break;
@@ -4045,12 +4308,20 @@ void VGA_DebugAddEvent(debugline_event &ev) {
 			case DBGEV_SPLIT:
 				if (vga.draw.bpp == 8)
 					ev.colorline = is_ega64 ? 0x12 : 0x0A;
+				else if (vga.draw.bpp == 15)
+					ev.colorline = 0x1Fu << 5u;
+				else if (vga.draw.bpp == 16)
+					ev.colorline = 0x3Fu << 5u;
 				else
 					ev.colorline = GFX_Gmask;
 				break;
 			default:
 				if (vga.draw.bpp == 8)
 					ev.colorline = is_ega64 ? 0x3F : 0x0F;
+				else if (vga.draw.bpp == 15)
+					ev.colorline = 0x7FFFu;
+				else if (vga.draw.bpp == 16)
+					ev.colorline = 0xFFFFu;
 				else
 					ev.colorline = GFX_Rmask | GFX_Gmask | GFX_Bmask;
 				break;
@@ -4150,6 +4421,12 @@ void VGA_DrawDebugLine(uint8_t *line,unsigned int w) {
 				white = 0xF;
 			}
 			break;
+		case 15:
+			white = 0x7FFFu;
+			break;
+		case 16:
+			white = 0xFFFFu;
+			break;
 		case 32: // VGA/MCGA/SVGA/PC98
 			white = GFX_Bmask | GFX_Gmask | GFX_Rmask;
 			break;
@@ -4208,7 +4485,24 @@ void VGA_DrawDebugLine(uint8_t *line,unsigned int w) {
 		}
 	}
 	else if (machine == MCH_VGA) {
-		if (vga.draw.bpp == 32) { /* Doesn't use anything else */
+		if (vga.draw.bpp == 15 || vga.draw.bpp == 16) {
+			uint16_t *draw = (uint16_t*)line;
+			unsigned int dw = w;
+
+			if (dw <= 4) return;
+			for (unsigned int c=0;c < 4;c++) {
+				*draw++ = 0;
+				dw--;
+			}
+
+			minw = (unsigned int)(draw+4-(uint16_t*)line);
+
+			while (dw > 0) {
+				*draw++ = 0;
+				dw--;
+			}
+		}
+		else if (vga.draw.bpp == 32) { /* Doesn't use anything else */
 			uint32_t *draw = (uint32_t*)line;
 			unsigned int dw = w;
 
@@ -4232,16 +4526,18 @@ void VGA_DrawDebugLine(uint8_t *line,unsigned int w) {
 				}
 			}
 
-			if (dw <= 16) return;
-			for (unsigned int c=0;c < 16;c++) {
-				const unsigned int idx = vga.dac.combine[c]; /* vga_dac.cpp considers color select */
-				const unsigned int color = SDL_MapRGB(
-					sdl.surface->format,
-					((vga.dac.rgb[idx].red << dacshift) & 0xFF),
-					((vga.dac.rgb[idx].green << dacshift) & 0xFF),
-					((vga.dac.rgb[idx].blue << dacshift) & 0xFF));
-				*draw++ = color;
-				dw--;
+			if (!(vga.mode == M_LIN15 || vga.mode == M_LIN16 || vga.mode == M_LIN24 || vga.mode == M_LIN32)) {
+				if (dw <= 16) return;
+				for (unsigned int c=0;c < 16;c++) {
+					const unsigned int idx = vga.dac.combine[c]; /* vga_dac.cpp considers color select */
+					const unsigned int color = SDL_MapRGB(
+							sdl.surface->format,
+							((vga.dac.rgb[idx].red << dacshift) & 0xFF),
+							((vga.dac.rgb[idx].green << dacshift) & 0xFF),
+							((vga.dac.rgb[idx].blue << dacshift) & 0xFF));
+					*draw++ = color;
+					dw--;
+				}
 			}
 
 			if (dw <= 4) return;
@@ -4339,6 +4635,26 @@ void VGA_DrawDebugLine(uint8_t *line,unsigned int w) {
 							}
 						}
 					}
+					else if (vga.draw.bpp == 15 || vga.draw.bpp == 16) {
+						if ((ev.x+ev.w) <= w) {
+							uint16_t *dp = (uint16_t*)line+ev.x;
+							const char *str = ev.text[ev.tline].c_str();
+							unsigned int dw = ev.w;
+							while (*str != 0 && dw >= 8) {
+								unsigned char c = (unsigned char)(*str++);
+								unsigned char b = int10_font_08[(c*8)+ev.trow];
+								for (unsigned int x=0;x < 8;x++) {
+									*dp++ = (b & 0x80) ? 0 : ev.colorline;
+									b <<= 1u;
+								}
+								dw -= 8;
+							}
+							while (dw >= 8) {
+								for (unsigned int x=0;x < 8;x++) *dp++ = ev.colorline;
+								dw -= 8;
+							}
+						}
+					}
 					else if (vga.draw.bpp == 32) {
 						if ((ev.x+ev.w) <= w) {
 							uint32_t *dp = (uint32_t*)line+ev.x;
@@ -4400,6 +4716,14 @@ void VGA_sof_debug_video_info(void) {
 				white = 0xF;
 				green = 0xA; /* xxxxIRGB */
 			}
+			break;
+		case 15:
+			green = 0x1Fu << 5u;
+			white = 0x7FFFu;
+			break;
+		case 16:
+			green = 0x3Fu << 5u;
+			white = 0xFFFFu;
 			break;
 		case 32: // VGA/MCGA/SVGA/PC98
 			green = GFX_Gmask;
@@ -4607,6 +4931,10 @@ void VGA_sof_debug_video_info(void) {
 			if (vga.seq.memory_mode & 8) d += sprintf(d,"ch4"); /* if the "chain 4" bit is set, normal chained 4 */
 			else if (vga.config.addr_shift == 0) d += sprintf(d,"uch"); /* if not set, and CRTC mode is byte mode, unchained */
 			/* anything else is weird */
+		}
+
+		if (IS_VGA_ARCH && (vga.attr.mode_control & 0x40) && enable_supermegazeux_256colortext) {
+			d += sprintf(d," SMZX"); // Super MegaZeux 256-color text mode
 		}
 
 		*d = 0;
@@ -4862,7 +5190,7 @@ void VGA_sof_debug_video_info(void) {
 		 * VGA: Each mode produces 4-bit pixels per dot clock (256-color mode loads 2 4-bit pixels and emits the 8-bit value per every other dot clock).
 		 *      Text modes and EGA/VGA 16-color modes produce values 0-15, CGA 4-color 0-3, CGA 2-color and monochrome EGA/MCGA 0-1,
 		 *      and 256-color mode 0-15 for each half of the 8-bit pixel value. Note that on EGA/VGA, there's a "color plane enable"
-		 *      register that is used to make sure CGA 2-color and monochrone MCGA modes are limited to one bitplane, in fact CGA 2-color
+		 *      register that is used to make sure CGA 2-color and monochrome MCGA modes are limited to one bitplane, in fact CGA 2-color
 		 *      and MCGA monochrome modes are really just EGA 16-color modes with only one bitplane enabled for display and writing
 		 *      and the memory map set up to emulate non-planar video memory like the DOS application expects. CGA 4-color is still one
 		 *      bitplane with odd/even mode enabled and a bit that instructs the hardware to latch 2 bits at a time which are then internally
@@ -4886,7 +5214,7 @@ void VGA_sof_debug_video_info(void) {
 		 *      Tseng ET4000 cards... doing that will instead give you a 320x200 screen that is not pixel doubled and is squeezed on
 		 *      the right half of the screen with garbage data on the left half).
 		 *
-		 *      Got it? Good. This complexity is why most games written for EGA work pefectly fine on VGA, even if they play with the
+		 *      Got it? Good. This complexity is why most games written for EGA work perfectly fine on VGA, even if they play with the
 		 *      EGA palette in the Attribute Controller or color plane masks.
 		 *
 		 * NOTES: A good test case for the color plane enable:
@@ -5050,7 +5378,7 @@ void VGA_sof_debug_video_info(void) {
 		 * the meaning of the pins changes depending on whether the card is emitting 200-line output compatible with a
 		 * CGA monitor or 350-line output for an EGA monitor. In the 200-line mode only the 4 bits have meaning and they
 		 * are handled the same as CGA IRGB output. In 350-line mode the 6 bits define one of 64 possible colors in the
-		 * form rgbRGB as binary bits where the least signficant bits are "rgb" and most significant bits are "RGB".
+		 * form rgbRGB as binary bits where the least significant bits are "rgb" and most significant bits are "RGB".
 		 * This is why you can't do more than 16 colors except in 350-line modes. */
 		if (vga.draw.bpp == 8) { /* Doesn't use anything else */
 			unsigned int dkgray = (egaMonitorMode() == EGA) ? 0x38 : 0x10;
@@ -5310,6 +5638,13 @@ extern std::string pathscr;
 #endif
 #endif
 
+#ifdef PNG_pHYs_SUPPORTED
+static inline unsigned long math_gcd_png_uint_32(const png_uint_32 a,const png_uint_32 b) {
+        if (b) return math_gcd_png_uint_32(b,a%b);
+        return a;
+}
+#endif
+
 #if !defined(C_EMSCRIPTEN)
 #if (C_SSHOT)
 void WriteARawImage(rawscreenshot &rawimg,rawscreenshot &rawpal,const char *ext) {
@@ -5352,6 +5687,16 @@ void WriteARawImage(rawscreenshot &rawimg,rawscreenshot &rawpal,const char *ext)
 
 	if (flags & CAPTURE_FLAG_DBLW) finalw *= 2;
 	if (flags & CAPTURE_FLAG_DBLH) finalh *= 2;
+
+#ifdef PNG_pHYs_SUPPORTED
+	if (finalw >= 8 && finalh >= 8) {
+		png_uint_32 x=0,y=0,g;
+		x = (png_uint_32)(4 * finalh);
+		y = (png_uint_32)(3 * finalw);
+		g = math_gcd_png_uint_32(x,y);
+		png_set_pHYs(png_ptr, info_ptr, x/g, y/g, PNG_RESOLUTION_UNKNOWN);
+	}
+#endif
 
 	if (rawimg.image_bpp == 8) {
 		png_set_IHDR(png_ptr, info_ptr, (png_uint_32)finalw, (png_uint_32)finalh,
@@ -5402,7 +5747,7 @@ void WriteARawImage(rawscreenshot &rawimg,rawscreenshot &rawpal,const char *ext)
 		}
 	}
 	/* Finish writing */
-	png_write_end(png_ptr, 0);
+	png_write_end(png_ptr, nullptr);
 	/* If a second palette was provided, write it */
 	if (rawpal.image_palette2 != NULL) png_write_chunk(png_ptr, (png_const_bytep)("rPAL"), rawpal.image_palette2, rawpal.image_palette2_size*3);
 	/*Destroy PNG structs*/
@@ -5437,8 +5782,20 @@ pic_tickindex_t VGA_PITSync_delay(void) {
 	return et;
 }
 
+#if C_DEBUG
+extern bool DEBUG_HaltOnRetrace;
+Bitu DEBUG_EnableDebugger(void);
+#endif
+
 static void VGA_VerticalTimer(Bitu /*val*/) {
 	double current_time = PIC_GetCurrentEventTime();
+
+#if C_DEBUG
+	if (DEBUG_HaltOnRetrace) {
+		DEBUG_EnableDebugger();
+		DEBUG_HaltOnRetrace = false;
+	}
+#endif
 
 	dbg_event_maxscan = false;
 	dbg_event_scanstep = false;
@@ -5734,10 +6091,25 @@ static void VGA_VerticalTimer(Bitu /*val*/) {
 			vga.draw.byte_panning_shift = 4u;
 			vga.draw.address += vga.draw.bytes_skip;
 			vga.draw.address *= vga.draw.byte_panning_shift;
+
+			/* Even in EGA/VGA 16-color modes, where the CRTC is normally in BYTE mode, there are demos that
+			 * switch the CRTC to other non-BYTE modes:
+			 *
+			 * - "Unreal" by Future Crew, "Vectorballs", CRTC WORD mode */
+			if (vga.config.compatible_chain4 || svgaCard == SVGA_None)
+				vga.draw.linear_mask = 0x3ffffu & vga.mem.memmask; /* NTS: We allow EGA with less than 256KB! */
+			else
+				vga.draw.linear_mask = vga.mem.memmask;
+
+			vga.draw.address *= (Bitu)1u << (Bitu)vga.config.addr_shift; /* NTS: Remember the bizarre 4 x 4 mode most SVGA chipsets do */
 			break;
 		case M_VGA:
 			/* TODO: Various SVGA chipsets have a bit to enable/disable 256KB wrapping */
-			vga.draw.linear_mask = 0x3ffffu;
+			if (vga.config.compatible_chain4 || svgaCard == SVGA_None)
+				vga.draw.linear_mask = 0x3ffffu;
+			else
+				vga.draw.linear_mask = vga.mem.memmask;
+
 			if (svgaCard == SVGA_TsengET3K || svgaCard == SVGA_TsengET4K) {
 				if (vga.config.addr_shift == 1) /* NTS: Remember the ET4K steps by 4 pixels, one per byteplane, treats BYTE and DWORD modes the same */
 					vga.draw.address *= 2u;
@@ -5834,6 +6206,11 @@ static void VGA_VerticalTimer(Bitu /*val*/) {
 		default:
 			break;
 	}
+
+	/* EGA/VGA have a memory mode bit that enables >64KB.
+	 * We have to emulate this bit in order for 640x350x4 EGA mode to work */
+	if (IS_EGAVGA_ARCH && !(vga.seq.memory_mode&2/*Extended Memory*/) && !(vga_ignore_extended_memory_bit && IS_VGA_ARCH))
+		vga.draw.linear_mask &= 0xFFFFu;
 
 	if (IS_EGAVGA_ARCH)
 		vga.draw.planar_mask = vga.draw.linear_mask >> 2;
@@ -6222,6 +6599,7 @@ bool IsDebuggerActive(void);
 void VGA_DebugRedraw(void) {
 #if C_DEBUG
 	if (IsDebuggerActive()) {
+		VGA_RenderOnDemandComplete();
 		RENDER_EndUpdate(true);
 		vga.draw.lines_done = vga.draw.lines_total;
 		PIC_RemoveEvents(VGA_Other_VertInterrupt);
@@ -6230,7 +6608,6 @@ void VGA_DebugRedraw(void) {
 		PIC_RemoveEvents(VGA_DisplayStartLatch);
 		VGA_DisplayStartLatch(0);
 		VGA_VerticalTimer(0);
-		VGA_RenderOnDemandComplete();
 	}
 #endif
 }
@@ -6251,13 +6628,7 @@ void VGA_CheckScanLength(void) {
 	switch (vga.mode) {
 		case M_EGA:
 		case M_LIN4:
-			if ((machine==MCH_EGA)&&(vga.crtc.mode_control&0x8))
-				vga.draw.address_add=vga.config.scan_len*16; // TODO
-			else
-				vga.draw.address_add=vga.config.scan_len*(8u<<(unsigned int)vga.config.addr_shift);
-
-			if (IS_EGA_ARCH && (vga.seq.clocking_mode&4))
-				vga.draw.address_add*=2;
+			vga.draw.address_add=vga.config.scan_len*(8u<<(unsigned int)vga.config.addr_shift);
 			break;
 		case M_PACKED4:
 			vga.draw.address_add=vga.config.scan_len*8;
@@ -6499,7 +6870,7 @@ void VGA_SetupDrawing(Bitu /*val*/) {
 
 	/* NTS: PC-98 emulation re-uses VGA state FOR NOW.
 	 *      This will slowly change to accommodate PC-98 display controller over time
-	 *      and IS_PC98_ARCH will become it's own case statement. */
+	 *      and IS_PC98_ARCH will become its own case statement. */
 
 	if (IS_PC98_ARCH) {
 		hdend = pc98_gdc[GDC_MASTER].active_display_words_per_line;
@@ -6585,7 +6956,7 @@ void VGA_SetupDrawing(Bitu /*val*/) {
 		hdend += 1;
 		vdend += 1;
 
-		// horitzontal blanking
+		// horizontal blanking
 		if (hbend <= (hbstart & hbend_mask)) hbend += hbend_mask + 1;
 		hbend += hbstart - (hbstart & hbend_mask);
 
@@ -6883,7 +7254,7 @@ void VGA_SetupDrawing(Bitu /*val*/) {
 	//Seems regular vga only listens to the 9 char pixel mode with character mode enabled
 	//Base pixel height around vertical totals of modes that have 100 clocks horizontal
 	//Different sync values gives different scaling of the whole vertical range
-	//VGA monitor just seems to thighten or widen the whole vertical range
+	//VGA monitor just seems to tighten or widen the whole vertical range
 
 	vga.draw.resizing=false;
 	vga.draw.has_split=false;
@@ -6905,15 +7276,6 @@ void VGA_SetupDrawing(Bitu /*val*/) {
 			case M_DCGA:
 			case M_PC98:
 			case M_TEXT:
-				// 2023/04/26: This path M_CGA2 is no longer set for EGA/VGA.
-				// these use line_total internal
-				// doublescanning needs to be emulated by renderer doubleheight
-				// EGA has no doublescanning bit at 0x80
-				if (vga.crtc.maximum_scan_line&0x80) {
-					// vga_draw only needs to draw every second line
-					height /= 2;
-				}
-				break;
 			default:
 				vga.draw.doublescan_effect = vga.draw.doublescan_set;
 
@@ -6923,7 +7285,7 @@ void VGA_SetupDrawing(Bitu /*val*/) {
 				/* if doublescan=false and line_total is even, then halve the height.
 				 * the VGA raster scan will skip every other line to accommodate that. */
 				/* 2023/04/26 bug fix: Do not divide by 2 unless VGA output! This broke EGA 200-line modes until this fix! */
-				if ((!vga.draw.doublescan_effect) && (vga.draw.address_line_total & 1) == 0 && IS_VGA_ARCH)
+				if ((!vga.draw.doublescan_effect) && (vga.draw.address_line_total & 1) == 0 && IS_VGA_ARCH && vga.mode != M_TEXT)
 					height /= 2;
 				else
 					vga.draw.doublescan_effect = true;
@@ -7047,6 +7409,12 @@ void VGA_SetupDrawing(Bitu /*val*/) {
 					VGA_DrawLine = EGA_Draw_2BPP_Line_as_EGA;
 					VGA_DrawRawLine = VGA_RawDraw_2BPP_Line_as_VGA;
 				}
+				else if (vga.config.addr_shift >= 1/*word mode*/ && (vga.seq.clocking_mode & 0x04/*load every other clock cycle*/) &&
+					(vga.crtc.mode_control & 0x08/*increase memory address every other character clock*/)) {
+					VGA_DrawLine = EGA_Draw_VGA_Planar_Xlat8_LineOddEven;
+					VGA_DrawRawLine = VGA_RawDraw_VGA_Planar_Xlat32_Line;//TODO
+					vga.draw.blocks = (width+1u)>>1u;
+				}
 				else {
 					VGA_DrawLine = EGA_Draw_VGA_Planar_Xlat8_Line;
 					VGA_DrawRawLine = VGA_RawDraw_VGA_Planar_Xlat32_Line;
@@ -7057,6 +7425,12 @@ void VGA_SetupDrawing(Bitu /*val*/) {
 				if (vga.gfx.mode & 0x20) {
 					VGA_DrawLine = VGA_Draw_2BPP_Line_as_VGA;
 					VGA_DrawRawLine = VGA_RawDraw_2BPP_Line_as_VGA;
+				}
+				else if (vga.config.addr_shift >= 1/*word mode*/ && (vga.seq.clocking_mode & 0x04/*load every other clock cycle*/) &&
+					(vga.crtc.mode_control & 0x08/*increase memory address every other character clock*/)) {
+					VGA_DrawLine = VGA_Draw_VGA_Planar_Xlat8_LineOddEven;
+					VGA_DrawRawLine = VGA_RawDraw_VGA_Planar_Xlat32_Line;//TODO
+					vga.draw.blocks = (width+1u)>>1u;
 				}
 				else {
 					VGA_DrawLine = VGA_Draw_VGA_Planar_Xlat32_Line;
@@ -7461,6 +7835,9 @@ void VGA_SetupDrawing(Bitu /*val*/) {
 		 *        What is this code doing to change the palette prior to this point? */
 		VGA_DAC_UpdateColorPalette();
 	}
+
+	if (BIOSlogo.bmp)
+		BiosLogoHookVGADrawLine();
 }
 
 void VGA_KillDrawing(void) {

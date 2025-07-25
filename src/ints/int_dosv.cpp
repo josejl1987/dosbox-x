@@ -418,7 +418,10 @@ bool readPCF(FILE *file, int height) {
   uint16_t lastCol   = read_int16(file);
   uint16_t firstRow  = read_int16(file);
   uint16_t lastRow   = read_int16(file);
-  uint16_t defaultCh = read_int16(file);
+  // uint16_t defaultCh = read_int16(file);
+  fseek(file, 2L, SEEK_CUR);
+  read_bytes += 2L;
+
   if (!(firstCol <= lastCol) || !(firstRow <= lastRow)) {delete[] bitmaps;return false;}
   int nEncodings = (lastCol - firstCol + 1) * (lastRow - firstRow + 1);
   uint16_t *encodings;
@@ -633,7 +636,7 @@ void readfontxtbl(fontxTbl *table, Bitu size, FILE *fp) {
     }
 }
 
-static bool LoadFontxFile(const char *fname, int height, bool dbcs) {
+bool LoadFontxFile(const char *fname, int height, bool dbcs) {
     fontx_h head;
     fontxTbl *table;
     Bitu code;
@@ -1435,7 +1438,7 @@ void InitFontHandle()
 		if(!font_window) {
 			font_window = XCreateSimpleWindow(font_display, DefaultRootWindow(font_display), 0, 0, 32, 32, 0, BlackPixel(font_display, DefaultScreen(font_display)), WhitePixel(font_display, DefaultScreen(font_display)));
 			font_pixmap = XCreatePixmap(font_display, font_window, 32, 32, DefaultDepth(font_display, 0));
-			font_gc = XCreateGC(font_display, font_pixmap, 0, 0);
+			font_gc = XCreateGC(font_display, font_pixmap, 0, nullptr);
 		}
 	}
 #endif
@@ -1710,6 +1713,9 @@ bool DOSV_CheckJapaneseVideoMode()
 bool DOSV_CheckCJKVideoMode()
 {
 	if(IS_DOS_CJK && (TrueVideoMode == 0x03 || TrueVideoMode == 0x12 || (TrueVideoMode >= 0x70 && TrueVideoMode <= 0x73) || TrueVideoMode == 0x78)) {
+		return true;
+	}
+	if(IS_J3100 && TrueVideoMode == 0x75) {
 		return true;
 	}
 	return false;
@@ -2413,7 +2419,7 @@ public:
 		flags = PFLAG_HASROM;
 		bank = 0;
 	}
-	uint8_t readb(PhysPt addr) {
+	uint8_t readb(PhysPt addr) override {
 		uint16_t code;
 		Bitu offset;
 		if(bank == 0) {
@@ -2443,7 +2449,7 @@ public:
 		}
 		return 0;
 	}
-	uint16_t readw(PhysPt addr) {
+	uint16_t readw(PhysPt addr) override {
 		uint16_t code;
 		Bitu offset;
 		if(bank == 0) {
@@ -2473,21 +2479,21 @@ public:
 		}
 		return 0;
 	}
-	uint32_t readd(PhysPt addr) {
+	uint32_t readd(PhysPt addr) override {
         (void)addr;
 		return 0;
 	}
-	void writeb(PhysPt addr,uint8_t val){
+	void writeb(PhysPt addr,uint8_t val) override {
         (void)addr;
 		if((val & 0x80) && val != 0xff) {
 			bank = val & 0x7f;
 		}
 	}
-	void writew(PhysPt addr,uint16_t val){
+	void writew(PhysPt addr,uint16_t val) override {
         (void)addr;
         (void)val;
 	}
-	void writed(PhysPt addr,uint32_t val){
+	void writed(PhysPt addr,uint32_t val) override {
         (void)addr;
         (void)val;
 	}

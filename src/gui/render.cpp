@@ -204,7 +204,7 @@ static inline bool RENDER_DrawLine_scanline_cacheHit(const void *s) {
         const Bitu *src = (Bitu*)s;
         Bitu *cache = (Bitu*)(render.scale.cacheRead);
         Bits count = (Bits)render.src.start;
-#if defined(__SSE__) && !(defined(_M_AMD64) || defined(__amd64__) || defined(__e2k__))
+#if defined(__SSE__) && !(defined(_M_AMD64) || defined(__amd64__) || defined(__e2k__) || defined(_WIN32_WINDOWS))
 #define MY_SIZEOF_INT_P sizeof(*src)
         if (GCC_LIKELY(avx2_available)) {
             if (!cacheHit_AVX2(src, cache, count))
@@ -337,7 +337,7 @@ bool RENDER_StartUpdate(void) {
     render.scale.inLine = 0;
     render.scale.outLine = 0;
     render.scale.cacheRead = (uint8_t*)&scalerSourceCache;
-    render.scale.outWrite = 0;
+    render.scale.outWrite = nullptr;
     render.scale.outPitch = 0;
     Scaler_ChangedLines[0] = 0;
     Scaler_ChangedLineIndex = 0;
@@ -369,7 +369,7 @@ bool RENDER_StartUpdate(void) {
 
 static void RENDER_Halt( void ) {
     RENDER_DrawLine = RENDER_EmptyLineHandler;
-    GFX_EndUpdate( 0 );
+    GFX_EndUpdate(nullptr);
     render.updating=false;
     render.active=false;
 }
@@ -432,7 +432,7 @@ void RENDER_EndUpdate( bool abort ) {
 #endif
         // Force output to update the screen even if nothing changed...
         // works only with Direct3D output (GFX_StartUpdate() was probably not even called)
-        if (RENDER_GetForceUpdate()) GFX_EndUpdate( 0 );
+        if (RENDER_GetForceUpdate()) GFX_EndUpdate(nullptr);
     }
     render.frameskip.index = (render.frameskip.index + 1) & (RENDER_SKIP_CACHE - 1);
     render.updating=false;
@@ -471,6 +471,8 @@ std::string RENDER_GetScaler(void) {
     return prop->GetSection()->Get_string("type");
 }
 
+static int aspect_x=0, aspect_y=0;
+
 void RENDER_Reset( void ) {
     Bitu width=render.src.width;
     Bitu height=render.src.height;
@@ -486,7 +488,7 @@ void RENDER_Reset( void ) {
     
     Bitu gfx_flags, xscale, yscale;
     ScalerSimpleBlock_t     *simpleBlock = &ScaleNormal1x;
-    ScalerComplexBlock_t    *complexBlock = 0;
+    ScalerComplexBlock_t    *complexBlock = nullptr;
     gfx_scalew = 1;
     gfx_scaleh = 1;
 
@@ -623,7 +625,7 @@ void RENDER_Reset( void ) {
     }
     if( simpleBlock == NULL && complexBlock == NULL ) {
 forcenormal:
-        complexBlock = 0;
+        complexBlock = nullptr;
         if(scalerOpGray==render.scale.op){
           simpleBlock = &ScaleGrayNormal;
         }else{
@@ -750,7 +752,11 @@ forcenormal:
     sdl.srcAspect.y = aspect_ratio_y>0?aspect_ratio_y:(int)floor((render.src.height * (render.src.dblh ? 2 : 1) * render.src.ratio) + 0.5);
     sdl.srcAspect.xToY = (double)sdl.srcAspect.x / sdl.srcAspect.y;
     sdl.srcAspect.yToX = (double)sdl.srcAspect.y / sdl.srcAspect.x;
-    LOG_MSG("Aspect ratio: %u x %u  xToY=%.3f yToX=%.3f",sdl.srcAspect.x,sdl.srcAspect.y,sdl.srcAspect.xToY,sdl.srcAspect.yToX);
+    if(aspect_x != sdl.srcAspect.x || aspect_y != sdl.srcAspect.y) {
+        LOG_MSG("Aspect ratio: %u x %u  xToY=%.3f yToX=%.3f", sdl.srcAspect.x, sdl.srcAspect.y, sdl.srcAspect.xToY, sdl.srcAspect.yToX);
+        aspect_x = sdl.srcAspect.x;
+        aspect_y = sdl.srcAspect.y;
+    }
 /* Setup the scaler variables */
 #if C_OPENGL
     GFX_SetShader(render.shader_src);
@@ -775,7 +781,7 @@ forcenormal:
         } else
 #endif
         {
-            render.scale.complexHandler = 0;
+            render.scale.complexHandler = nullptr;
             lineBlock = &simpleBlock->Linear;
         }
     } else {
@@ -786,7 +792,7 @@ forcenormal:
         } else
 #endif
         {
-            render.scale.complexHandler = 0;
+            render.scale.complexHandler = nullptr;
             lineBlock = &simpleBlock->Random;
         }
     }
@@ -799,19 +805,19 @@ forcenormal:
         break;
     case 15:
         render.scale.lineHandler = (*lineBlock)[1][render.scale.outMode];
-        render.scale.linePalHandler = 0;
+        render.scale.linePalHandler = nullptr;
         render.scale.inMode = scalerMode15;
         render.scale.cachePitch = render.src.width * 2;
         break;
     case 16:
         render.scale.lineHandler = (*lineBlock)[2][render.scale.outMode];
-        render.scale.linePalHandler = 0;
+        render.scale.linePalHandler = nullptr;
         render.scale.inMode = scalerMode16;
         render.scale.cachePitch = render.src.width * 2;
         break;
     case 32:
         render.scale.lineHandler = (*lineBlock)[3][render.scale.outMode];
-        render.scale.linePalHandler = 0;
+        render.scale.linePalHandler = nullptr;
         render.scale.inMode = scalerMode32;
         render.scale.cachePitch = render.src.width * 4;
         break;
@@ -827,14 +833,14 @@ forcenormal:
     render.scale.blocks = render.src.width / SCALER_BLOCKSIZE;
     render.scale.lastBlock = render.src.width % SCALER_BLOCKSIZE;
     render.scale.inHeight = render.src.height;
-    /* Reset the palette change detection to it's initial value */
+    /* Reset the palette change detection to its initial value */
     render.pal.first= 0;
     render.pal.last = 255;
     render.pal.changed = false;
     memset(render.pal.modified, 0, sizeof(render.pal.modified));
     //Finish this frame using a copy only handler
     RENDER_DrawLine = RENDER_FinishLineHandler;
-    render.scale.outWrite = 0;
+    render.scale.outWrite = nullptr;
     /* Signal the next frame to first reinit the cache */
     render.scale.clearCache = true;
 
@@ -865,7 +871,7 @@ void RENDER_CallBack( GFX_CallBackFunctions_t function ) {
         render.scale.clearCache = true;
         return;
     } else if ( function == GFX_CallBackReset) {
-        GFX_EndUpdate( 0 ); 
+        GFX_EndUpdate(nullptr);
         RENDER_Reset();
     } else {
         E_Exit("Unhandled GFX_CallBackReset %d", function );
@@ -1455,7 +1461,7 @@ public:
 	SerializeRender() : SerializeGlobalPOD("Render") {}
 
 private:
-	virtual void getBytes(std::ostream& stream)
+	void getBytes(std::ostream& stream) override
 	{
 		// - pure data
         SerializeGlobalPOD::getBytes(stream);
@@ -1469,7 +1475,7 @@ private:
 		WRITE_POD( &render.scale, render.scale );
 	}
 
-	virtual void setBytes(std::istream& stream)
+	void setBytes(std::istream& stream) override
 	{
 		// - pure data
         SerializeGlobalPOD::setBytes(stream);

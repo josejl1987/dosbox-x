@@ -100,7 +100,7 @@ void CPrinter::FillPalette(uint8_t redmax, uint8_t greenmax, uint8_t bluemax, ui
 extern std::string prtlist;
 
 void CPrinter::getPrinterContext() {
-#if defined (WIN32)
+#if defined (WIN32) && !defined(_WIN32_WINDOWS)
     if (device.size()&&device!="-") {
         printerDC = CreateDC("WINSPOOL", device.c_str(), NULL, NULL);
         return;
@@ -538,7 +538,7 @@ void CPrinter::updateFont()
 		matrix.xy = (FT_Fixed)(0.20 * 0x10000L);
 		matrix.yx = 0;
 		matrix.yy = 0x10000L;
-		FT_Set_Transform(curFont, &matrix, 0);
+		FT_Set_Transform(curFont, &matrix, nullptr);
 	}
 }
 
@@ -920,7 +920,7 @@ bool CPrinter::processCommandChar(uint8_t ch)
 			    style &= ~STYLE_BOLD;
 			    updateFont();
 			    break;
-		    case 0x47: // Select dobule-strike printing (ESC G)
+		    case 0x47: // Select double-strike printing (ESC G)
 			    style |= STYLE_DOUBLESTRIKE;
 			    break;
 		    case 0x48: // Cancel double-strike printing (ESC H)
@@ -2102,7 +2102,7 @@ void CPrinter::outputPage()
 			return;
 		}
 
-		/* First try to alloacte the png structures */
+		/* First try to allocate the png structures */
 		png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 		if (!png_ptr) return;
 		info_ptr = png_create_info_struct(png_ptr);
@@ -2569,7 +2569,7 @@ void PRINTER_Init()
 	//IO_RegisterWriteHandler(LPTPORT+2,PRINTER_writecontrol,IO_MB);
 	//IO_RegisterReadHandler(LPTPORT+2,PRINTER_readcontrol,IO_MB);
 
-#if defined(WIN32)
+#if defined(WIN32) && !defined(_WIN32_WINDOWS)
     if (!inited && !strcasecmp(confoutputDevice, "printer")) {
         DWORD dwNeeded = 0, dwReturned = 0;
         bool fnReturn = EnumPrinters(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, NULL, 1L, (LPBYTE)NULL, 0L, &dwNeeded, &dwReturned);        PRINTER_INFO_1* pInfo = NULL;

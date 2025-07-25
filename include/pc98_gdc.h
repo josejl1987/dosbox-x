@@ -52,6 +52,7 @@ struct PC98_GDC_state {
 
     void draw_reset(void);
     void vectw(unsigned char bi);
+    void set_vectw(uint8_t ope, uint8_t dir, uint16_t dc, uint16_t d, uint16_t d2, uint16_t d1, uint16_t dm);
     void exec(uint8_t command);
     void prepare(void);
     void draw_dot(uint16_t x, uint16_t y);
@@ -174,6 +175,10 @@ struct PC98_GDC_state {
     bool                    doublescan;                 /* 200-line as 400-line */
 
     bool                    dbg_ev_partition;
+
+    double                  drawing_end;
+    int                     dot_count;
+    uint8_t                 drawing_status;
 };
 
 typedef union pc98_tile             egc_quad[4];

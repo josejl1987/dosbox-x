@@ -45,6 +45,104 @@
 #include "../gamelink/gamelink.h"
 #endif // C_GAMELINK
 
+// ACPI memory region allocation.
+// Most ACPI BIOSes actually use some region at top of memory, but the
+// design of DOSBox-X doesn't make that possible, so the ACPI tables are
+// written to a high memory region just below the top 4GB region and the
+// RSD PTR in the legacy BIOS region (0xE0000-0xFFFFF) will point at that.
+// A memory address is chosen, which must be maintained once tables are
+// generated because tables point at each other by physical memory address.
+// A fixed size region is chosen within which the tables are written.
+//
+// NTS: ACPI didn't happen until the Pentium era when it became quite rare
+//      for CPUs to have less than 32 address bits. No 26-bit 486SX limits
+//      here. For this reason, ACPI is not supported unless all 32 address
+//      bits are enabled.
+bool ACPI_enabled = false;
+bool acpi_mem_setup = false;
+uint32_t ACPI_BASE=0;
+uint32_t ACPI_REGION_SIZE=0; // power of 2
+uint32_t ACPI_version=0;
+unsigned char *ACPI_buffer=NULL;
+size_t ACPI_buffer_size=0;
+int ACPI_IRQ=-1;
+unsigned int ACPI_SMI_CMD=0;
+
+class ACPIPageHandler : public PageHandler {
+	public:
+		ACPIPageHandler() : PageHandler(PFLAG_NOCODE|PFLAG_READABLE|PFLAG_WRITEABLE) {}
+		ACPIPageHandler(Bitu flags) : PageHandler(flags) {}
+		HostPt GetHostReadPt(Bitu phys_page) override {
+			assert(ACPI_buffer != NULL);
+			assert(ACPI_buffer_size >= 4096);
+			phys_page -= (ACPI_BASE >> 12);
+			phys_page &= (ACPI_REGION_SIZE >> 12) - 1;
+			if (phys_page >= (ACPI_buffer_size >> 12)) phys_page = (ACPI_buffer_size >> 12) - 1;
+			return ACPI_buffer + (phys_page << 12);
+		}
+		HostPt GetHostWritePt(Bitu phys_page) override {
+			assert(ACPI_buffer != NULL);
+			assert(ACPI_buffer_size >= 4096);
+			phys_page -= (ACPI_BASE >> 12);
+			phys_page &= (ACPI_REGION_SIZE >> 12) - 1;
+			if (phys_page >= (ACPI_buffer_size >> 12)) phys_page = (ACPI_buffer_size >> 12) - 1;
+			return ACPI_buffer + (phys_page << 12);
+		}
+};
+
+static ACPIPageHandler acpi_mem_handler;
+
+PageHandler* acpi_memio_cb(MEM_CalloutObject &co,Bitu phys_page) {
+	(void)co;//UNUSED
+	(void)phys_page;//UNUSED
+
+	if (ACPI_buffer != NULL && ACPI_REGION_SIZE != 0 && phys_page >= (ACPI_BASE/4096) && phys_page < ((ACPI_BASE+ACPI_REGION_SIZE)/4096))
+		return &acpi_mem_handler;
+
+	return NULL;
+}
+
+void MEM_ResetPageHandler_Unmapped(Bitu phys_page, Bitu pages);
+
+void ACPI_mem_enable(const bool enable) {
+	if (enable && !acpi_mem_setup) {
+		if (ACPI_BASE != 0 && ACPI_REGION_SIZE != 0) {
+			MEM_SetPageHandler( ACPI_BASE/4096, ACPI_REGION_SIZE/4096, &acpi_mem_handler );
+			acpi_mem_setup = true;
+			PAGING_ClearTLB();
+		}
+	}
+	else if (!enable && acpi_mem_setup) {
+		if (ACPI_BASE != 0 && ACPI_REGION_SIZE != 0) {
+			MEM_ResetPageHandler_Unmapped( ACPI_BASE/4096, ACPI_REGION_SIZE/4096 );
+			acpi_mem_setup = false;
+			PAGING_ClearTLB();
+		}
+	}
+}
+
+void ACPI_free() {
+	if (ACPI_buffer != NULL) {
+		delete[] ACPI_buffer;
+		ACPI_buffer = NULL;
+	}
+	ACPI_buffer_size = 0;
+}
+
+bool ACPI_init() {
+	if (ACPI_buffer == NULL) {
+		if (ACPI_REGION_SIZE == 0 || ACPI_REGION_SIZE > (8ul << 20ull))
+			return false;
+
+		ACPI_buffer_size = ACPI_REGION_SIZE;
+		ACPI_buffer = new unsigned char [ACPI_buffer_size];
+		if (ACPI_buffer == NULL)
+			return false;
+	}
+
+	return (ACPI_buffer != NULL);
+}
+
 static MEM_Callout_t lfb_mem_cb = MEM_Callout_t_none;
 static MEM_Callout_t lfb_mmio_cb = MEM_Callout_t_none;
 
@@ -60,6 +158,8 @@ public:
 };
 
 static MEM_callout_vector MEM_callouts[MEM_callouts_max];
+
+extern bool isa_memory_hole_15mb;
 
 bool a20_guest_changeable = true;
 bool a20_fake_changeable = false;
@@ -106,16 +206,23 @@ uint32_t MEM_get_address_bits() {
     return memory.address_bits;
 }
 
+uint32_t MEM_get_address_bits4GB() { /* some code cannot yet handle values larger than 32 */
+    if (memory.address_bits > 32u)
+        return 32u;
+    else
+        return memory.address_bits;
+}
+
 HostPt MemBase = NULL;
 
 class UnmappedPageHandler : public PageHandler {
 public:
     UnmappedPageHandler() : PageHandler(PFLAG_INIT|PFLAG_NOCODE) {}
-    uint8_t readb(PhysPt addr) {
+    uint8_t readb(PhysPt addr) override {
         (void)addr;//UNUSED
         return 0xFF; /* Real hardware returns 0xFF not 0x00 */
     } 
-    void writeb(PhysPt addr,uint8_t val) {
+    void writeb(PhysPt addr,uint8_t val) override {
         (void)addr;//UNUSED
         (void)val;//UNUSED
     }
@@ -124,10 +231,10 @@ public:
 class IllegalPageHandler : public PageHandler {
 public:
     IllegalPageHandler() : PageHandler(PFLAG_INIT|PFLAG_NOCODE) {}
-    uint8_t readb(PhysPt addr) {
+    uint8_t readb(PhysPt addr) override {
         (void)addr;
 #if C_DEBUG
-        LOG_MSG("Warning: Illegal read from %x, CS:IP %8x:%8x",addr,SegValue(cs),reg_eip);
+        LOG_MSG("Warning: Illegal read from %lx (lin=%x), CS:IP %8x:%8x",(unsigned long)PAGING_GetPhysicalAddress64(addr),addr,SegValue(cs),reg_eip);
 #else
         static Bits lcount=0;
         if (lcount<1000) {
@@ -137,11 +244,11 @@ public:
 #endif
         return 0xFF; /* Real hardware returns 0xFF not 0x00 */
     } 
-    void writeb(PhysPt addr,uint8_t val) {
+    void writeb(PhysPt addr,uint8_t val) override {
         (void)addr;//UNUSED
         (void)val;//UNUSED
 #if C_DEBUG
-        LOG_MSG("Warning: Illegal write to %x, CS:IP %8x:%8x",addr,SegValue(cs),reg_eip);
+        LOG_MSG("Warning: Illegal write to %lx (lin=%x), CS:IP %8x:%8x",(unsigned long)PAGING_GetPhysicalAddress64(addr),addr,SegValue(cs),reg_eip);
 #else
         static Bits lcount=0;
         if (lcount<1000) {
@@ -156,13 +263,13 @@ class RAMPageHandler : public PageHandler {
 public:
     RAMPageHandler() : PageHandler(PFLAG_READABLE|PFLAG_WRITEABLE) {}
     RAMPageHandler(Bitu flags) : PageHandler(flags) {}
-    HostPt GetHostReadPt(Bitu phys_page) {
+    HostPt GetHostReadPt(Bitu phys_page) override {
         if (!a20_fast_changeable || (phys_page & (~0xFul/*64KB*/)) == 0x100ul/*@1MB*/)
             return MemBase+(phys_page&memory.mem_alias_pagemask_active)*MEM_PAGESIZE;
 
         return MemBase+phys_page*MEM_PAGESIZE;
     }
-    HostPt GetHostWritePt(Bitu phys_page) {
+    HostPt GetHostWritePt(Bitu phys_page) override {
         if (!a20_fast_changeable || (phys_page & (~0xFul/*64KB*/)) == 0x100ul/*@1MB*/)
             return MemBase+(phys_page&memory.mem_alias_pagemask_active)*MEM_PAGESIZE;
 
@@ -175,10 +282,10 @@ public:
     ROMAliasPageHandler() {
         flags=PFLAG_READABLE|PFLAG_HASROM;
     }
-    HostPt GetHostReadPt(Bitu phys_page) {
+    HostPt GetHostReadPt(Bitu phys_page) override {
         return MemBase+((phys_page&0xF)+0xF0)*MEM_PAGESIZE;
     }
-    HostPt GetHostWritePt(Bitu phys_page) {
+    HostPt GetHostWritePt(Bitu phys_page) override {
         return MemBase+((phys_page&0xF)+0xF0)*MEM_PAGESIZE;
     }
 };
@@ -188,19 +295,19 @@ public:
     ROMPageHandler() {
         flags=PFLAG_READABLE|PFLAG_HASROM;
     }
-    void writeb(PhysPt addr,uint8_t val){
+    void writeb(PhysPt addr,uint8_t val) override {
         if (IS_PC98_ARCH && (addr & ~0x7FFF) == 0xE0000u)
             { /* Many PC-98 games and programs will zero 0xE0000-0xE7FFF whether or not the 4th bitplane is mapped */ }
         else
             LOG(LOG_CPU,LOG_ERROR)("Write %x to rom at %x",(int)val,(int)addr);
     }
-    void writew(PhysPt addr,uint16_t val){
+    void writew(PhysPt addr,uint16_t val) override {
         if (IS_PC98_ARCH && (addr & ~0x7FFF) == 0xE0000u)
             { /* Many PC-98 games and programs will zero 0xE0000-0xE7FFF whether or not the 4th bitplane is mapped */ }
         else
             LOG(LOG_CPU,LOG_ERROR)("Write %x to rom at %x",(int)val,(int)addr);
     }
-    void writed(PhysPt addr,uint32_t val){
+    void writed(PhysPt addr,uint32_t val) override {
         if (IS_PC98_ARCH && (addr & ~0x7FFF) == 0xE0000u)
             { /* Many PC-98 games and programs will zero 0xE0000-0xE7FFF whether or not the 4th bitplane is mapped */ }
         else
@@ -279,8 +386,13 @@ static PageHandler *MEM_SlowPath(Bitu page) {
 
     /* TEMPORARY, REMOVE LATER. SHOULD NOT HAPPEN. */
     if (page < memory.reported_pages) {
-        LOG(LOG_MISC,LOG_WARN)("MEM_SlowPath called within system RAM at page %x",(unsigned int)page);
-        f = (PageHandler*)(&ram_page_handler);
+        if (page >= 0xf00 && page <= 0xfff && isa_memory_hole_15mb) { /* 0xF00000-0xFFFFFF (15MB-16MB) */
+            /* ignore, ISA memory hole */
+        }
+        else {
+            LOG(LOG_MISC,LOG_WARN)("MEM_SlowPath called within system RAM at page %x",(unsigned int)page);
+            f = (PageHandler*)(&ram_page_handler);
+        }
     }
 
     /* check motherboard devices (ROM BIOS, system RAM, etc.) */
@@ -303,7 +415,7 @@ static PageHandler *MEM_SlowPath(Bitu page) {
     }
 
     /* if nothing matched, assign default handler to MEM handler slot.
-     * if one device responded, assign it's handler to the MEM handler slot.
+     * if one device responded, assign its handler to the MEM handler slot.
      * if more than one responded, then do not update the MEM handler slot. */
 //    assert(iolen >= 1 && iolen <= 4);
 //    porti = (iolen >= 4) ? 2 : (iolen - 1); /* 1 2 x 4 -> 0 1 1 2 */
@@ -330,7 +442,7 @@ void MEM_FreeHandler(Bitu phys_page,Bitu page_range) {
 void MEM_CalloutObject::InvalidateCachedHandlers(void) {
     Bitu p;
 
-    /* for both the base page, as well as it's aliases, revert the pages back to "slow path" */
+    /* for both the base page, as well as its aliases, revert the pages back to "slow path" */
     for (p=m_base;p < memory.handler_pages;p += alias_mask+1)
         MEM_InvalidateCachedHandler(p,range_mask+1);
 }
@@ -447,7 +559,7 @@ void MEM_CalloutObject::Uninstall() {
  *
  * this allows us to maintain ready-made MEM callout objects to return quickly rather
  * than write more complicated code where the caller has to make an MEM_CalloutObject
- * and then call install and we have to add it's pointer to a list/vector/whatever.
+ * and then call install and we have to add its pointer to a list/vector/whatever.
  * It also avoids problems where if we have to resize the vector, the pointers become
  * invalid, because callers have only handles and they have to put all the pointers
  * back in order for us to resize the vector. */
@@ -1614,7 +1726,7 @@ HostPt GetMemBase(void) { return MemBase; }
 class REDOS : public Program {
 public:
     /*! \brief      Program entry point, when the command is run */
-    void Run(void) {
+    void Run(void) override {
 		if (cmd->FindExist("/?", false) || cmd->FindExist("-?", false)) {
 			WriteOut("Reboots the kernel of DOSBox-X's emulated DOS.\n\nRE-DOS\n");
 			return;
@@ -1634,7 +1746,7 @@ void REDOS_ProgramStart(Program * * make) {
 class A20GATE : public Program {
 public:
     /*! \brief      Program entry point, when the command is run */
-    void Run(void) {
+    void Run(void) override {
         if (cmd->FindExist("-?", false) || cmd->FindExist("/?", false)) {
             WriteOut("Turns on/off or changes the A20 gate mode.\n\n");
             WriteOut("A20GATE [ON | OFF | SET [off | off_fake | on | on_fake | mask | fast]]\n\n"
@@ -1726,18 +1838,23 @@ void Init_AddressLimitAndGateMask() {
     //       20 for 8086 emulation.
     memory.address_bits=(unsigned int)section->Get_int("memalias");
 
-    if (memory.address_bits == 0)
+    if (memory.address_bits == 0) {
+        // FIXME: We cannot automatically set this by CPU type because src/cpu/cpu.cpp Change_Config() has not been called yet!
+        //        That is where the cputype setting is converted into the CPU_ArchitectureType enumeration!
+        //        If that specific code can be moved into it's own function and called earlier than this point, then this
+        //        code can then automatically set 36 bits for Pentium II or higher emulation.
         memory.address_bits = 32;
+    }
     else if (memory.address_bits < 20)
         memory.address_bits = 20;
-    else if (memory.address_bits > 32)
-        memory.address_bits = 32;
+    else if (memory.address_bits > 36)
+        memory.address_bits = 36;
 
     // TODO: This should be ...? CPU init? Motherboard init?
     /* WARNING: Binary arithmetic done with 64-bit integers because under Microsoft C++
        ((1UL << 32UL) - 1UL) == 0, which is WRONG.
        But I'll never get back the 4 days I wasted chasing it down, trying to
-       figure out why DOSBox was getting stuck reopening it's own CON file handle. */
+       figure out why DOSBox was getting stuck reopening its own CON file handle. */
     memory.mem_alias_pagemask = (uint32_t)
         (((((uint64_t)1) << (uint64_t)memory.address_bits) - (uint64_t)1) >> (uint64_t)12);
 
@@ -1763,6 +1880,7 @@ void ShutDownRAM(Section * sec) {
 #endif
         MemBase = NULL;
     }
+    ACPI_free();
 }
 
 void MEM_InitCallouts(void) {
@@ -1819,7 +1937,7 @@ void Init_RAM() {
         Bitu maxsz;
 
         if (sizeof(void*) > 4) // 64-bit address space
-            maxsz = (Bitu)(3584ul * 1024ul); // 3.5GB
+            maxsz = (Bitu)(3968ul * 1024ul); // 3.9GB (up to 0xF8000000)
         else
             maxsz = (Bitu)(1024ul * 1024ul); // 1.0GB
 
@@ -1884,6 +2002,12 @@ void Init_RAM() {
         memory.phandlers[i] = ram_ptr;
     for (;i < memory.handler_pages;i++)
         memory.phandlers[i] = NULL;//&illegal_page_handler;
+
+    /* ISA 15MB memory hole? */
+    if (isa_memory_hole_15mb) {
+        for (i=0xf00;i <= 0xfff && i < memory.handler_pages;i++)
+            memory.phandlers[i] = NULL;//&illegal_page_handler;
+    }
 
     /* FIXME: VGA emulation will selectively respond to 0xA0000-0xBFFFF according to the video mode,
      *        what we want however is for the VGA emulation to assign illegal_page_handler for
@@ -2059,6 +2183,11 @@ void Init_MemHandles() {
 
     for (i = 0;i < memory.pages;i++)
         memory.mhandles[i] = 0;             //Set to 0 for memory allocation
+
+    // ISA memory hole awareness (15MB region). Block off 0xF00000-0xFFFFFF with a dummy handle.
+    if (isa_memory_hole_15mb) {
+        for (i=0xF00;i<=0xFFF && i < memory.pages;i++) memory.mhandles[i] = 0x7FFFFFFF;
+    }
 }
 
 void Init_MemoryAccessArray() {
@@ -2158,7 +2287,7 @@ public:
 	{}
 
 private:
-	virtual void getBytes(std::ostream& stream)
+	void getBytes(std::ostream& stream) override
 	{
 		uint8_t pagehandler_idx[0x40000];
 		unsigned int size_table;
@@ -2204,7 +2333,7 @@ private:
 		WRITE_POD( &pagehandler_idx, pagehandler_idx );
 	}
 
-	virtual void setBytes(std::istream& stream)
+	void setBytes(std::istream& stream) override
 	{
 		uint8_t pagehandler_idx[0x40000];
 		void *old_ptrs[4];

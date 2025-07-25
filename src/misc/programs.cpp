@@ -124,7 +124,7 @@ void PROGRAMS_MakeFile(char const * const name,PROGRAMS_Main * main,const char *
 	uint8_t *comdata;
 	uint8_t index;
 
-	/* Copy save the pointer in the vector and save it's index */
+	/* Copy save the pointer in the vector and save its index */
 	if (internal_progs.size()>255) E_Exit("PROGRAMS_MakeFile program size too large (%d)",static_cast<int>(internal_progs.size()));
 
 	index = (uint8_t)internal_progs.size();
@@ -207,8 +207,8 @@ void Program::ChangeToLongCmd() {
 	 * can only be given on the shell ( so no int 21 4b) 
 	 * Securemode part is disabled as each of the internal command has already
 	 * protection for it. (and it breaks games like cdman)
-	 * it is also done for long arguments to as it is convient (as the total commandline can be longer then 127 characters.
-	 * imgmount with lot's of parameters
+	 * it is also done for long arguments too as it is convenient (as the total commandline can be longer than 127 characters.
+	 * imgmount with lots of parameters
 	 * Length of arguments can be ~120. but switch when above 100 to be sure
 	 */
 
@@ -497,6 +497,99 @@ void Program::DebugDumpEnv() {
 	}
 }
 
+bool Program::FirstEnv(const char * entry) {
+	PhysPt env_base,env_fence,env_scan,env_first,env_last;
+	bool found = false;
+
+	if (dos_kernel_disabled) {
+		LOG_MSG("BUG: Program::FirstEnv() called with DOS kernel disabled (such as OS boot).\n");
+		return false;
+	}
+
+	if (!LocateEnvironmentBlock(env_base,env_fence,psp->GetEnvironment())) {
+		LOG_MSG("Warning: GetEnvCount() was not able to locate the program's environment block\n");
+		return false;
+	}
+
+	std::string bigentry(entry);
+	for (std::string::iterator it = bigentry.begin(); it != bigentry.end(); ++it) *it = toupper(*it);
+
+	env_scan = env_base;
+	while (env_scan < env_fence) {
+		/* "NAME" + "=" + "VALUE" + "\0" */
+		/* end of the block is a NULL string meaning a \0 follows the last string's \0 */
+		if (mem_readb(env_scan) == 0) break; /* normal end of block */
+
+		if (EnvPhys_StrCmp(env_scan,env_fence,bigentry.c_str()) == 0) {
+			found = true;
+			break;
+		}
+
+		if (!EnvPhys_ScanUntilNextString(env_scan,env_fence)) break;
+	}
+
+	if (found) {
+		env_first = env_scan;
+		if (!EnvPhys_ScanUntilNextString(env_scan,env_fence)) return false;
+		env_last = env_scan;
+
+#if 0//DEBUG
+		fprintf(stderr,"Env base=%x fence=%x first=%x last=%x\n",
+			(unsigned int)env_base,  (unsigned int)env_fence,
+			(unsigned int)env_first, (unsigned int)env_last);
+#endif
+
+		assert(env_first <= env_last);
+
+		/* if the variable is already at the beginning, do nothing */
+		if (env_first == env_base) return true;
+
+		{
+			std::vector<uint8_t> tmp;
+			tmp.resize(size_t(env_last-env_first));
+
+			/* save variable */
+			for (size_t i=0;i < tmp.size();i++)
+				tmp[i] = mem_readb(env_first+(PhysPt)i);
+
+			/* shift all variables prior to it forward over the variable, BACKWARDS */
+			const size_t pl = size_t(env_first - env_base);
+			assert((env_first-pl) == env_base);
+			assert((env_last-pl) >= env_base);
+			assert(env_first < env_last);
+			assert(pl != 0);
+			for (size_t i=0;i < pl;i++) mem_writeb(env_last-(i+1), mem_readb(env_first-(i+1)));
+
+			/* put the variable in at the beginning */
+			assert((env_base+tmp.size()) == (env_last-pl));
+			for (size_t i=0;i < tmp.size();i++)
+				mem_writeb(env_base+(PhysPt)i,tmp[i]);
+		}
+	}
+
+	return true;
+}
+
+bool Program::EraseEnv(void) {
+	PhysPt env_base,env_fence;
+	size_t nsl = 0,el = 0,needs;
+
+	if (dos_kernel_disabled) {
+		LOG_MSG("BUG: Program::EraseEnv() called with DOS kernel disabled (such as OS boot).\n");
+		return false;
+	}
+
+	if (!LocateEnvironmentBlock(env_base,env_fence,psp->GetEnvironment())) {
+		LOG_MSG("Warning: SetEnv() was not able to locate the program's environment block\n");
+		return false;
+	}
+
+	for (PhysPt w=env_base;w < env_fence;w++)
+		mem_writeb(w,0);
+
+	return true;
+}
+
 /* NTS: "entry" string must have already been converted to uppercase */
 bool Program::SetEnv(const char * entry,const char * new_string) {
 	PhysPt env_base,env_fence,env_scan;
@@ -593,7 +686,7 @@ class CONFIG : public Program {
 public:
     /*! \brief      Program entry point, when the command is run
      */
-	void Run(void);
+	void Run(void) override;
 private:
 	void restart(const char* useconfig);
 	
@@ -633,7 +726,7 @@ void dos_ver_menu(bool start), ReloadMapper(Section_prop *sec, bool init), SetGa
 bool set_ver(char *s), GFX_IsFullscreen(void);
 
 void Load_Language(std::string name) {
-    if (control->opt_lang != "") control->opt_lang = name;
+    if(control->opt_lang != "") control->opt_lang = name;
     MSG_Init();
 #if DOSBOXMENU_TYPE == DOSBOXMENU_HMENU || DOSBOXMENU_TYPE == DOSBOXMENU_NSMENU
     mainMenu.unbuild();
@@ -645,12 +738,14 @@ void Load_Language(std::string name) {
 #if defined(USE_TTF)
     if (TTF_using()) resetFontSize();
 #endif
+#if 0
     if (!uselangcp && !incall) {
         int oldmsgcp = msgcodepage;
         msgcodepage = dos.loaded_codepage;
         SetKEYBCP();
         msgcodepage = oldmsgcp;
     }
+#endif
 }
 
 void ApplySetting(std::string pvar, std::string inputline, bool quiet) {
@@ -830,7 +925,7 @@ void ApplySetting(std::string pvar, std::string inputline, bool quiet) {
                     RECT rect;
                     MONITORINFO info;
                     GetWindowRect(GetHWND(), &rect);
-#if !defined(HX_DOS)
+#if !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
                     if (GetDisplayNumber()>0) {
                         xyp xy={0};
                         xy.x=-1;
@@ -1419,7 +1514,7 @@ void CONFIG::Run(void) {
 				if (!strcasecmp(pvars[0].c_str(), "config"))
 					WriteOut("set\ninstall\ninstallhigh\ndevice\ndevicehigh\n");
 			} else {
-				// find the property by it's name
+				// find the property by its name
 				size_t i = 0;
 				while (true) {
 					Property *p = psec->Get_prop((int)(i++));
@@ -1457,7 +1552,7 @@ void CONFIG::Run(void) {
 							p->Get_help(),propvalues.c_str(),
 							p->Get_Default_Value().ToString().c_str(),
 							p->GetValue().ToString().c_str());
-						// print 'changability'
+						// print 'changeability'
 						if (p->getChange()==Property::Changeable::OnlyAtStart) {
 							WriteOut(MSG_Get("PROGRAM_CONFIG_HLP_NOCHANGE"));
 						}

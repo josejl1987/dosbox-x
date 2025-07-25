@@ -16,7 +16,7 @@ The four major operating systems and platforms of DOSBox-X are:
 
 1. Windows 11, 10, 8, 7, Vista and XP for 32-bit and 64-bit x86/x64 and ARM
 
-2. Linux (with X11) 64-bit x86/x64, and on a Raspberry Pi 3/4
+2. Linux (with X11) 64-bit x86/x64, and on a Raspberry Pi 3/4/5
 
 3. macOS (Mac OS X) recent version, 64-bit Intel, ARM-based, and Universal
 
@@ -37,7 +37,7 @@ In all cases, the code requires a C++ compiler that can support the C++11
 standard.
 
 Note that DOSBox-X supports both SDL 1.x and 2.x, and it is written to compile
-against the in-tree copy of the SDL 1.x (Simple Directmedia Libary), or against
+against the in-tree copy of the SDL 1.x (Simple Directmedia Library), or against
 the SDL 2.x library provided by your Linux distribution.
 
 For Visual Studio and MinGW compilation, the in-tree copy of SDL is always
@@ -75,68 +75,61 @@ sudo make install
 sudo make install
 ```
 
-* macOS compile (SDL1)
-  * Build natively for the host architecture
+* macOS
+  * First install the required libraries needed.
+    ```
+     brew install autoconf automake nasm glfw glew fluid-synth libslirp pkg-config
+    ```
+  * Compile natively for the host architecture (SDL1 or SDL2)
     ```
     ./build-macos
     ```
-  * Build a Universal Binary on an Apple Silicon CPU (will *not* work on Intel)
-    ```
-    ./build-macos universal
-    ````
-    You can build an App Bundle from the result of this build with
-    ```
-    make dosbox-x.app
-    ```
-
-* macOS compile (SDL2)
-  * Build natively for the host architecture
     ```
     ./build-macos-sdl2
     ```
-  * Build a Universal Binary on an Apple Silicon CPU (will *not* work on Intel)
+  * _(Optional)_ Add `universal` option to build an Universal Binary on an Apple Silicon CPU (will *not* work on Intel)
+    ```
+    ./build-macos universal
+    ```
     ```
     ./build-macos-sdl2 universal
     ````
-    You can build an App Bundle from the result of this build with
+  * You can build an App Bundle from the result of this build with
     ```
     make dosbox-x.app
     ```
-
-* MinGW compile (using MinGW-w64) for Windows Vista/7 or later (SDL1)
-```
-./build-mingw
-```
-
-* MinGW compile (using MinGW-w64) for Windows Vista/7 or later (SDL2)
-```
-./build-mingw-sdl2
-```
-
-* MinGW compile (using MinGW32, not MinGW-w64) for lower-end systems including Windows XP or later (SDL1)
+* MinGW compile for Windows 7 or later
+  * First install the required libraries needed.  
+    Libraries for mingw32(32-bit)
+    ```
+    pacman -S git make mingw-w64-i686-toolchain mingw-w64-i686-libslirp mingw-w64-i686-libtool mingw-w64-i686-nasm autoconf automake mingw-w64-i686-ncurses
+    ```
+    Libraries for mingw64(64-bit)
+    ```
+    pacman -S git make mingw-w64-x86_64-toolchain mingw-w64-x86_64-libslirp mingw-w64-x86_64-libtool mingw-w64-x86_64-nasm autoconf automake  mingw-w64-x86_64-ncurses
+    ```
+  * Compile (SDL1 or SDL2, Common for 32-bit/64-bit builds)
+    ```
+    ./build-mingw
+    ```
+    ```
+    ./build-mingw-sdl2
+    ```
+* MinGW compile (using MinGW32, not MinGW-w64: see NOTICE below) for lower-end systems including Windows XP or later (SDL1 or SDL2, 32-bit only)
 ```
 ./build-mingw-lowend
 ```
-
-* MinGW compile (using MinGW32, not MinGW-w64) for lower-end systems including Windows XP or later (SDL2)
 ```
 ./build-mingw-lowend-sdl2
 ```
 
-* MinGW compile (using MinGW32, not MinGW-w64) on Windows to target the DOS platform (MS-DOS or compatible with HX DOS Extender)
+* MinGW compile (using MinGW32, not MinGW-w64: see NOTICE below) on Windows to target the DOS platform (MS-DOS or compatible with HX DOS Extender, SDL1 only)
 ```
 ./build-mingw-hx-dos
 ```
 
 NOTICE: Use the 32-bit toolchain from the original MinGW project for the lowend and HX-DOS builds, not the MinGW-w64 project.
         Binaries compiled with MinGW-w64 have extra dependencies which are not supported by Windows XP or the HX DOS Extender.
-
-macOS: If you want to make an .app bundle you can run from the Finder, compile the program as instructed then run ``make dosbox-x.app``.
-
-XCode (on macOS, from the Terminal) to target macOS
-```
-./build-debug
-```
 
 ## To compile DOSBox-X in Ubuntu (tested with 20.04 and 20.10):
 
@@ -185,6 +178,18 @@ Then run the following commands:
 ```
 
 After a successful compile, the RPM can be found in the releases directory.
+
+## To compile DOSBox-X in Raspberry Pi:
+
+The official Raspberry PI website has an article including build instructions from source.  
+https://www.raspberrypi.com/news/read-floppy-disks-and-cd-roms-with-raspberry-pi-5-magpimonday/
+```
+sudo apt install libtool autogen autoconf automake libncurses-dev gcc g++ make libncurses-dev nasm libsdl-net1.2-dev libsdl2-net-dev libpcap-dev libslirp-dev fluidsynth libfluidsynth-dev libavformat-dev libavcodec-dev libavcodec-extra libswscale-dev libfreetype-dev libxkbfile-dev libxrandr-dev 
+git clone https://github.com/joncampbell123/dosbox-x.git
+cd dosbox-x
+./build-debug
+```
+If you have audio problems, you may want to try the SDL2 build using `./build-debug-sdl2` script.
 
 Compiling the source code using Visual Studio (Windows)
 -------------------------------------------------------

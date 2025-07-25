@@ -1617,6 +1617,44 @@
     <ClCompile Include="..\src\hardware\imfc.cpp">
       <Filter>Sources\hardware</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\hardware\esfmu\esfm.c" />
+    <ClCompile Include="..\src\hardware\esfmu\esfm_registers.c" />
+    <ClCompile Include="..\src\builtin\4dos.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\builtin\cdplay.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\builtin\dosmid.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\builtin\emsmagic.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\builtin\eval.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\builtin\glide2x.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\builtin\mpxplay.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\builtin\shutdown.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\builtin\textutil.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\builtin\zip.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\dos\eltorito.cpp">
+      <Filter>Sources\dos</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\builtin\ne2000bin.cpp">
+      <Filter>Sources\builtin</Filter>
+    </ClCompile>
     <ClCompile Include="imgui\imgui.cpp">
       <Filter>Sources\imgui</Filter>
     </ClCompile>
@@ -2592,10 +2630,15 @@
     <ClInclude Include="luaengine.h">
       <Filter>Sources\debug</Filter>
     </ClInclude>
+    <ClInclude Include="..\include\version_string.h" />
+    <ClInclude Include="..\src\hardware\esfmu\esfm.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="..\src\winres.rc">
       <Filter>Sources</Filter>
     </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Natvis Include="String.natvis" />
   </ItemGroup>
 </Project>

@@ -106,7 +106,7 @@ struct PIT_Block {
          *
          * This fixes "Tony & Friends in Kellogg's Land" which does some rather weird elaborate
          * timing stuff with both PIT 0 (timer) and PIT 2 (PC speaker but the output is off) to
-         * do it's event timing and to modify the VGA DAC mask mid-frame precisely to do that
+         * do its event timing and to modify the VGA DAC mask mid-frame precisely to do that
          * effect of making the bottom half look like there is water.
          * Ref: [https://github.com/joncampbell123/dosbox-x/issues/4467] */
         last_counter.cycle = 0;
@@ -122,10 +122,8 @@ struct PIT_Block {
     void restart_counter_at(pic_tickindex_t t,uint16_t counter) {
         pic_tickindex_t c_delay;
 
-        if (counter == 0)
-            c_delay = ((pic_tickindex_t)(1000ull * 0x10000)) / PIT_TICK_RATE;
-        else
-            c_delay = ((pic_tickindex_t)(1000ull * counter)) / PIT_TICK_RATE;
+        /* NTS: Remember, the counter counts DOWN, not up, so the delay is how long it takes to get there */
+        c_delay = ((pic_tickindex_t)(1000ull * (0x10000u - counter))) / PIT_TICK_RATE;
 
         start = (t - c_delay);
     }
@@ -185,6 +183,7 @@ struct PIT_Block {
                 case 0:     /* Interrupt on Terminal Count */
                 case 4:     /* Software Triggered Strobe */
                     restart_counter_at(now,last_counter.counter);
+                    update_output_from_counter(read_counter());
                     break;
                 case 1:     /* Hardware Triggered one-shot */
                     /* output goes LOW when triggered, returns HIGH when counter expires */
@@ -276,7 +275,7 @@ struct PIT_Block {
                         ret.counter = (uint16_t)(((unsigned long)(cntr_cur - ((tmp * PIT_TICK_RATE) / 1000.0))) % 0x10000ul);
                     }
 
-                    if (mode == 0) {
+                    if (mode == 0 || mode == 4) {
                         if (index > delay)
                             ret.cycle = 1;
                     }
@@ -474,7 +473,7 @@ bool TIMER2_ClockGateEnabled(void) {
 //
 //   This is either the result of extremely sloppy code that happened to work on the democoder's
 //   machine (non-Intel hardware that minimally implements a 8254?) or perhaps a race condition
-//   between the program and it's own IRQ 0 interrupt.
+//   between the program and its own IRQ 0 interrupt.
 //
 //   Additional notes from testing: It is indeed some sort of race condition. There is code to
 //   set PIT 0 to mode 2 counter 0 momentarily before going back to mode 0. Interrupts are
@@ -514,7 +513,7 @@ static void write_latch(Bitu port,Bitu val,Bitu /*iolen*/) {
 		case 3:
 			p->write_latch = val & 0xff;
 			p->write_state = 0;
-			if (p->mode == 0) counter_latch(counter,false);
+			if (p->mode == 0 || p->mode == 4) counter_latch(counter,false);
 			break;
 		case 1:
 			p->write_latch = val & 0xff;
@@ -551,7 +550,7 @@ static void write_latch(Bitu port,Bitu val,Bitu /*iolen*/) {
 			p->set_next_counter(p->write_latch);
 		}
 
-		if (p->new_mode || p->mode == 0) {
+		if (p->new_mode || p->mode == 0 || p->mode == 4) {
 			p->reset_count_at(PIC_FullIndex());
 			p->latch_next_counter();
 
@@ -577,7 +576,7 @@ static void write_latch(Bitu port,Bitu val,Bitu /*iolen*/) {
 				return;
 			}
 
-			if (p->mode == 0) {
+			if (p->mode == 0 || p->mode == 4) {
 				/* Mode 0 is the only mode NOT to wait for the current counter to finish if you write another counter value
 				 * according to the Intel 8254 datasheet.
 				 *
@@ -628,7 +627,7 @@ static void write_latch(Bitu port,Bitu val,Bitu /*iolen*/) {
 		 * low immediately (no clock pulse required)
 		 * 2) Writing the second byte allows the new count to
 		 * be loaded on the next CLK pulse. */
-		if (p->mode == 0) {
+		if (p->mode == 0 || p->mode == 4) {
 			if (counter == 0) {
 				PIC_RemoveEvents(PIT0_Event);
 				PIC_DeActivateIRQ(0);
@@ -754,7 +753,7 @@ static void write_p43(Bitu /*port*/,Bitu val,Bitu /*iolen*/) {
 			pit[latch].mode = mode;
 
 			/* If the line goes from low to up => generate irq. 
-			 *      ( BUT needs to stay up until acknowlegded by the cpu!!! therefore: )
+			 *      ( BUT needs to stay up until acknowledged by the cpu!!! therefore: )
 			 * If the line goes to low => disable irq.
 			 * Mode 0 starts with a low line. (so always disable irq)
 			 * Mode 2,3 start with a high line.

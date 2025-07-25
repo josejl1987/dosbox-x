@@ -63,11 +63,13 @@
 
 #include "SDL_syswm.h"
 #include "sdlmain.h"
+#include "version_string.h"
 
 #if !defined(HX_DOS)
 #include "../libs/tinyfiledialogs/tinyfiledialogs.h"
 #endif
 
+#include <unordered_map>
 #include <output/output_ttf.h>
 
 #ifdef DOSBOXMENU_EXTERNALLY_MANAGED
@@ -78,7 +80,7 @@ static DOSBoxMenu guiMenu, nullMenu;
 class VirtualBatch : public BatchFile {
 public:
                             VirtualBatch(DOS_Shell *host, const std::string& cmds);
-    bool                    ReadLine(char *line);
+    bool                    ReadLine(char *line) override;
 protected:
     std::istringstream      lines;
 };
@@ -139,19 +141,19 @@ void                        macosx_reload_touchbar(void);
 
 std::list<std::string> proplist = {};
 GUI::Checkbox *advopt, *saveall, *imgfd360, *imgfd400, *imgfd720, *imgfd1200, *imgfd1440, *imgfd2880, *imghd250, *imghd520, *imghd1gig, *imghd2gig, *imghd4gig, *imghd8gig;
+
+// user pick of 'show advanced options' for the session
+bool advOptUser = false;
+
 std::string GetDOSBoxXPath(bool withexe);
 static std::map< std::vector<GUI::Char>, GUI::ToplevelWindow* > cfg_windows_active;
 void getlogtext(std::string &str), getcodetext(std::string &text), ApplySetting(std::string pvar, std::string inputline, bool quiet), GUI_Run(bool pressed);
 void ttf_switch_on(bool ss=true), ttf_switch_off(bool ss=true), setAspectRatio(Section_prop * section), GFX_ForceRedrawScreen(void), SetWindowTransparency(int trans);
 bool CheckQuit(void), OpenGL_using(void);
 char tmp1[CROSS_LEN*2], tmp2[CROSS_LEN];
-const char *aboutmsg = "DOSBox-X version " VERSION " ("
-#if defined(_M_X64) || defined (_M_AMD64) || defined (_M_ARM64) || defined (_M_IA64) || defined(__ia64__) || defined(__LP64__) || defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__) || defined(__powerpc64__)
-	"64"
-#else
-	"32"
-#endif
-	"-bit " SDL_STRING ")\nBuild date/time: " UPDATED_STR "\nCopyright 2011-" COPYRIGHT_END_YEAR " The DOSBox-X Team\nProject maintainer: joncampbell123\nDOSBox-X homepage: https://dosbox-x.com";
+const char *aboutmsg = "DOSBox-X ver." VERSION " (" OS_PLATFORM " " SDL_STRING " " OS_BIT "-bit)\n" \
+                       "Build date/time: " UPDATED_STR "\nCopyright 2011-" COPYRIGHT_END_YEAR \
+                       " The DOSBox-X Team\nProject maintainer: joncampbell123\nDOSBox-X homepage: https://dosbox-x.com";
 
 void RebootConfig(std::string filename, bool confirm=false) {
     std::string exepath=GetDOSBoxXPath(true), para="-conf \""+filename+"\"";
@@ -237,7 +239,7 @@ extern const char* RunningProgram;
 static GUI::ScreenSDL *UI_Startup(GUI::ScreenSDL *screen) {
     in_gui = true;
 
-    GFX_EndUpdate(0);
+    GFX_EndUpdate(nullptr);
     GFX_SetTitle(-1,-1,-1,true);
     if(!screen) { //Coming from DOSBox. Clean up the keyboard buffer.
         KEYBOARD_ClrBuffer();//Clear buffer
@@ -311,7 +313,7 @@ static GUI::ScreenSDL *UI_Startup(GUI::ScreenSDL *screen) {
 
     if (sw_draw > 0 && sh_draw > 0) {
         screenshot = SDL_CreateRGBSurface(SDL_SWSURFACE, dw, dh, 32, GUI::Color::RedMask, GUI::Color::GreenMask, GUI::Color::BlueMask, 0);
-        SDL_FillRect(screenshot,0,0);
+        SDL_FillRect(screenshot, nullptr, 0);
 
         unsigned int rs = screenshot->format->Rshift, gs = screenshot->format->Gshift, bs = screenshot->format->Bshift;
 
@@ -330,7 +332,7 @@ static GUI::ScreenSDL *UI_Startup(GUI::ScreenSDL *screen) {
         }
 
         background = SDL_CreateRGBSurface(SDL_SWSURFACE, dw, dh, 32, GUI::Color::RedMask, GUI::Color::GreenMask, GUI::Color::BlueMask, 0);
-        SDL_FillRect(background,0,0);
+        SDL_FillRect(background, nullptr, 0);
         for (int y = 0; y < sh_draw; y++) {
             uint32_t *bg = (uint32_t*)((unsigned int)(y+sy)*(unsigned int)background->pitch + (char*)background->pixels) + sx;
             for (int x = 0; x < sw_draw; x++) {
@@ -439,7 +441,7 @@ static GUI::ScreenSDL *UI_Startup(GUI::ScreenSDL *screen) {
     SDL_UpdateRect(sdlscreen, 0, 0, 0, 0);
 #endif
 
-#if defined(WIN32) && !defined(HX_DOS)
+#if defined(WIN32) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
     WindowsTaskbarResetPreviewRegion();
 #endif
 
@@ -595,7 +597,7 @@ static void UI_Shutdown(GUI::ScreenSDL *screen) {
 #endif
 #endif
 
-#if defined(WIN32) && !defined(HX_DOS)
+#if defined(WIN32) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
     DOSBox_SetSysMenu();
     WindowsTaskbarUpdatePreviewRegion();
 #endif
@@ -689,13 +691,50 @@ class PropertyEditor : public GUI::Window, public GUI::ActionEventSource_Callbac
 protected:
     Section_prop * section;
     Property *prop;
+
+    static constexpr auto RightMarginWindow    = 10; // TODO find origin, fix
+    static constexpr auto RightMarginBool      = 55; // TODO find origin, fix
+    static constexpr auto RightMarginText      = 40; // TODO find origin, fix
+
+    int GetHostWindowWidth() const
+    {
+        const int width = parent->getParent()->getWidth();
+
+        return width;
+    }
+
+    void SetupUI(const bool opts, GUI::Input*& input, GUI::Button*& infoButton)
+    {
+        const auto windowWidth = GetHostWindowWidth();
+
+        constexpr auto optionsWidth = 42;
+
+        const auto defaultSpacing = static_cast<int>(GUI::CurrentTheme.DefaultSpacing);
+
+        const auto inputWidth = 235 - (opts ? optionsWidth + defaultSpacing : 0);
+
+        const auto optionsPos = windowWidth - optionsWidth - RightMarginText - defaultSpacing;
+
+        const auto inputPos = opts
+                                  ? optionsPos - defaultSpacing - inputWidth
+                                  : windowWidth - RightMarginText - defaultSpacing - inputWidth;
+
+        input = new GUI::Input(this, inputPos, 0, inputWidth, static_cast<int>(GUI::CurrentTheme.ButtonHeight));
+
+        if(opts)
+        {
+            infoButton = new GUI::Button(this, optionsPos, 0, "...", optionsWidth);
+            infoButton->addActionHandler(this);
+        }
+    }
+
 public:
     PropertyEditor(Window *parent, int x, int y, Section_prop *section, Property *prop, bool opts) :
-        Window(parent, x, y, 500, 25), section(section), prop(prop) { (void)opts; }
+        Window(parent, x, y, parent->getParent()->getWidth() - RightMarginWindow, 25), section(section), prop(prop) { (void)opts; }
 
     virtual bool prepare(std::string &buffer) = 0;
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         // HACK: Attempting to cast a String to void causes "forming reference to void" errors when building with GCC 4.7
         (void)arg.size();//UNUSED
@@ -718,7 +757,7 @@ public:
         sx += 4;
         ex -= 4;
 
-        d.setColor(GUI::Color::Shadow3D);
+        d.setColor(GUI::CurrentTheme.Shadow3D);
         d.drawDotLine(sx,y,ex,y);
     }
 };
@@ -730,18 +769,19 @@ public:
     PropertyEditorBool(Window *parent, int x, int y, Section_prop *section, Property *prop, bool opts) :
         PropertyEditor(parent, x, y, section, prop, opts) {
         label = new GUI::Label(this, 0, 5, prop->propname);
-        input = new GUI::Checkbox(this, 480, 3, "");
+        constexpr auto inputWidth = 3;
+        input = new GUI::Checkbox(this, GetHostWindowWidth() - inputWidth - RightMarginBool, inputWidth, "");
         input->setChecked(static_cast<bool>(prop->GetValue()));
     }
 
-    bool prepare(std::string &buffer) {
+    bool prepare(std::string &buffer) override {
         if (input->isChecked() == static_cast<bool>(prop->GetValue())) return false;
         buffer.append(input->isChecked()?"true":"false");
         return true;
     }
 
     /// Paint label
-	virtual void paint(GUI::Drawable &d) const {
+	void paint(GUI::Drawable &d) const override {
         paintVisGuideLineBetween(d,label,input,this);
     }
 };
@@ -749,7 +789,7 @@ public:
 class ShowOptions : public GUI::MessageBox2 {
 protected:
     GUI::Input *name, *inp;
-    GUI::Checkbox *opt[200];
+    GUI::Radiobox *opt[200];
     std::vector<Value> pv;
     std::vector<GUI::Char> cfg_sname;
     GUI::WindowInWindow * wiw = NULL;
@@ -766,7 +806,7 @@ public:
             wiw = new GUI::WindowInWindow(this, 5, 80, 290, scroll_h);
             bool found = false;
             for(k = 0; k < pv.size(); k++) if (pv[k].ToString().size()) {
-                opt[k] = new GUI::Checkbox(wiw, 5, j*20+5, pv[k].ToString().c_str());
+                opt[k] = new GUI::Radiobox(wiw, 5, j*20+5, pv[k].ToString().c_str());
                 if (GUI::String(pv[k].ToString())==inp->getText()) {
                     found = true;
                     opt[k]->setChecked(true);
@@ -792,9 +832,27 @@ public:
             close->move(155,scroll_h+90);
             resize(310, scroll_h+156);
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
+
+            /* first child is first tabbable */
+            if (pv.size() > 0) {
+                Window *w = opt[0];
+                if (w) w->first_tabbable = true;
+            }
+
+            /* last child is first tabbable */
+            if (pv.size() > 0) {
+                Window *w = opt[pv.size()-1];
+                if (w) w->last_tabbable = true;
+            }
+
+            /* the FIRST field needs to come first when tabbed to */
+            if (pv.size() > 0) {
+                Window *w = opt[0];
+                if (w) w->raise();
+            }
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         unsigned int j, k;
         for(k = 0; k < pv.size(); k++) if (pv[k].ToString().size()) {
             if (arg == pv[k].ToString() && opt[k]->isChecked())
@@ -834,11 +892,7 @@ public:
         if (title=="4dos"&&!strcmp(prop->propname.c_str(), "rem"))
             input = new GUI::Input(this, 30, 0, 470);
         else {
-            input = new GUI::Input(this, 270, 0, opts?200:230);
-            if (opts) {
-                infoButton=new GUI::Button(this, 470, 0, "...", 30, 24);
-                infoButton->addActionHandler(this);
-            }
+            SetupUI(opts, input, infoButton);
         }
         std::string temps = prop->GetValue().ToString();
         input->setText(stringify(temps));
@@ -864,14 +918,14 @@ public:
         }
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         if (arg == "...")
             new ShowOptions(getScreen(), 300, 300, MSG_Get("SELECT_VALUE"), ("Property: \033[31m" + prop->propname + "\033[0m\n\n"+(prop->Get_Default_Value().ToString().size()?"Default value: \033[32m"+prop->Get_Default_Value().ToString()+"\033[0m\n\n":"")+"Possible values to select:\n").c_str(), prop, input);
         else
             PropertyEditor::actionExecuted(b, arg);
     }
 
-    bool prepare(std::string &buffer) {
+    bool prepare(std::string &buffer) override {
         std::string temps = prop->GetValue().ToString();
         if (input->getText() == GUI::String(temps)) return false;
         buffer.append(static_cast<const std::string&>(input->getText()));
@@ -879,7 +933,7 @@ public:
     }
 
     /// Paint label
-	virtual void paint(GUI::Drawable &d) const {
+	void paint(GUI::Drawable &d) const override {
         paintVisGuideLineBetween(d,label,input,this);
     }
 };
@@ -892,11 +946,7 @@ protected:
 public:
     PropertyEditorFloat(Window *parent, int x, int y, Section_prop *section, Property *prop, bool opts) :
         PropertyEditor(parent, x, y, section, prop, opts) {
-        input = new GUI::Input(this, 380, 0, opts?90:120);
-        if (opts) {
-            infoButton=new GUI::Button(this, 470, 0, "...", 30, 24);
-            infoButton->addActionHandler(this);
-        }
+        SetupUI(opts, input, infoButton);
         input->setText(stringify((double)prop->GetValue()));
         label = new GUI::Label(this, 0, 5, prop->propname);
 	scan_tabbing = true;
@@ -920,14 +970,14 @@ public:
         }
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         if (arg == "...")
             new ShowOptions(getScreen(), 300, 300, ("Values for " + prop->propname).c_str(), ("Property: \033[31m" + prop->propname + "\033[0m\n\n"+(prop->Get_Default_Value().ToString().size()?"Default value: \033[32m"+prop->Get_Default_Value().ToString()+"\033[0m\n\n":"")+"Possible values to select:\n").c_str(), prop, input);
         else
             PropertyEditor::actionExecuted(b, arg);
     }
 
-    bool prepare(std::string &buffer) {
+    bool prepare(std::string &buffer) override {
         double val;
         convert(input->getText(), val, false);
         if (val == (double)prop->GetValue()) return false;
@@ -936,7 +986,7 @@ public:
     }
 
     /// Paint label
-	virtual void paint(GUI::Drawable &d) const {
+	void paint(GUI::Drawable &d) const override {
         paintVisGuideLineBetween(d,label,input,this);
     }
 };
@@ -949,11 +999,7 @@ protected:
 public:
     PropertyEditorHex(Window *parent, int x, int y, Section_prop *section, Property *prop, bool opts) :
         PropertyEditor(parent, x, y, section, prop, opts) {
-        input = new GUI::Input(this, 380, 0, opts?90:120);
-        if (opts) {
-            infoButton=new GUI::Button(this, 470, 0, "...", 30, 24);
-            infoButton->addActionHandler(this);
-        }
+        SetupUI(opts, input, infoButton);
         std::string temps = prop->GetValue().ToString();
         input->setText(temps.c_str());
         label = new GUI::Label(this, 0, 5, prop->propname);
@@ -978,14 +1024,14 @@ public:
         }
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         if (arg == "...")
             new ShowOptions(getScreen(), 300, 300, ("Values for " + prop->propname).c_str(), ("Property: \033[31m" + prop->propname + "\033[0m\n\n"+(prop->Get_Default_Value().ToString().size()?"Default value: \033[32m"+prop->Get_Default_Value().ToString()+"\033[0m\n\n":"")+"Possible values to select:\n").c_str(), prop, input);
         else
             PropertyEditor::actionExecuted(b, arg);
     }
 
-    bool prepare(std::string &buffer) {
+    bool prepare(std::string &buffer) override {
         int val;
         convert(input->getText(), val, false, std::hex);
         if ((Hex)val ==  prop->GetValue()) return false;
@@ -994,7 +1040,7 @@ public:
     }
 
     /// Paint label
-	virtual void paint(GUI::Drawable &d) const {
+	virtual void paint(GUI::Drawable &d) const override {
         paintVisGuideLineBetween(d,label,input,this);
     }
 };
@@ -1007,11 +1053,7 @@ protected:
 public:
     PropertyEditorInt(Window *parent, int x, int y, Section_prop *section, Property *prop, bool opts) :
         PropertyEditor(parent, x, y, section, prop, opts) {
-        input = new GUI::Input(this, 380, 0, opts?90:120);
-        if (opts) {
-            infoButton=new GUI::Button(this, 470, 0, "...", 30, 24);
-            infoButton->addActionHandler(this);
-        }
+        SetupUI(opts, input, infoButton);
         //Maybe use ToString() of Value
         input->setText(stringify(static_cast<int>(prop->GetValue())));
         label = new GUI::Label(this, 0, 5, prop->propname);
@@ -1036,14 +1078,14 @@ public:
         }
     };
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         if (arg == "...")
             new ShowOptions(getScreen(), 300, 300, ("Values for " + prop->propname).c_str(), ("Property: \033[31m" + prop->propname + "\033[0m\n\n"+(prop->Get_Default_Value().ToString().size()?"Default value: \033[32m"+prop->Get_Default_Value().ToString()+"\033[0m\n\n":"")+"Possible values to select:\n").c_str(), prop, input);
         else
             PropertyEditor::actionExecuted(b, arg);
     }
 
-    bool prepare(std::string &buffer) {
+    bool prepare(std::string &buffer) override {
         int val;
         convert(input->getText(), val, false);
         if (val == static_cast<int>(prop->GetValue())) return false;
@@ -1052,7 +1094,7 @@ public:
     };
 
     /// Paint label
-	virtual void paint(GUI::Drawable &d) const {
+	void paint(GUI::Drawable &d) const override {
         paintVisGuideLineBetween(d,label,input,this);
     }
 };
@@ -1069,9 +1111,9 @@ std::string CapName(std::string name) {
     else if (name=="dosv")
         dispname="DOS/V";
     else if (name=="ttf")
-        dispname="TTF Output";
+        dispname="TrueType";
     else if (name=="vsync")
-        dispname="V-Sync";
+        dispname="VSync";
     else if (name=="4dos")
         dispname="4DOS.INI";
     else if (name=="config")
@@ -1079,35 +1121,39 @@ std::string CapName(std::string name) {
     else if (name=="autoexec")
         dispname="AUTOEXEC.BAT";
     else if (name=="sblaster")
-        dispname="Sound Blaster";
+        dispname="SB";
     else if (name=="speaker")
         dispname="PC Speaker";
+    else if (name=="imfc")
+        dispname="IMFC";
+    else if (name=="innova")
+        dispname="SSI-2001";
     else if (name=="serial")
-        dispname="Serial Ports";
+        dispname="Serial";
     else if (name=="parallel")
-        dispname="Parallel Ports";
+        dispname="Parallel";
     else if (name=="fdc, primary")
-        dispname="Floppy Port #1";
+        dispname="Floppy";
     else if (name=="ide, primary")
-        dispname="IDE Port #1";
+        dispname="IDE #1";
     else if (name=="ide, secondary")
-        dispname="IDE Port #2";
+        dispname="IDE #2";
     else if (name=="ide, tertiary")
-        dispname="IDE Port #3";
+        dispname="IDE #3";
     else if (name=="ide, quaternary")
-        dispname="IDE Port #4";
+        dispname="IDE #4";
     else if (name=="ide, quinternary")
-        dispname="IDE Port #5";
+        dispname="IDE #5";
     else if (name=="ide, sexternary")
-        dispname="IDE Port #6";
+        dispname="IDE #6";
     else if (name=="ide, septernary")
-        dispname="IDE Port #7";
+        dispname="IDE #7";
     else if (name=="ide, octernary")
-        dispname="IDE Port #8";
+        dispname="IDE #8";
     else if (name=="ethernet, pcap")
-        dispname="Ethernet PCap";
+        dispname="pcap";
     else if (name=="ethernet, slirp")
-        dispname="Ethernet Slirp";
+        dispname="SLiRP";
     else
         dispname[0] = std::toupper(name[0]);
     return dispname;
@@ -1121,9 +1167,9 @@ std::string RestoreName(std::string name) {
         dispname="pc98";
     else if (name=="DOS/V")
         dispname="dosv";
-    else if (name=="TTF Output")
+    else if (name=="TrueType")
         dispname="ttf";
-    else if (name=="V-Sync")
+    else if (name=="VSync")
         dispname="vsync";
     else if (name=="4DOS.INI")
         dispname="4dos";
@@ -1131,35 +1177,39 @@ std::string RestoreName(std::string name) {
         dispname="config";
     else if (name=="AUTOEXEC.BAT")
         dispname="autoexec";
-    else if (name=="Sound Blaster")
+    else if (name=="SB")
         dispname="sblaster";
     else if (name=="PC Speaker")
         dispname="speaker";
-    else if (name=="Serial Ports")
+    else if (name=="IMFC")
+        dispname="imfc";
+    else if (name=="SSI-2001")
+        dispname="innova";
+    else if (name=="Serial")
         dispname="serial";
-    else if (name=="Parallel Ports")
+    else if (name=="Parallel")
         dispname="parallel";
-    else if (name=="Floppy Port #1")
+    else if (name=="Floppy")
         dispname="fdc, primary";
-    else if (name=="IDE Port #1")
+    else if (name=="IDE #1")
         dispname="ide, primary";
-    else if (name=="IDE Port #2")
+    else if (name=="IDE #2")
         dispname="ide, secondary";
-    else if (name=="IDE Port #3")
+    else if (name=="IDE #3")
         dispname="ide, tertiary";
-    else if (name=="IDE Port #4")
+    else if (name=="IDE #4")
         dispname="ide, quaternary";
-    else if (name=="IDE Port #5")
+    else if (name=="IDE #5")
         dispname="ide, quinternary";
-    else if (name=="IDE Port #6")
+    else if (name=="IDE #6")
         dispname="ide, sexternary";
-    else if (name=="IDE Port #7")
+    else if (name=="IDE #7")
         dispname="ide, septernary";
-    else if (name=="IDE Port #8")
+    else if (name=="IDE #8")
         dispname="ide, octernary";
-    else if (name=="Ethernet PCap")
+    else if (name=="pcap")
         dispname="ethernet, pcap";
-    else if (name=="Ethernet Slirp")
+    else if (name=="SLiRP")
         dispname="ethernet, slirp";
     return dispname;
 }
@@ -1306,9 +1356,22 @@ public:
         Section_prop* sec = dynamic_cast<Section_prop*>(title.substr(0, 4)=="Ide,"?control->GetSection("ide, primary"):section);
         if (sec) {
             std::string msg;
-            Property *p;
-            int i = 0;
-            while ((p = sec->Get_prop(i++))) {
+
+            Property *property;
+            std::vector<Property*> properties;
+            auto propertyIndex = 0;
+            while ((property = sec->Get_prop(propertyIndex++)))
+            {
+                properties.push_back(property);
+            }
+
+            std::sort(properties.begin(), properties.end(),[](const Property* a, const Property* b)
+            {
+                return a->propname < b->propname;
+            });
+
+            for(const auto& p : properties)
+            {
                 std::string help=title=="4dos"&&p->propname=="rem"?"This is the 4DOS.INI file (if you use 4DOS as the command shell).":p->Get_help();
                 if (title!="4dos" && title!="Config" && title!="Autoexec" && !advopt->isChecked() && !p->basic()) continue;
                 std::string propvalues = "";
@@ -1364,7 +1427,7 @@ public:
     std::vector<GUI::Char> cfg_sname;
 public:
     SectionEditor(GUI::Screen *parent, int x, int y, Section_prop *section) :
-        ToplevelWindow(parent, x, y, 510, 442, ""), section(section) {
+        ToplevelWindow(parent, x, y, 0, 0, ""), section(section) {
         if (section == NULL) {
             LOG_MSG("BUG: SectionEditor constructor called with section == NULL\n");
             return;
@@ -1373,9 +1436,9 @@ public:
 
         int first_row_y = 5;
         int row_height = 25;
-        int column_width = 500;
-        int button_row_h = 26;
-        int button_row_padding_y = 5 + 5;
+        int column_width = 600;
+        int button_row_h = (int)GUI::CurrentTheme.ButtonHeight;
+        int button_row_padding_y = static_cast<int>(GUI::CurrentTheme.DefaultSpacing);
 
         int num_prop = 0, k=0;
         while (section->Get_prop(num_prop) != NULL) {
@@ -1396,7 +1459,7 @@ public:
 
         wiw = new GUI::WindowInWindow(this, 5, 5, width-border_left-border_right-10, scroll_h);
 
-        int button_row_y = first_row_y + scroll_h + 25;
+        int button_row_y = first_row_y + scroll_h + 5;
         int button_w = 90;
         int button_pad_w = 10;
         int button_row_w = ((button_pad_w + button_w) * 3) - button_pad_w;
@@ -1408,12 +1471,7 @@ public:
         if ((this->y + this->getHeight()) > parent->getHeight())
             move(this->x,parent->getHeight() - this->getHeight());
 
-        std::string title(section->GetName());
-        sprintf(tmp1, MSG_Get("CONFIGURATION_FOR"), CapName(title).c_str());
-        setTitle(tmp1);
-        title[0] = std::toupper(title[0]);
-
-        new GUI::Label(this, 5, button_row_y - 20, MSG_Get("HELP_INFO"));
+        setTitle(CapName(std::string(section->GetName())).c_str());
 
         GUI::Button *b = new GUI::Button(this, button_row_cx, button_row_y, mainMenu.get_item("HelpMenu").get_text().c_str(), button_w);
         b->addActionHandler(this);
@@ -1421,8 +1479,22 @@ public:
         b = new GUI::Button(this, button_row_cx + (button_w + button_pad_w), button_row_y, MSG_Get("OK"), button_w);
 
         int i = 0, j = 0;
-        Property *prop;
-        while ((prop = section->Get_prop(i))) {
+        Property *property;
+        std::vector<Property*> properties;
+        auto propertyIndex = 0;
+        
+        while ((property = section->Get_prop(propertyIndex++)))
+        {
+            properties.push_back(property);
+        }
+
+        std::sort(properties.begin(), properties.end(),[](const Property* a, const Property* b)
+        {
+            return a->propname < b->propname;
+        });
+        
+        for(const auto & prop : properties)
+        {
             if (!advopt->isChecked() && !prop->basic()) {i++;continue;}
             Prop_bool   *pbool   = dynamic_cast<Prop_bool*>(prop);
             Prop_int    *pint    = dynamic_cast<Prop_int*>(prop);
@@ -1494,7 +1566,7 @@ public:
         }
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         strcpy(tmp1, mainMenu.get_item("HelpMenu").get_text().c_str());
         if (arg == MSG_Get("OK") && proplist.size()) { close(); running=false; if(!shortcut) resetcfg=true; }
         else if (arg == MSG_Get("OK") || arg == MSG_Get("CANCEL") || arg == MSG_Get("CLOSE")) { close(); if(shortcut) running=false; }
@@ -1531,12 +1603,12 @@ public:
             ToplevelWindow::actionExecuted(b, arg);
     }
 
-    virtual bool keyDown(const GUI::Key &key) {
+    bool keyDown(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyDown(key)) return true;
         return false;
     }
 
-    virtual bool keyUp(const GUI::Key &key) {
+    bool keyUp(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyUp(key)) return true;
 
         if (key.special == GUI::Key::Escape) {
@@ -1582,10 +1654,7 @@ public:
         if (scroll_h > allowed_dialog_y)
             scroll_h = allowed_dialog_y;
 
-        std::string title(section->GetName());
-        sprintf(tmp1, MSG_Get("CONFIGURATION_FOR"), CapName(title).c_str());
-        setTitle(tmp1);
-        title[0] = std::toupper(title[0]);
+        setTitle(CapName(std::string(section->GetName())).c_str());
 
 		char extra_data[4096] = { 0 };
 		const char * extra = const_cast<char*>(section->data.c_str());
@@ -1619,7 +1688,7 @@ public:
 			}
 		}
 
-        int height=title=="Config"?100:210;
+        int height=title=="Config"?100:81;
         scroll_h += height + 2; /* border */
 
         wiw = new GUI::WindowInWindow(this, 5, 5, width-border_left-border_right-10, scroll_h);
@@ -1720,7 +1789,7 @@ public:
         }
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         if (arg == MSG_Get("OK")) section->data = *(std::string*)content->getText();
         std::string lines = *(std::string*)content->getText();
         strcpy(tmp1, mainMenu.get_item("HelpMenu").get_text().c_str());
@@ -1774,12 +1843,12 @@ public:
         } else ToplevelWindow::actionExecuted(b, arg);
     }
 
-    virtual bool keyDown(const GUI::Key &key) {
+    bool keyDown(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyDown(key)) return true;
         return false;
     }
 
-    virtual bool keyUp(const GUI::Key &key) {
+    bool keyUp(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyUp(key)) return true;
 
         if (key.special == GUI::Key::Escape) {
@@ -1832,7 +1901,7 @@ public:
         }
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         if (arg == MSG_Get("OK")) section->data = *(std::string*)content->getText();
         if (arg == MSG_Get("OK") || arg == MSG_Get("CANCEL") || arg == MSG_Get("CLOSE")) { close(); if(shortcut) running=false; }
         else if (arg == MSG_Get("PASTE_CLIPBOARD")) {
@@ -1867,12 +1936,12 @@ public:
         } else ToplevelWindow::actionExecuted(b, arg);
     }
 
-    virtual bool keyDown(const GUI::Key &key) {
+    bool keyDown(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyDown(key)) return true;
         return false;
     }
 
-    virtual bool keyUp(const GUI::Key &key) {
+    bool keyUp(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyUp(key)) return true;
 
         if (key.special == GUI::Key::Escape) {
@@ -1915,7 +1984,7 @@ public:
         name->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("USE_PORTABLECONFIG")) {
             name->setText("dosbox-x.conf");
@@ -1947,7 +2016,7 @@ public:
         if(shortcut) running=false;
     }
 
-    virtual bool keyUp(const GUI::Key &key) {
+    virtual bool keyUp(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyUp(key)) return true;
 
         if (key.special == GUI::Key::Enter) {
@@ -1985,14 +2054,14 @@ public:
         name->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) MSG_Write(name->getText(), lang->getText());
         close();
         if(shortcut) running=false;
     }
 
-    virtual bool keyUp(const GUI::Key &key) {
+    bool keyUp(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyUp(key)) return true;
 
         if (key.special == GUI::Key::Enter) {
@@ -2021,7 +2090,7 @@ public:
     std::string                         trigger_enter = MSG_Get("OK");
     std::string                         trigger_esc = MSG_Get("CANCEL");
 public:
-    virtual bool                        keyDown(const GUI::Key &key) {
+    bool keyDown(const GUI::Key &key) override {
         if (key.special == GUI::Key::Special::Enter) {
             if (trigger_who != NULL && !trigger_enter.empty())
                 trigger_who->actionExecuted(this, trigger_enter);
@@ -2064,7 +2133,7 @@ public:
         name->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) {
             char *str = (char*)name->getText();
@@ -2106,7 +2175,7 @@ public:
         name->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) {
             Section* sec = control->GetSection("sdl");
@@ -2159,7 +2228,7 @@ public:
         move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) {
             autosave_second = atoi(name[0]->getText());
@@ -2207,7 +2276,7 @@ public:
         name->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) {
             Section* sec = control->GetSection("cpu");
@@ -2243,7 +2312,7 @@ public:
         name->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         Section_prop * sec = static_cast<Section_prop *>(control->GetSection("vsync"));
         if (arg == MSG_Get("OK")) {
@@ -2282,7 +2351,7 @@ public:
             name->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) {
             extern unsigned int hdd_defsize;
@@ -2321,7 +2390,7 @@ public:
             name->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) {
             if (set_ver(name->getText()))
@@ -2351,7 +2420,7 @@ public:
             name->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) {
             SetVal("render", "aspect_ratio", name->getText());
@@ -2392,7 +2461,7 @@ public:
             title1->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) {
             dosbox_title = trim(title1->getText());
@@ -2427,7 +2496,7 @@ public:
             name->posToEnd(); /* position the cursor at the end where the user is most likely going to edit */
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) {
             SetVal("sdl", "transparency", name->getText());
@@ -2457,7 +2526,7 @@ public:
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("CLOSE"))
             close();
@@ -2484,7 +2553,7 @@ public:
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("CLOSE"))
             close();
@@ -2518,7 +2587,7 @@ public:
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("CLOSE"))
             close();
@@ -2620,7 +2689,7 @@ public:
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get(MSG_Get("CLOSE")))
             close();
@@ -2628,7 +2697,7 @@ public:
     }
 };
 
-char * GetIDEPosition(unsigned char bios_disk_index);
+std::string GetIDEPosition(unsigned char bios_disk_index);
 class ShowDriveNumber : public GUI::ToplevelWindow {
 protected:
     GUI::Input *name;
@@ -2659,7 +2728,7 @@ public:
         move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("CLOSE"))
             close();
@@ -2685,7 +2754,7 @@ public:
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("CLOSE"))
             close();
@@ -2705,7 +2774,7 @@ public:
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("YES"))
             confres=true;
@@ -2753,7 +2822,7 @@ public:
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == "360KB" && imgfd360->isChecked()) {
             imgfd400->setChecked(false);
@@ -2975,7 +3044,7 @@ public:
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("CLOSE"))
             close();
@@ -2995,7 +3064,7 @@ public:
         move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     };
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
          if (arg == MSG_Get("CLOSE"))
          if(shortcut) running=false;
@@ -3021,7 +3090,7 @@ public:
         move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     };
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
          if (arg == MSG_Get("CLOSE"))
          if(shortcut) running=false;
@@ -3051,7 +3120,7 @@ public:
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("CLOSE"))
             close();
@@ -3085,7 +3154,7 @@ public:
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("CLOSE"))
             close();
@@ -3109,56 +3178,175 @@ public:
         bar->addItem(0,"");
         bar->addItem(0,MSG_Get("CLOSE"));
         bar->addMenu(MSG_Get("SETTINGS"));
+        
+        // theme menu
+        {
+            bar->addMenu("Theme"); // TODO MSG_Get("THEME")
+            bar->addItem(2, GUI::ThemeWindows31WindowsDefault::GetName());
+            bar->addItem(2, "");
+            bar->addItem(2, GUI::ThemeWindows31Arizona::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Bordeaux::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Cinnamon::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Designer::GetName());
+            bar->addItem(2, GUI::ThemeWindows31EmeraldCity::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Fluorescent::GetName());
+            bar->addItem(2, GUI::ThemeWindows31HotDogStand::GetName());
+            bar->addItem(2, GUI::ThemeWindows31LCDDefaultScreenSettings::GetName());
+            bar->addItem(2, GUI::ThemeWindows31LCDReversedDark::GetName());
+            bar->addItem(2, GUI::ThemeWindows31LCDReversedLight::GetName());
+            bar->addItem(2, GUI::ThemeWindows31BlackLeatherJacket::GetName());
+            bar->addItem(2, "|");
+            bar->addItem(2, GUI::ThemeWindows31Mahogany::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Monochrome::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Ocean::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Pastel::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Patchwork::GetName());
+            bar->addItem(2, GUI::ThemeWindows31PlasmaPowerSaver::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Rugby::GetName());
+            bar->addItem(2, GUI::ThemeWindows31TheBlues::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Tweed::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Valentine::GetName());
+            bar->addItem(2, GUI::ThemeWindows31Wingtips::GetName());
+        }
+        
         bar->addMenu(mainMenu.get_item("HelpMenu").get_text().c_str());
-        bar->addItem(2,MSG_Get("VISIT_HOMEPAGE"));
-        bar->addItem(2,"");
+        bar->addItem(3,MSG_Get("VISIT_HOMEPAGE"));
+        bar->addItem(3,"");
         if (!dos_kernel_disabled) {
             /* these do not work until shell help text is registered */
-            bar->addItem(2,MSG_Get("GET_STARTED"));
-            bar->addItem(2,MSG_Get("CDROM_SUPPORT"));
-            bar->addItem(2,"");
+            bar->addItem(3,MSG_Get("GET_STARTED"));
+            bar->addItem(3,MSG_Get("CDROM_SUPPORT"));
+            bar->addItem(3,"");
         }
-        bar->addItem(2,MSG_Get("INTRODUCTION"));
-        bar->addItem(2,mainMenu.get_item("help_about").get_text().c_str());
+        bar->addItem(3,MSG_Get("INTRODUCTION"));
+        bar->addItem(3,mainMenu.get_item("help_about").get_text().c_str());
         bar->addActionHandler(this);
 
-        new GUI::Label(this, 10, 30, MSG_Get("CONFIGURE_GROUP"));
-        advopt = new GUI::Checkbox(this, 340, 30, MSG_Get("SHOW_ADVOPT"));
-        Section_prop * section=static_cast<Section_prop *>(control->GetSection("dosbox"));
-        advopt->setChecked(section->Get_bool("show advanced options"));
-
-        Section *sec;
         int gridbtnwidth = 130;
-        int gridbtnheight = 28;
+        int gridbtnheight = GUI::CurrentTheme.ButtonHeight;
         int gridbtnx = 12;
-        int gridbtny = 50;
+        int gridbtny = 25;
         int btnperrow = 4;
         int i = 0;
 
+        constexpr auto margin = 3;
+        
+        const auto xSpace = gridbtnwidth + margin;
+        const auto ySpace = gridbtnheight + margin;
+        
         std::function< std::pair<int,int>(const int) > gridfunc = [&/*access to locals here*/](const int i){
-            return std::pair<int,int>(gridbtnx+(i%btnperrow)*gridbtnwidth, gridbtny+(i/btnperrow)*gridbtnheight);
+            return std::pair<int,int>(gridbtnx+(i%btnperrow)*xSpace, gridbtny+(i/btnperrow)*ySpace);
         };
 
-        while ((sec = control->GetSection(i))) {
-            if (i != 0 && (i%15) == 0) bar->addItem(1, "|");
-            std::string name = sec->GetName();
-            std::string title = CapName(name);
-            name[0] = std::toupper(name[0]);
+        std::vector<Section*> sections; // sorted by relevance
+
+        // actual sorting
+        {
+            std::vector<std::string> sectionNames = {
+                "log", "dosbox", "render", "sdl",
+                "video", "voodoo", "vsync", "ttf",
+                "dos", "dosv", "pc98", "4dos",
+                "autoexec", "config", "cpu", "speaker",
+                "sblaster", "gus", "midi", "mixer",
+                "innova", "imfc", "joystick", "mapper",
+                "keyboard", "serial", "parallel", "printer",
+                "ipx", "ne2000", "ethernet, pcap", "ethernet, slirp",
+                "ide, primary", "ide, secondary", "ide, tertiary", "ide, quaternary",
+                "ide, quinternary", "ide, sexternary", "ide, septernary", "ide, octernary",
+                "fdc, primary",
+            };
+
+            Section* section;
+
+            auto temp1 = 0;
+
+            while((section = control->GetSection(temp1++)))
+            {
+                sections.push_back(section);
+            }
+
+            std::unordered_map<std::string, int> sectionMap;
+
+            auto temp2 = 0;
+
+            for(const auto& name : sectionNames)
+            {
+                sectionMap[name] = temp2++;
+            }
+
+            std::sort(
+                      sections.begin(), sections.end(),
+                      [&sectionMap](const Section* a, const Section* b)
+                      {
+                          const auto itA = sectionMap.find(a->GetName());
+                          const auto itB = sectionMap.find(b->GetName());
+                          if(itA != sectionMap.end() && itB != sectionMap.end())
+                          {
+                              return itA->second < itB->second;
+                          }
+                          if(itA != sectionMap.end())
+                          {
+                              return true;
+                          }
+                          if(itB != sectionMap.end())
+                          {
+                              return false;
+                          }
+                          return false;
+                      });
+        }
+        
+        for(const auto & sec : sections)
+        {
+            if (i != 0 && (i%16) == 0) bar->addItem(1, "|");
+            std::string sectionTitle = CapName(std::string(sec->GetName()));
             const auto sz = gridfunc(i);
-            GUI::Button *b = new GUI::Button(this, sz.first, sz.second, title, gridbtnwidth, gridbtnheight);
+            GUI::Button *b = new GUI::Button(this, sz.first, sz.second, sectionTitle, gridbtnwidth, gridbtnheight);
             b->addActionHandler(this);
-            bar->addItem(1, title);
+            bar->addItem(1, sectionTitle);
             i++;
         }
 
         const auto finalgridpos = gridfunc(i - 1);
-        int closerow_y = finalgridpos.second + 5 + gridbtnheight;
+        int closerow_y = finalgridpos.second + 5 + ySpace;
+
+        advopt = new GUI::Checkbox(this, gridbtnx, closerow_y, MSG_Get("SHOW_ADVOPT"));
+        Section_prop * section=static_cast<Section_prop *>(control->GetSection("dosbox"));
+        advopt->setChecked(section->Get_bool("show advanced options") || advOptUser);
+
+        // apply theme
+        {
+            auto theme = std::string(section->Get_string("configuration tool theme"));
+
+            if(theme.empty())
+            {
+                bool dark = false;
+
+#if defined(WIN32) && !defined(HX_DOS)
+                // ReSharper disable once CppDeclaratorDisambiguatedAsFunction
+                bool HostDarkMode(); // NOLINT(clang-diagnostic-vexing-parse)
+                dark = HostDarkMode();
+#endif
+                TryApplyTheme(
+                              dark
+                                  ? GUI::ThemeWindows31LCDReversedDark::GetName()
+                                  : GUI::ThemeWindows31LCDReversedLight::GetName());
+            }
+            else
+            {
+                TryApplyTheme(theme);
+            }
+        }
 
         strcpy(tmp1, (MSG_Get("SAVE")+std::string("...")).c_str());
-        (saveButton = new GUI::Button(this, 158, closerow_y, tmp1, 110))->addActionHandler(this);
-        (closeButton = new GUI::Button(this, 276, closerow_y, MSG_Get("CLOSE"), 110))->addActionHandler(this);
 
-        resize(gridbtnx + (gridbtnwidth * btnperrow) + 12 + border_left + border_right,
+        const auto xSave = gridbtnx + (gridbtnwidth + margin) * 2;
+        const auto xExit = gridbtnx + (gridbtnwidth + margin) * 3;
+
+        (saveButton  = new GUI::Button(this, xSave, closerow_y, tmp1, gridbtnwidth, gridbtnheight))->addActionHandler(this);
+        (closeButton = new GUI::Button(this, xExit, closerow_y, MSG_Get("CLOSE"), gridbtnwidth, gridbtnheight))->addActionHandler(this);
+
+        resize(gridbtnx + (xSpace * btnperrow) + gridbtnx + border_left + border_right,
                closerow_y + closeButton->getHeight() + 8 + border_top + border_bottom);
 
         bar->resize(getWidth(),bar->getHeight());
@@ -3167,12 +3355,12 @@ public:
 
     ~ConfigurationWindow() { running = false; cfg_windows_active.clear(); }
 
-    virtual bool keyDown(const GUI::Key &key) {
+    bool keyDown(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyDown(key)) return true;
         return false;
     }
 
-    virtual bool keyUp(const GUI::Key &key) {
+    bool keyUp(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyUp(key)) return true;
 
         if (key.special == GUI::Key::Escape) {
@@ -3183,7 +3371,59 @@ public:
         return false;
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    static void TryApplyTheme(const GUI::String& name)
+    {
+        if(name == GUI::ThemeWindows31WindowsDefault::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31WindowsDefault();
+        if(name == GUI::ThemeWindows31Arizona::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Arizona();
+        if(name == GUI::ThemeWindows31Bordeaux::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Bordeaux();
+        if(name == GUI::ThemeWindows31Cinnamon::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Cinnamon();
+        if(name == GUI::ThemeWindows31Designer::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Designer();
+        if(name == GUI::ThemeWindows31EmeraldCity::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31EmeraldCity();
+        if(name == GUI::ThemeWindows31Fluorescent::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Fluorescent();
+        if(name == GUI::ThemeWindows31HotDogStand::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31HotDogStand();
+        if(name == GUI::ThemeWindows31LCDDefaultScreenSettings::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31LCDDefaultScreenSettings();
+        if(name == GUI::ThemeWindows31LCDReversedDark::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31LCDReversedDark();
+        if(name == GUI::ThemeWindows31LCDReversedLight::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31LCDReversedLight();
+        if(name == GUI::ThemeWindows31BlackLeatherJacket::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31BlackLeatherJacket();
+        if(name == GUI::ThemeWindows31Mahogany::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Mahogany();
+        if(name == GUI::ThemeWindows31Monochrome::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Monochrome();
+        if(name == GUI::ThemeWindows31Ocean::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Ocean();
+        if(name == GUI::ThemeWindows31Pastel::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Pastel();
+        if(name == GUI::ThemeWindows31Patchwork::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Patchwork();
+        if(name == GUI::ThemeWindows31PlasmaPowerSaver::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31PlasmaPowerSaver();
+        if(name == GUI::ThemeWindows31Rugby::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Rugby();
+        if(name == GUI::ThemeWindows31TheBlues::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31TheBlues();
+        if(name == GUI::ThemeWindows31Tweed::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Tweed();
+        if(name == GUI::ThemeWindows31Valentine::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Valentine();
+        if(name == GUI::ThemeWindows31Wingtips::GetName())
+            GUI::DefaultTheme = GUI::ThemeWindows31Wingtips();
+    }
+
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
+        advOptUser = advopt->isChecked();
+        TryApplyTheme(arg); // TODO MSG_Get("THEME"), save to config
         GUI::String sname = RestoreName(arg);
         sname.at(0) = (unsigned int)std::tolower((int)sname.at(0));
         Section *sec;
@@ -3325,7 +3565,7 @@ static void UI_Execute(GUI::ScreenSDL *screen) {
         if (background)
             SDL_BlitSurface(background, NULL, sdlscreen, NULL);
         else
-            SDL_FillRect(sdlscreen,0,0);
+            SDL_FillRect(sdlscreen, nullptr, 0);
 
         screen->update(screen->getTime());
 
@@ -3588,7 +3828,7 @@ static void UI_Select(GUI::ScreenSDL *screen, int select) {
         if (background)
             SDL_BlitSurface(background, NULL, sdlscreen, NULL);
         else
-            SDL_FillRect(sdlscreen,0,0);
+            SDL_FillRect(sdlscreen, nullptr, 0);
 
         screen->update(4);
 #if defined(C_SDL2)
@@ -3651,7 +3891,7 @@ void GUI_Shortcut(int select) {
 #if defined(USE_TTF)
     if (ttf.inUse && !confres) {
         ttf_switch_off();
-        GFX_EndUpdate(0);
+        GFX_EndUpdate(nullptr);
         switchttf = true;
         PIC_AddEvent(RunCfgTool, 100);
     } else
@@ -3666,7 +3906,7 @@ void GUI_Run(bool pressed) {
 #if defined(USE_TTF)
     if (ttf.inUse) {
         ttf_switch_off();
-        GFX_EndUpdate(0);
+        GFX_EndUpdate(nullptr);
         switchttf = true;
         PIC_AddEvent(RunCfgTool, 100);
     } else

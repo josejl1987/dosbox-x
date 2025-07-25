@@ -61,8 +61,8 @@ uint16_t cpMap_AX[32] = {
 #define MIN_PTSIZE 9
 
 #ifdef _MSC_VER
-# define MIN(a,b) ((a) < (b) ? (a) : (b))
-# define MAX(a,b) ((a) > (b) ? (a) : (b))
+# define MIN(a,b) (std::min)(a,b)
+# define MAX(a,b) (std::max)(a,b)
 #else
 # define MIN(a,b) std::min(a,b)
 # define MAX(a,b) std::max(a,b)
@@ -112,17 +112,20 @@ static SDL_Rect ttf_textClip = {0, 0, 0, 0};
 ttf_cell curAttrChar[txtMaxLins*txtMaxCols];					// currently displayed textpage
 ttf_cell newAttrChar[txtMaxLins*txtMaxCols];					// to be replaced by
 
-alt_rgb altBGR0[16], altBGR1[16];
+extern alt_rgb altBGR0[16];
+alt_rgb altBGR1[16];
 int blinkCursor = -1;
 static int prev_sline = -1;
 static int charSet = 0;
 static alt_rgb *rgbColors = (alt_rgb*)render.pal.rgb;
 static bool blinkstate = false;
-bool colorChanged = false, justChanged = false, staycolors = false, firstsize = true, ttfswitch=false, switch_output_from_ttf=false;
+bool colorChanged = false, justChanged = false, staycolors = false, firstsize = true, ttfswitch = false, switch_output_from_ttf = false;
+bool init_once = false, init_twice = false;
 
 int menuwidth_atleast(int width), FileDirExistCP(const char *name), FileDirExistUTF8(std::string &localname, const char *name);
 void AdjustIMEFontSize(void),refreshExtChar(void), initcodepagefont(void), change_output(int output), drawmenu(Bitu val), KEYBOARD_Clear(void), RENDER_Reset(void), DOSBox_SetSysMenu(void), GetMaxWidthHeight(unsigned int *pmaxWidth, unsigned int *pmaxHeight), SetWindowTransparency(int trans), resetFontSize(void), RENDER_CallBack( GFX_CallBackFunctions_t function );
 bool isDBCSCP(void), InitCodePage(void), CodePageGuestToHostUTF16(uint16_t *d/*CROSS_LEN*/,const char *s/*CROSS_LEN*/), systemmessagebox(char const * aTitle, char const * aMessage, char const * aDialogType, char const * aIconType, int aDefaultButton);
+bool CheckDBCSCP(int32_t codepage);
 std::string GetDOSBoxXPath(bool withexe=false);
 
 #if defined(C_SDL2)
@@ -188,7 +191,7 @@ Bitu OUTPUT_TTF_SetSize() {
         SDL_FULLSCREEN
 #endif
         );
-#if defined(WIN32) && !defined(C_SDL2) && !defined(HX_DOS)
+#if defined(WIN32) && !defined(C_SDL2) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)
         if (sdl.displayNumber>0) {
             xyp xy={0};
             xy.x=-1;
@@ -229,7 +232,8 @@ Bitu OUTPUT_TTF_SetSize() {
     mainMenu.setRedraw();
 #endif
 
-	AdjustIMEFontSize();
+    AdjustIMEFontSize();
+    ApplyPreventCap();
 
     return GFX_CAN_32 | GFX_SCALING;
 }
@@ -242,9 +246,9 @@ void setVGADAC() {
             IO_WriteB(VGAREG_ACTL_ADDRESS, i+32);
             imap[i]=IO_ReadB(VGAREG_ACTL_READ_DATA);
             IO_WriteB(VGAREG_DAC_WRITE_ADDRESS, imap[i]);
-            IO_WriteB(VGAREG_DAC_DATA, (altBGR1[i].red+3)*63/255);
-            IO_WriteB(VGAREG_DAC_DATA, (altBGR1[i].green+3)*63/255);
-            IO_WriteB(VGAREG_DAC_DATA, (altBGR1[i].blue+3)*63/255);
+            IO_WriteB(VGAREG_DAC_DATA, altBGR0[i].red>>2);   // Convert 8-bit to 6-bit for VGA DAC
+            IO_WriteB(VGAREG_DAC_DATA, altBGR0[i].green>>2);
+            IO_WriteB(VGAREG_DAC_DATA, altBGR0[i].blue>>2);
         }
     }
 }
@@ -252,44 +256,42 @@ void setVGADAC() {
 /* NTS: EGA/VGA etc have at least 16 DOS colors. Check also CGA etc. */
 bool setColors(const char *colorArray, int n) {
     if (IS_PC98_ARCH) return false;
-    if (!colorChanged)
-        for (uint8_t i = 0; i < 0x10; i++) {
-            altBGR1[i].red=rgbColors[i].red;
-            altBGR1[i].green=rgbColors[i].green;
-            altBGR1[i].blue=rgbColors[i].blue;
-        }
     staycolors = strlen(colorArray) && *colorArray == '+';
     const char* nextRGB = colorArray + (staycolors?1:0);
 	uint8_t * altPtr = (uint8_t *)altBGR1;
-	int rgbVal[3] = {-1,-1,-1};
-	for (int colNo = 0; colNo < (n>-1?1:16); colNo++) {
-		if (n>-1) altPtr+=4*n;
-		if (sscanf(nextRGB, " ( %d , %d , %d)", &rgbVal[0], &rgbVal[1], &rgbVal[2]) == 3) {	// Decimal: (red,green,blue)
-			for (int i = 0; i< 3; i++) {
-				if (rgbVal[i] < 0 || rgbVal[i] > 255)
-					return false;
-				altPtr[i] = rgbVal[i];
-			}
-			while (*nextRGB != ')')
-				nextRGB++;
-			nextRGB++;
-		} else if (sscanf(nextRGB, " #%6x", ((unsigned int*)(&rgbVal[0]))) == 1) {							// Hexadecimal
-			if (rgbVal[0] < 0)
-				return false;
-			for (int i = 0; i < 3; i++) {
-				altPtr[2-i] = rgbVal[0]&255;
-				rgbVal[0] >>= 8;
-			}
-			nextRGB = strchr(nextRGB, '#') + 7;
-		} else
-			return false;
-		altPtr += 4;
-	}
-	for (int i = n>-1?n:0; i < (n>-1?n+1:16); i++) {
-		altBGR0[i].blue = (altBGR1[i].blue*2 + 128)/4;
-		altBGR0[i].green = (altBGR1[i].green*2 + 128)/4;
-		altBGR0[i].red = (altBGR1[i].red*2 + 128)/4;
-	}
+	int32_t rgbVal[4] = {-1,-1,-1,-1};
+    for(int colNo = n > -1 ? n : 0; colNo < (n > -1 ? n + 1 : 16); colNo++) {
+        if(sscanf(nextRGB, " ( %d , %d , %d)", &rgbVal[0], &rgbVal[1], &rgbVal[2]) == 3) {	// Decimal: (red,green,blue)
+            for(int i = 0; i < 3; i++) {
+                if(rgbVal[i] < 0 || rgbVal[i] > 255)
+                    return false;
+            }
+            while(*nextRGB != ')')
+                nextRGB++;
+            nextRGB++;
+        }
+        else if(sscanf(nextRGB, " #%6x", ((uint32_t*)(&rgbVal[3]))) == 1) {	// Hexadecimal
+            if(rgbVal[3] < 0 || rgbVal[3] > 0xFFFFFF)
+                return false;
+            for(int i = 2; i >= 0; i--) {
+                rgbVal[i] = rgbVal[3] & 255;
+                rgbVal[3] >>= 8;
+            }
+            nextRGB = strchr(nextRGB, '#') + 7;
+        }
+        else
+            return false;
+
+        altBGR0[colNo].blue = rgbVal[2];
+        altBGR0[colNo].green = rgbVal[1];
+        altBGR0[colNo].red = rgbVal[0];
+        rgbColors[colNo].blue = (uint8_t)rgbVal[2];
+        rgbColors[colNo].green = (uint8_t)rgbVal[1];
+        rgbColors[colNo].red = (uint8_t)rgbVal[0];
+        altBGR1[colNo].blue = rgbVal[2];
+        altBGR1[colNo].green = rgbVal[1];
+        altBGR1[colNo].red = rgbVal[0];
+    }
     setVGADAC();
     colorChanged=justChanged=true;
 	return true;
@@ -501,14 +503,14 @@ int setTTFMap(bool changecp) {
         uname[0]=0;
         uname[1]=0;
         if (cp == 932 && (halfwidthkana || IS_JEGA_ARCH)) forceswk=true;
-        if (cp == 932 || cp == 936 || cp == 949 || cp == 950 || cp == 951) dos.loaded_codepage = 437;
+        if (CheckDBCSCP(cp)) dos.loaded_codepage = 437;
         if (CodePageGuestToHostUTF16(uname,text)) {
             wcTest[i] = uname[1]==0?uname[0]:i;
             if (cp == 932 && lowboxdrawmap.find(i)!=lowboxdrawmap.end() && TTF_GlyphIsProvided(ttf.SDL_font, wcTest[i]))
                 cpMap[i] = wcTest[i];
         }
         forceswk=false;
-        if (cp == 932 || cp == 936 || cp == 949 || cp == 950 || cp == 951) dos.loaded_codepage = cp;
+        if (CheckDBCSCP(cp)) dos.loaded_codepage = cp;
     }
     uint16_t unimap;
     int notMapped = 0;
@@ -559,13 +561,13 @@ int setTTFCodePage() {
 
 void GFX_SelectFontByPoints(int ptsize) {
 	bool initCP = true;
-	if (ttf.SDL_font != 0) {
+	if (ttf.SDL_font) {
 		TTF_CloseFont(ttf.SDL_font);
 		initCP = false;
 	}
-	if (ttf.SDL_fontb != 0) TTF_CloseFont(ttf.SDL_fontb);
-	if (ttf.SDL_fonti != 0) TTF_CloseFont(ttf.SDL_fonti);
-	if (ttf.SDL_fontbi != 0) TTF_CloseFont(ttf.SDL_fontbi);
+	if (ttf.SDL_fontb) TTF_CloseFont(ttf.SDL_fontb);
+	if (ttf.SDL_fonti) TTF_CloseFont(ttf.SDL_fonti);
+	if (ttf.SDL_fontbi) TTF_CloseFont(ttf.SDL_fontbi);
 	SDL_RWops *rwfont = SDL_RWFromConstMem(ttfFont, (int)ttfSize);
 	ttf.SDL_font = TTF_OpenFontRW(rwfont, 1, ptsize);
     if (ttfSizeb>0) {
@@ -599,7 +601,7 @@ void GFX_SelectFontByPoints(int ptsize) {
 
 void SetOutputSwitch(const char *outputstr) {
 #if C_DIRECT3D
-        if (!strcasecmp(outputstr, "direct3d"))
+        if (!strcasecmp(outputstr, "direct3d") || !strcasecmp(outputstr, "auto"))
             switchoutput = 6;
         else
 #endif
@@ -608,7 +610,7 @@ void SetOutputSwitch(const char *outputstr) {
             switchoutput = 5;
         else if (!strcasecmp(outputstr, "openglnb"))
             switchoutput = 4;
-        else if (!strcasecmp(outputstr, "opengl")||!strcasecmp(outputstr, "openglnq"))
+        else if (!strcasecmp(outputstr, "opengl")||!strcasecmp(outputstr, "openglnq") || !strcasecmp(outputstr, "auto"))
             switchoutput = 3;
         else
 #endif
@@ -622,7 +624,7 @@ void OUTPUT_TTF_Select(int fsize) {
     if (!initttf&&TTF_Init()) {											// Init SDL-TTF
         std::string message = "Could not init SDL-TTF: " + std::string(SDL_GetError());
         systemmessagebox("Error", message.c_str(), "ok","error", 1);
-        sdl.desktop.want_type = SCREEN_SURFACE;
+        change_output(switchoutput == -1 ? 0 : switchoutput);
         return;
     }
     int fontSize = 0;
@@ -680,12 +682,17 @@ void OUTPUT_TTF_Select(int fsize) {
             }
         }
         const char * colors = ttf_section->Get_string("colors");
-        if (*colors) {
+        staycolors = strlen(colors) && *colors == '+'; // Always switch to preset value when '+' is specified
+        if ((*colors && (!init_once || !init_twice))|| staycolors) {
             if (!setColors(colors,-1)) {
                 LOG_MSG("Incorrect color scheme: %s", colors);
                 //setColors("#000000 #0000aa #00aa00 #00aaaa #aa0000 #aa00aa #aa5500 #aaaaaa #555555 #5555ff #55ff55 #55ffff #ff5555 #ff55ff #ffff55 #ffffff",-1);
             }
-        } else if (IS_EGAVGA_ARCH) {
+            if(ttf.inUse) init_once = true;
+            if(!init_once) init_once = true;
+            else if(!init_twice) init_twice = true;
+        }
+        else if (IS_EGAVGA_ARCH) {
             alt_rgb *rgbcolors = (alt_rgb*)render.pal.rgb;
             std::string str = "";
             char value[30];
@@ -984,8 +991,8 @@ void processWP(uint8_t *pcolorBG, uint8_t *pcolorFG) {
         }
     }
     if (showbold && (colorFG == wpFG+8 || (wpType == 1 && (wpVersion < 1 || wpVersion > 5 ) && colorFG == 3 && (colorBG&15) == (wpBG > -1 ? wpBG : 1)))) {
-        if (ttf.SDL_fontbi != 0 || !(style&TTF_STYLE_ITALIC) || wpType == 4) style |= TTF_STYLE_BOLD;
-        if ((ttf.SDL_fontbi != 0 && (style&TTF_STYLE_ITALIC)) || (ttf.SDL_fontb != 0 && !(style&TTF_STYLE_ITALIC)) || wpType == 4) colorFG = wpFG;
+        if (ttf.SDL_fontbi || !(style&TTF_STYLE_ITALIC) || wpType == 4) style |= TTF_STYLE_BOLD;
+        if ((ttf.SDL_fontbi && (style&TTF_STYLE_ITALIC)) || (ttf.SDL_fontb && !(style&TTF_STYLE_ITALIC)) || wpType == 4) colorFG = wpFG;
     }
     if (style)
         TTF_SetFontStyle(ttf.SDL_font, style);
@@ -1085,12 +1092,30 @@ void GFX_EndTextLines(bool force) {
                 }
                 bool colornul = staycolors || (IS_VGA_ARCH && (altBGR1[colorBG&15].red > 4 || altBGR1[colorBG&15].green > 4 || altBGR1[colorBG&15].blue > 4 || altBGR1[colorFG&15].red > 4 || altBGR1[colorFG&15].green > 4 || altBGR1[colorFG&15].blue > 4) && rgbColors[colorBG].red < 5 && rgbColors[colorBG].green < 5 && rgbColors[colorBG].blue < 5 && rgbColors[colorFG].red < 5 && rgbColors[colorFG].green <5 && rgbColors[colorFG].blue < 5);
 				ttf_textRect.x = ttf.offX+(rtl?(ttf.cols-x-1):x)*ttf.width;
-				ttf_bgColor.r = !y&&!hasfocus&&noframe?altBGR0[colorBG&15].red:(colornul||(colorChanged&&!IS_VGA_ARCH)?altBGR1[colorBG&15].red:rgbColors[colorBG].red);
-				ttf_bgColor.g = !y&&!hasfocus&&noframe?altBGR0[colorBG&15].green:(colornul||(colorChanged&&!IS_VGA_ARCH)?altBGR1[colorBG&15].green:rgbColors[colorBG].green);
-				ttf_bgColor.b = !y&&!hasfocus&&noframe?altBGR0[colorBG&15].blue:(colornul||(colorChanged&&!IS_VGA_ARCH)?altBGR1[colorBG&15].blue:rgbColors[colorBG].blue);
-				ttf_fgColor.r = !y&&!hasfocus&&noframe?altBGR0[colorFG&15].red:(colornul||(colorChanged&&!IS_VGA_ARCH)?altBGR1[colorFG&15].red:rgbColors[colorFG].red);
-				ttf_fgColor.g = !y&&!hasfocus&&noframe?altBGR0[colorFG&15].green:(colornul||(colorChanged&&!IS_VGA_ARCH)?altBGR1[colorFG&15].green:rgbColors[colorFG].green);
-				ttf_fgColor.b = !y&&!hasfocus&&noframe?altBGR0[colorFG&15].blue:(colornul||(colorChanged&&!IS_VGA_ARCH)?altBGR1[colorFG&15].blue:rgbColors[colorFG].blue);
+                if(colornul||(colorChanged&&!IS_VGA_ARCH)){
+                    ttf_bgColor.r = altBGR1[colorBG&15].red;
+                    ttf_bgColor.g = altBGR1[colorBG&15].green;
+                    ttf_bgColor.b = altBGR1[colorBG&15].blue;
+                    ttf_fgColor.r = altBGR1[colorFG&15].red;
+                    ttf_fgColor.g = altBGR1[colorFG&15].green;
+                    ttf_fgColor.b = altBGR1[colorFG&15].blue;
+                }
+                else {
+                    ttf_bgColor.r = rgbColors[colorBG].red;
+                    ttf_bgColor.g = rgbColors[colorBG].green;
+                    ttf_bgColor.b = rgbColors[colorBG].blue;
+                    ttf_fgColor.r = rgbColors[colorFG].red;
+                    ttf_fgColor.g = rgbColors[colorFG].green;
+                    ttf_fgColor.b = rgbColors[colorFG].blue;
+                }
+                if(noframe&&!hasfocus&&!y) { // Dim top line if focus is lost in Fullscreen mode
+                    ttf_bgColor.r = (((uint16_t)ttf_bgColor.r * 2 +128) / 4) & 0xFF;
+                    ttf_bgColor.g = (((uint16_t)ttf_bgColor.g * 2 +128) / 4) & 0xFF;
+                    ttf_bgColor.b = (((uint16_t)ttf_bgColor.b * 2 +128) / 4) & 0xFF;
+                    ttf_fgColor.r = (((uint16_t)ttf_fgColor.r * 2 +128) / 4) & 0xFF;
+                    ttf_fgColor.g = (((uint16_t)ttf_fgColor.g * 2 +128) / 4) & 0xFF;
+                    ttf_fgColor.b = (((uint16_t)ttf_fgColor.b * 2 +128) / 4) & 0xFF;
+                }
 
                 if (newAC[x].unicode) {
                     dw = newAC[x].doublewide;
@@ -1182,12 +1207,22 @@ void GFX_EndTextLines(bool force) {
 						colorFG=colorBG;
 				}
 				bool dw = newAttrChar[ttf.cursor].unicode && newAttrChar[ttf.cursor].doublewide;
-				ttf_bgColor.r = colorChanged&&!IS_VGA_ARCH?altBGR1[colorBG&15].red:rgbColors[colorBG].red;
-				ttf_bgColor.g = colorChanged&&!IS_VGA_ARCH?altBGR1[colorBG&15].green:rgbColors[colorBG].green;
-				ttf_bgColor.b = colorChanged&&!IS_VGA_ARCH?altBGR1[colorBG&15].blue:rgbColors[colorBG].blue;
-				ttf_fgColor.r = colorChanged&&!IS_VGA_ARCH?altBGR1[colorFG&15].red:rgbColors[colorFG].red;
-				ttf_fgColor.g = colorChanged&&!IS_VGA_ARCH?altBGR1[colorFG&15].green:rgbColors[colorFG].green;
-				ttf_fgColor.b = colorChanged&&!IS_VGA_ARCH?altBGR1[colorFG&15].blue:rgbColors[colorFG].blue;
+                if(colorChanged&&!IS_VGA_ARCH){
+                    ttf_bgColor.r = altBGR1[colorBG&15].red;
+                    ttf_bgColor.g = altBGR1[colorBG&15].green;
+                    ttf_bgColor.b = altBGR1[colorBG&15].blue;
+                    ttf_fgColor.r = altBGR1[colorFG&15].red;
+                    ttf_fgColor.g = altBGR1[colorFG&15].green;
+                    ttf_fgColor.b = altBGR1[colorFG&15].blue;
+                }
+                else {
+                    ttf_bgColor.r = rgbColors[colorBG].red;
+                    ttf_bgColor.g = rgbColors[colorBG].green;
+                    ttf_bgColor.b = rgbColors[colorBG].blue;
+                    ttf_fgColor.r = rgbColors[colorFG].red;
+                    ttf_fgColor.g = rgbColors[colorFG].green;
+                    ttf_fgColor.b = rgbColors[colorFG].blue;
+                }
 				unimap[0] = newAttrChar[ttf.cursor].unicode?newAttrChar[ttf.cursor].chr:cpMap[newAttrChar[ttf.cursor].chr&255];
                 if (dw) {
                     unimap[1] = newAttrChar[ttf.cursor].chr;

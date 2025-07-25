@@ -77,6 +77,11 @@ bool CPU_NMI_active = false;
 bool CPU_NMI_pending = false;
 bool do_seg_limits = false;
 
+bool do_pse = false;
+bool enable_pse = false;
+uint8_t enable_pse_extbits = 0;
+uint8_t enable_pse_extmask = 0;
+
 bool enable_fpu = true;
 bool enable_msr = true;
 bool enable_syscall = true;
@@ -157,7 +162,7 @@ void RDTSC_rebase() {
  * that Intel processors will not update the shadow part of the segment register
  * in real mode. I'm guessing that what Project Angel is doing, is using the same
  * abuse of protected mode to also set the B (big) bit in the code segment so that
- * it's code segment can extend past 64KB (huge unreal mode), which works until
+ * its code segment can extend past 64KB (huge unreal mode), which works until
  * something like an interrupt chops off the top 16 bits of the instruction pointer.
  *
  * I want to clarify that realbig16 is an OPTION that is off by default, because
@@ -538,7 +543,7 @@ void menu_update_autocycle(void) {
  *   processing NMI.
  *
  *   NMI is an active HIGH, rising edge-sensitive asyn-
- *   chronous signal. Setup and hold times, t27 and and t28,
+ *   chronous signal. Setup and hold times, t27 and t28,
  *   relative to the CLK2 signal must be met to guarantee
  *   recognition at a particular clock edge. To assure rec-
  *   ognition of NMI, it must be inactive for at least eight
@@ -626,7 +631,7 @@ void CPU_Check_NMI() {
 #if C_DEBUG
 // #define CPU_CHECK_EXCEPT 1
 // #define CPU_CHECK_IGNORE 1
- /* Use CHECK_EXCEPT when something doesn't work to see if a exception is 
+ /* Use CHECK_EXCEPT when something doesn't work to see if an exception is 
  * needed that isn't enabled by default.*/
 #else
 /* NORMAL NO CHECKING => More Speed */
@@ -1161,7 +1166,7 @@ void CPU_Exception(Bitu which,Bitu error ) {
 		/* NTS: Putting some thought into it, I don't think divide by zero counts as something to throw a double fault
 		 *      over. I may be wrong. The behavior of Intel processors will ultimately decide.
 		 *
-		 *      Until then, don't count Divide Overflow exceptions, so that the "EFP loader" can do it's disgusting
+		 *      Until then, don't count Divide Overflow exceptions, so that the "EFP loader" can do its disgusting
 		 *      anti-debugger hackery when loading parts of a demo. --J.C. */
 		if (!(which == 0/*divide by zero/overflow*/)) {
 			/* CPU_Interrupt() could cause another fault during memory access. This needs to happen here */
@@ -2431,6 +2436,13 @@ Bitu CPU_STR(void) {
 	return cpu_tss.selector;
 }
 
+void CPU_TSS_ForceBusy(bool busy) {
+	if (cpu_tss.selector != 0) {
+		cpu_tss.desc.SetBusy(busy);
+		cpu_tss.SaveSelector();
+	}
+}
+
 bool CPU_LTR(Bitu selector) {
 	if ((selector & 0xfffc)==0) {
 		cpu_tss.SetSelector(selector);
@@ -2601,6 +2613,7 @@ void CPU_SET_CRX(Bitu cr,Bitu value) {
 		PAGING_SetDirBase(value);
 		break;
 	case 4:
+		if (enable_pse) do_pse = !!(value & 0x10);
 		cpu.cr4=value;
 		break;
 	default:
@@ -2744,6 +2757,7 @@ Bitu CPU_SMSW(void) {
 }
 
 bool CPU_LMSW(Bitu word) {
+	/* low 4 bits only, cannot change PE. Bochs source code agrees. */
 	if (cpu.pmode && (cpu.cpl>0)) return CPU_PrepareException(EXCEPTION_GP,0);
 	word&=0xf;
 	if ((cpu.cr0&1/*PE bit*/) && !lmsw_allow_clear_pe_bit) word|=1/*PE bit, stuck on, cannot exit protected mode, 286 style*/;
@@ -2917,6 +2931,14 @@ void CPU_VERW(Bitu selector) {
 	SETFLAGBIT(ZF,true);
 }
 
+/* This is called by the XMS emulation to set up Flat Real Mode, at least for segment registers DS and ES */
+void XMS_InitFlatRealMode(void) {
+	if (!cpu.pmode && !(reg_flags & FLAG_VM)) {
+		Segs.limit[ds] = 0xFFFFFFFFul;
+		Segs.limit[es] = 0xFFFFFFFFul;
+	}
+}
+
 bool CPU_SetSegGeneral(SegNames seg,uint16_t value) {
 	if (!cpu.pmode || (reg_flags & FLAG_VM)) {
 		Segs.val[seg]=value;
@@ -3062,12 +3084,15 @@ bool CPU_CPUID(void) {
 				reg_ebx=0;			/* Not Supported */
 				reg_ecx=0;			/* No features */
 				reg_edx=enable_fpu?1:0;	/* FPU */
+				if (enable_pse) reg_edx |= 0x08; /* Page Size Extension */
 			} else if (CPU_ArchitectureType == CPU_ARCHTYPE_PENTIUM) {
 				reg_eax=report_fdiv_bug?0x513:0x517;	/* intel pentium */
 				reg_ebx=0;			/* Not Supported */
 				reg_ecx=0;			/* No features */
 				reg_edx=0x00000010|(enable_fpu?1:0);	/* FPU+TimeStamp/RDTSC */
 				if (enable_msr) reg_edx |= 0x20; /* ModelSpecific/MSR */
+				if (enable_pse) reg_edx |= 0x08; /* Page Size Extension */
+				if (enable_pse_extbits) reg_edx |= 0x20000; /* PSE 36-bit */
 				if (enable_cmpxchg8b) reg_edx |= 0x100; /* CMPXCHG8B */
 			} else if (CPU_ArchitectureType == CPU_ARCHTYPE_PMMXSLOW) {
 				reg_eax=0x543;		/* intel pentium mmx (PMMX) */
@@ -3075,6 +3100,8 @@ bool CPU_CPUID(void) {
 				reg_ecx=0;			/* No features */
 				reg_edx=0x00800010|(enable_fpu?1:0);	/* FPU+TimeStamp/RDTSC+MMX+ModelSpecific/MSR */
 				if (enable_msr) reg_edx |= 0x20; /* ModelSpecific/MSR */
+				if (enable_pse) reg_edx |= 0x08; /* Page Size Extension */
+				if (enable_pse_extbits) reg_edx |= 0x20000; /* PSE 36-bit */
 				if (enable_cmpxchg8b) reg_edx |= 0x100; /* CMPXCHG8B */
 			} else if (CPU_ArchitectureType == CPU_ARCHTYPE_PPROSLOW) {
 				reg_eax=0x612;		/* intel pentium pro */
@@ -3082,6 +3109,8 @@ bool CPU_CPUID(void) {
 				reg_ecx=0;			/* No features */
 				reg_edx=0x00008011;	/* FPU+TimeStamp/RDTSC */
 				if (enable_msr) reg_edx |= 0x20; /* ModelSpecific/MSR */
+				if (enable_pse) reg_edx |= 0x08; /* Page Size Extension */
+				if (enable_pse_extbits) reg_edx |= 0x20000; /* PSE 36-bit */
 				if (enable_cmpxchg8b) reg_edx |= 0x100; /* CMPXCHG8B */
 			} else if (CPU_ArchitectureType == CPU_ARCHTYPE_PENTIUMII) {
 				/* NTS: Most operating systems will not attempt SYSENTER/SYSEXIT unless this returns model 3, stepping 3, or higher. */
@@ -3104,6 +3133,8 @@ bool CPU_CPUID(void) {
 				reg_ecx=0;			/* No features */
 				reg_edx=0x00808011;	/* FPU+TimeStamp/RDTSC */
 				if (enable_msr) reg_edx |= 0x20; /* ModelSpecific/MSR */
+				if (enable_pse) reg_edx |= 0x08; /* Page Size Extension */
+				if (enable_pse_extbits) reg_edx |= 0x20000; /* PSE 36-bit */
 				if (enable_cmpxchg8b) reg_edx |= 0x100; /* CMPXCHG8B */
 				reg_edx |= 0x800; /* SEP Fast System Call aka SYSENTER/SYSEXIT [SEE NOTES AT TOP OF THIS IF STATEMENT] */
 			} else if (CPU_ArchitectureType == CPU_ARCHTYPE_PENTIUMIII || CPU_ArchitectureType == CPU_ARCHTYPE_EXPERIMENTAL) {
@@ -3112,6 +3143,8 @@ bool CPU_CPUID(void) {
 				reg_ecx=0;			/* No features */
 				reg_edx=0x03808011;	/* FPU+TimeStamp/RDTSC+SSE+FXSAVE/FXRESTOR */
 				if (enable_msr) reg_edx |= 0x20; /* ModelSpecific/MSR */
+				if (enable_pse) reg_edx |= 0x08; /* Page Size Extension */
+				if (enable_pse_extbits) reg_edx |= 0x20000; /* PSE 36-bit */
 				if (enable_cmpxchg8b) reg_edx |= 0x100; /* CMPXCHG8B */
 				if (CPU_ArchitectureType == CPU_ARCHTYPE_PENTIUMIII && p3psn.enabled) reg_edx |= 0x40000;
 				reg_edx |= 0x800; /* SEP Fast System Call aka SYSENTER/SYSEXIT */
@@ -3146,6 +3179,10 @@ Bits HLT_Decode(void) {
 		CPU_Cycles=0;
 	}
 	return 0;
+}
+
+bool CPU_IsHLTed(void) {
+	return (cpudecoder == &HLT_Decode);
 }
 
 void CPU_HLT(uint32_t oldeip) {
@@ -3376,12 +3413,12 @@ public:
 	~Weitek_PageHandler() {
 	}
 
-	uint8_t readb(PhysPt addr);
-	void writeb(PhysPt addr,uint8_t val);
-	uint16_t readw(PhysPt addr);
-	void writew(PhysPt addr,uint16_t val);
-	uint32_t readd(PhysPt addr);
-	void writed(PhysPt addr,uint32_t val);
+	uint8_t readb(PhysPt addr) override;
+	void writeb(PhysPt addr,uint8_t val) override;
+	uint16_t readw(PhysPt addr) override;
+	void writew(PhysPt addr,uint16_t val) override;
+	uint32_t readd(PhysPt addr) override;
+	void writed(PhysPt addr,uint32_t val) override;
 };
 
 uint8_t Weitek_PageHandler::readb(PhysPt addr) {
@@ -3410,7 +3447,7 @@ void Weitek_PageHandler::writed(PhysPt addr,uint32_t val) {
 	LOG_MSG("Weitek stub: writed at 0x%lx val=0x%lx",(unsigned long)addr,(unsigned long)val);
 }
 
-Weitek_PageHandler weitek_pagehandler(0);
+Weitek_PageHandler weitek_pagehandler(nullptr);
 
 PageHandler* weitek_memio_cb(MEM_CalloutObject &co,Bitu phys_page) {
     (void)co; // UNUSED
@@ -3581,7 +3618,7 @@ public:
 		CPU_JMP(false,0,0,0);					//Setup the first cpu core
         menu_update_dynamic();
 	}
-	bool Change_Config(Section* newconfig){
+	bool Change_Config(Section* newconfig) override {
 		const Section_prop * section=static_cast<Section_prop *>(newconfig);
 		CPU_AutoDetermineMode=CPU_AUTODETERMINE_NONE;
 		//CPU_CycleLeft=0;//needed ?
@@ -3618,7 +3655,7 @@ public:
 		Prop_multival* p = section->Get_multival("cycles");
 		std::string type = p->GetSection()->Get_string("type");
 		std::string str ;
-		CommandLine cmd(0,p->GetSection()->Get_string("parameters"));
+		CommandLine cmd(nullptr,p->GetSection()->Get_string("parameters"));
 		if (type=="max") {
 			RDTSC_rebase();
 			CPU_CycleMax=0;
@@ -3699,7 +3736,7 @@ public:
 			CPU_CycleAutoAdjust=false;
 		}
 
-        menu_update_autocycle();
+		menu_update_autocycle();
 
 		cpu_rep_max=section->Get_int("interruptible rep string op");
 		ignore_undefined_msr=section->Get_bool("ignore undefined msr");
@@ -3946,6 +3983,46 @@ public:
 			LOG_MSG("CPU warning: 80186 cpu type is experimental at this time");
 		}
 
+		{
+			const char *pse = section->Get_string("enable pse");
+			if (!strcmp(pse,"pse40")) {
+				enable_pse = true;
+				enable_pse_extbits = 8;
+			}
+			else if (!strcmp(pse,"pse36")) {
+				enable_pse = true;
+				enable_pse_extbits = 4;
+			}
+			else if (!strcmp(pse,"pse") || !strcmp(pse,"true")) {
+				enable_pse = true;
+				enable_pse_extbits = 0;
+			}
+			else if (!strcmp(pse,"none") || !strcmp(pse,"false")) {
+				enable_pse = false;
+			}
+			else {
+				/* auto */
+				if (CPU_ArchitectureType >= CPU_ARCHTYPE_PENTIUMII) {
+					enable_pse = true;
+					enable_pse_extbits = 4; // 36-bit
+				}
+				else if (CPU_ArchitectureType >= CPU_ARCHTYPE_486NEW) {
+					enable_pse = true;
+					enable_pse_extbits = 0;
+				}
+				else {
+					enable_pse = false;
+				}
+			}
+
+			if (enable_pse_extbits != 0)
+				enable_pse_extmask = (1u << enable_pse_extbits) - 1u;
+			else
+				enable_pse_extmask = 0;
+
+			LOG(LOG_CPU,LOG_DEBUG)("PSE extensions: enabled=%u bits=%u",enable_pse,enable_pse_extbits);
+		}
+
 		/* because of the way the BIOS writes certain entry points, a reboot is required
          * if changing between specific levels of CPU. These entry points will fault the
          * CPU otherwise. */
@@ -4055,6 +4132,14 @@ public:
 
         if (enable_cmpxchg8b && CPU_ArchitectureType >= CPU_ARCHTYPE_PENTIUM) LOG_MSG("Pentium CMPXCHG8B emulation is enabled");
 
+	if (CPU_ArchitectureType >= CPU_ARCHTYPE_486NEW) {
+		do_pse = false;
+		cpu.cr4 = 0;
+	}
+	else {
+		enable_pse = false;
+	}
+
 		menu_update_core();
 		menu_update_cputype();
 
@@ -4090,27 +4175,13 @@ public:
 			lmsw_allow_clear_pe_bit = false;
 		}
 		else {
-			/* auto */
-			/* This is not yet fully confirmed, but Intel 386 programming guides suggest that the 386
-			 * does not allow LMSW to clear PE, while the 486DX documentation does not mention it at all,
-			 * therefore the guess here is that sometime around the 486/Pentium era it became possible to
-			 * exit protected mode with LMSW. The reason for this guess is a music unpacker file from
-			 * scene.org, MMCMP.EXE / MMUNCMP.EXE, which appears to use LMSW and SMSW to save the machine
-			 * status word, jump into protected mode briefly, load FS and GS with 4GB limits, then use
-			 * LMSW to restore the original machine status word (to return to real mode). Since LMSW is
-			 * a privileged instruction, the code is written to skip that protected mode jump if the PE
-			 * bit is already set. However, if LMSW is not supposed to let you clear the PE bit, then
-			 * how is code like that supposed to work? Did the programmer write it on non-Intel hardware?
-			 * Did Intel drop the set-only PE behavior during the 486 era? Perhaps the programmer and
-			 * his userbase only ever used it in cases where EMM386.EXE or Windows was running, and there
-			 * fore under virtual 8086 mode where the code to do that was skipped? */
-			/* In any case, the assumption here is that if the target CPU is a Pentium or higher, LMSW can
-			 * clear the PE bit. There is a ticket open in DOSLIB with a task to write a program that
-			 * can verify this behavior on real hardware. */
-			if (CPU_ArchitectureType >= CPU_ARCHTYPE_PENTIUM && CPU_ArchitectureType != CPU_ARCHTYPE_MIXED) /* maybe the original 486 retained the behavior? */
-				lmsw_allow_clear_pe_bit = true;
-			else
-				lmsw_allow_clear_pe_bit = false;
+			/* Unless I see otherwise, all x86 architectures do not allow LMSW to clear the PE bit.
+			 * This is required for our VCPI implementation to work because DOS4GW when using VCPI
+			 * likes to SMSW CX, and off the PE bit, and LMSW back, then continue on using the
+			 * PROTECTED MODE segment values. If allowed to clear PE, this would cause a crash.
+			 * Why is DOS4GW masking off PE when it clearly understands it cannot anyway? It does
+			 * this before every protected mode call to VCPI for some reason. */
+			lmsw_allow_clear_pe_bit = false;
 		}
 
 		if (CPU_CycleAutoAdjust) GFX_SetTitle((int32_t)CPU_CyclePercUsed,-1,-1,false);
@@ -4300,7 +4371,7 @@ CPU_Decoder* CPU_IndexDecoderType(uint16_t decoder_idx)
 	case 102: return &CPU_Core_Dynrec_Trap_Run;
 #endif
     case 200: return &HLT_Decode;
-    default: return 0;
+    default: return nullptr;
     }
 }
 
@@ -4661,8 +4732,8 @@ void CPU_CMPXCHG8B(PhysPt eaa) {
 	uint32_t hi,lo;
 
 	/* NTS: We assume that, if reading doesn't cause a page fault, writing won't either */
-	hi = (uint32_t)mem_readd(eaa+(PhysPt)4);
 	lo = (uint32_t)mem_readd(eaa);
+	hi = (uint32_t)mem_readd(eaa+(PhysPt)4);
 
 #if 0 // it works, shut up now
 	LOG_MSG("Experimental CMPXCHG8B implementation executed. EDX:EAX=0x%08lx%08lx ECX:EBX=0x%08lx%08lx EA=0x%08lx MEM64=0x%08lx%08lx",
@@ -4680,14 +4751,14 @@ void CPU_CMPXCHG8B(PhysPt eaa) {
 	 * else, ZF=0 and load memaddr 'eaa' into EDX:EAX */
 	FillFlags();
 	if (reg_edx == hi && reg_eax == lo) {
-		mem_writed(eaa+(PhysPt)4,reg_ecx);
 		mem_writed(eaa,          reg_ebx);
+		mem_writed(eaa+(PhysPt)4,reg_ecx);
 		SETFLAGBIT(ZF,true);
 	}
 	else {
 		SETFLAGBIT(ZF,false);
-		reg_edx = hi;
 		reg_eax = lo;
+		reg_edx = hi;
 	}
 }
 
@@ -4710,7 +4781,7 @@ SerializeCPU() : SerializeGlobalPOD("CPU")
 {}
 
 private:
-virtual void getBytes(std::ostream& stream)
+void getBytes(std::ostream& stream) override
 {
     uint16_t decoder_idx;
 
@@ -4766,7 +4837,7 @@ virtual void getBytes(std::ostream& stream)
 	POD_Save_CPU_Paging(stream);
 }
 
-virtual void setBytes(std::istream& stream)
+void setBytes(std::istream& stream) override
 {
     uint16_t decoder_idx;
     uint16_t decoder_old;

@@ -363,6 +363,17 @@ void KEYBOARD_SetLEDs(uint8_t bits) {
 static Bitu read_p60(Bitu port,Bitu iolen) {
     (void)port;//UNUSED
     (void)iolen;//UNUSED
+
+    /* Reading port 60h should clear the IRQ signal. */
+    /* NOTES: "Cronologia" by Cascada (1991) polls the keyboard I/O ports directory for part 1 and 2,
+     *        but part 3 installs a keyboard ISR. That ISR assumes that if IRQ 1 happens, there is valid
+     *        data in port 60h, it does not poll port 61h to determine if data is available. If the last
+     *        scan code was a key-up scancode event for the Escape key, then when part 3 enables the IRQ,
+     *        if this code had not cleared the signal, the ISR will be immediately called and the demo
+     *        will immediately act as if you hit the escape key and exit right away. */
+    PIC_DeActivateIRQ(12);
+    PIC_DeActivateIRQ(1);
+
     keyb.p60changed=false;
     keyb.auxchanged=false;
     if (!keyb.scheduled && keyb.used) {
@@ -1240,6 +1251,7 @@ void pc98_kana_toggle(void);
 void pc98_numlock_toggle(void);
 void pc98_keyboard_send(const unsigned char b);
 bool pc98_force_ibm_layout = false;
+bool pc98_force_jis_layout = false;
 
 /* this version sends to the PC-98 8251 emulation NOT the AT 8042 emulation */
 void KEYBOARD_PC98_AddKey(KBD_KEYS keytype,bool pressed) {
@@ -1822,7 +1834,7 @@ public:
     /* TODO: Writes to Port A should go to printer emulation */
     /* TODO: Writes to bit 7, Port C should go to printer emulation (strobe pin) */
     /* port B is input */
-    virtual uint8_t inPortB(void) const {
+    uint8_t inPortB(void) const override {
         return      0x80 +                                                          /* bits [7:6]   10 = other model */
                     ((PIT_TICK_RATE == PIT_TICK_RATE_PC98_8MHZ) ? 0x20 : 0x00) +    /* bit  [5:5]   1 = 8MHz  0 = 5/10MHz */
                     0x10 +                                                          /* bit  [4:4]   1 = LCD plasma display usage cond. not used */
@@ -1912,7 +1924,7 @@ public:
     }
 public:
     /* port A is input */
-    virtual uint8_t inPortA(void) const {
+    uint8_t inPortA(void) const override {
         /* TODO: Improve this! What do the various 2-1 to 2-8 switches do?
          *       It might help to look at the BIOS setup menus of 1990s PC-98 systems
          *       that offer toggling virtual versions of these DIP switches to see
@@ -1923,12 +1935,12 @@ public:
         return 0x63 | (gdc_5mhz_mode_initial ? 0x00 : 0x80); // taken from a PC-9821 Lt2
     }
     /* port B is input */
-    virtual uint8_t inPortB(void) const {
+    uint8_t inPortB(void) const override {
         /* TODO: Improve this! */
         return 0xF9; // taken from a PC-9821 Lt2
     }
     /* port C is output (both halves) */
-    virtual void outPortC(const uint8_t mask) {
+    void outPortC(const uint8_t mask) override {
         if (mask & 0x80) /* Shutdown flag 0 */
             PC98_SHUT0 = !!(latchOutPortC & 0x80);
 
@@ -2252,14 +2264,15 @@ uint8_t p7fd9_8255_mouse_latch = 0;
 uint8_t p7fd8_8255_mouse_int_enable = 0;
 
 void pc98_mouse_movement_apply(int x,int y) {
-    x += p7fd9_8255_mouse_x;
-    if (x < -128) x = -128;
-    if (x > 127) x = 127;
-    y += p7fd9_8255_mouse_y;
-    if (y < -128) y = -128;
-    if (y > 127) y = 127;
-    p7fd9_8255_mouse_x = (int8_t)x;
-    p7fd9_8255_mouse_y = (int8_t)y;
+    /* NTS: Contrary to initial impressions, bus mice do not clip
+     *      the counter values to stay within signed integer range,
+     *      they just count.
+     *
+     *      According to Nanshiki: [https://github.com/joncampbell123/dosbox-x/pull/4697]
+     *
+     *      -- 2023/12/21 J.C. */
+    p7fd9_8255_mouse_x += x;
+    p7fd9_8255_mouse_y += y;
 }
 
 unsigned int pc98_mouse_rate_hz = 120;
@@ -2371,7 +2384,7 @@ public:
     }
 public:
     /* port A is input */
-    virtual uint8_t inPortA(void) const {
+    uint8_t inPortA(void) const override {
         uint8_t bs;
         Bitu r;
 
@@ -2406,17 +2419,17 @@ public:
         return r;
     }
     /* port B is input */
-    virtual uint8_t inPortB(void) const {
+    uint8_t inPortB(void) const override {
         /* TODO */
         return 0x00;
     }
     /* port C is input[3:0] and output[7:4] */
-    virtual uint8_t inPortC(void) const {
+    uint8_t inPortC(void) const override {
         /* TODO */
         return 0x00;
     }
     /* port C is input[3:0] and output[7:4] */
-    virtual void outPortC(const uint8_t mask) {
+    void outPortC(const uint8_t mask) override {
         if (!enable_pc98_bus_mouse)
             return;
 
@@ -2525,6 +2538,9 @@ void KEYBOARD_OnEnterPC98(Section *sec) {
             KeyboardLayoutDetect();
         if (pc98_force_ibm_layout)
             LOG_MSG("Forcing PC-98 keyboard to use IBM US-English like default layout");
+        pc98_force_jis_layout = pc98_section->Get_bool("pc-98 force JIS keyboard layout") & !pc98_force_ibm_layout;
+        if (pc98_force_jis_layout)
+            LOG_MSG("Forcing PC-98 keyboard to use JIS (JP106) layout");
     }
 
     if (!IS_PC98_ARCH) {

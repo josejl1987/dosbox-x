@@ -64,7 +64,7 @@ static inline Bitu MEMMASK_Combine(const Bitu a,const Bitu b) {
 #if defined(USE_FULL_TLB)
 #define TLB_SIZE		(1024*1024)
 #else
-#define TLB_SIZE		65536	// This must a power of 2 and greater then LINK_START
+#define TLB_SIZE		65536	// This must a power of 2 and greater than LINK_START
 #define BANK_SHIFT		28
 #define BANK_MASK		0xffff // always the same as TLB_SIZE-1?
 #define TLB_BANKS		((1024*1024/TLB_SIZE)-1)
@@ -223,42 +223,119 @@ void MEM_SetPageHandler(Bitu phys_page, Bitu pages, PageHandler * handler);
 #ifdef _MSC_VER
 #pragma pack (1)
 #endif
-struct X86_PageEntryBlock{
+
+struct X86_PageEntryBlock{ // Page Table Entry, though it keeps the PageEntryBlock name to avoid breaking all this code
 #ifdef WORDS_BIGENDIAN
-	uint32_t		base:20;
-	uint32_t		avl:3;
-	uint32_t		g:1;
-	uint32_t		pat:1;
-	uint32_t		d:1;
-	uint32_t		a:1;
-	uint32_t		pcd:1;
-	uint32_t		pwt:1;
-	uint32_t		us:1;
-	uint32_t		wr:1;
-	uint32_t		p:1;
+	uint32_t		base:20;	// [31:12]
+	uint32_t		avl:3;		// [11: 8]
+	uint32_t		g:1;		// [ 8: 8]
+	uint32_t		pat:1;		// [ 7: 7]
+	uint32_t		d:1;		// [ 6: 6]
+	uint32_t		a:1;		// [ 5: 5]
+	uint32_t		pcd:1;		// [ 4: 4]
+	uint32_t		pwt:1;		// [ 3: 3]
+	uint32_t		us:1;		// [ 2: 2]
+	uint32_t		wr:1;		// [ 1: 1]
+	uint32_t		p:1;		// [ 0: 0]
 #else
-	uint32_t		p:1;
-	uint32_t		wr:1;
-	uint32_t		us:1;
-	uint32_t		pwt:1;
-	uint32_t		pcd:1;
-	uint32_t		a:1;
-	uint32_t		d:1;
-	uint32_t		pat:1;
-	uint32_t		g:1;
-	uint32_t		avl:3;
-	uint32_t		base:20;
+	uint32_t		p:1;		// [ 0: 0]
+	uint32_t		wr:1;		// [ 1: 1] R/W
+	uint32_t		us:1;		// [ 2: 2] U/S
+	uint32_t		pwt:1;		// [ 3: 3]
+	uint32_t		pcd:1;		// [ 4: 4]
+	uint32_t		a:1;		// [ 5: 5]
+	uint32_t		d:1;		// [ 6: 6]
+	uint32_t		pat:1;		// [ 7: 7]
+	uint32_t		g:1;		// [ 8: 8]
+	uint32_t		avl:3;		// [11: 9]
+	uint32_t		base:20;	// [31:12]
 #endif
 } GCC_ATTRIBUTE(packed);
+
+struct X86_PageDirEntryBlock{
+#ifdef WORDS_BIGENDIAN
+	uint32_t		base:20;	// [31:12]
+	uint32_t		avl:3;		// [11: 9]
+	uint32_t		g:1;		// [ 8: 8]
+	uint32_t		ps:1;		// [ 7: 7]
+	uint32_t		avl6:1;		// [ 6: 6]
+	uint32_t		a:1;		// [ 5: 5]
+	uint32_t		pcd:1;		// [ 4: 4]
+	uint32_t		pwt:1;		// [ 3: 3]
+	uint32_t		us:1;		// [ 2: 2]
+	uint32_t		wr:1;		// [ 1: 1]
+	uint32_t		p:1;		// [ 0: 0]
+#else
+	uint32_t		p:1;		// [ 0: 0]
+	uint32_t		wr:1;		// [ 1: 1] R/W
+	uint32_t		us:1;		// [ 2: 2] U/S
+	uint32_t		pwt:1;		// [ 3: 3]
+	uint32_t		pcd:1;		// [ 4: 4]
+	uint32_t		a:1;		// [ 5: 5]
+	uint32_t		avl6:1;		// [ 6: 6] See Note [*1], this bit changed meaning between the 486 and Pentium!
+	uint32_t		ps:1;		// [ 7: 7] Page Size Extension (Pentium), even though Intel didn't document it until later
+	uint32_t		g:1;		// [ 8: 8]
+	uint32_t		avl:3;		// [11: 9]
+	uint32_t		base:20;	// [31:12]
+#endif
+} GCC_ATTRIBUTE(packed);
+/* Note [*1]: The i386 defined just the Page Table Entry to represent the PDE and PTE, because they had the same layout.
+ *
+ *            The i486 lists the PDE and PTE, even though they have the same bit layout.
+ *
+ *            The Pentium however, seems to have decided that bit 6 of the PDE is no longer the "dirty" bit and is redefined as AVL.
+ *            Although, if PSE is enabled and the PDE is the 4MB format, bit 6 is once again a "dirty" but.
+ *
+ *            Ref: [http://hackipedia.org/browse.cgi/Computer/Platform/PC%2c%20IBM%20compatible/CPU/80386/Intel/386DX%20Microprocessor%20Programmer%27s%20Reference%20Manual%20%281990%29%2epdf]
+ *            Ref: [http://hackipedia.org/browse.cgi/Computer/Platform/PC%2c%20IBM%20compatible/CPU/80486/Intel/i486%20Microprocessor%20%281989%2d04%29%2epdf]
+ *            Ref: [http://hackipedia.org/browse.cgi/Computer/Platform/PC%2c%20IBM%20compatible/CPU/Pentium/Pentium%20Processor%20Family%20Developer%27s%20Manual%20%2d%20Volume%203%3a%20Architecture%20and%20Programming%20Manual%20%281995%2d07%29%2epdf] */
+
+struct X86_PageDir4MBEntryBlock{ // PSE=1 and PageDirEntryBlock PS=1
+#ifdef WORDS_BIGENDIAN
+	uint32_t		base22:10;	// [31:22] bits 31:22
+	uint32_t		reserved:1;	// [21:21]
+	uint32_t		base32:8;	// [20:13] bits 39:32 if PSE36
+	uint32_t		pat:1;		// [12:12]
+	uint32_t		avl:3;		// [11: 9]
+	uint32_t		g:1;		// [ 8: 8]
+	uint32_t		ps:1;		// [ 7: 7] PS=1, or else this is just X86_PageDirEntryBlock
+	uint32_t		d:1;		// [ 6: 6]
+	uint32_t		a:1;		// [ 5: 5]
+	uint32_t		pcd:1;		// [ 4: 4]
+	uint32_t		pwt:1;		// [ 3: 3]
+	uint32_t		us:1;		// [ 2: 2] U/S
+	uint32_t		wr:1;		// [ 1: 1] R/W
+	uint32_t		p:1;		// [ 0: 0]
+#else
+	uint32_t		p:1;		// [ 0: 0]
+	uint32_t		wr:1;		// [ 1: 1] R/W
+	uint32_t		us:1;		// [ 2: 2] U/S
+	uint32_t		pwt:1;		// [ 3: 3]
+	uint32_t		pcd:1;		// [ 4: 4]
+	uint32_t		a:1;		// [ 5: 5]
+	uint32_t		d:1;		// [ 6: 6]
+	uint32_t		ps:1;		// [ 7: 7] PS=1, or else this is just X86_PageDirEntryBlock
+	uint32_t		g:1;		// [ 8: 8]
+	uint32_t		avl:3;		// [11: 9]
+	uint32_t		pat:1;		// [12:12]
+	uint32_t		base32:8;	// [20:13] bits 39:32 if PSE36
+	uint32_t		reserved:1;	// [21:21]
+	uint32_t		base22:10;	// [31:22] bits 31:22
+#endif
+} GCC_ATTRIBUTE(packed);
+
 #ifdef _MSC_VER
 #pragma pack ()
 #endif
 
-
 union X86PageEntry {
 	uint32_t load;
 	X86_PageEntryBlock block;
+	X86_PageDirEntryBlock dirblock;
+	X86_PageDir4MBEntryBlock dirblock4mb; // PSE=1 and PS=1
 };
+
+static_assert( sizeof(X86PageEntry) == 4, "oops" );
 
 #if !defined(USE_FULL_TLB)
 typedef struct {
@@ -350,6 +427,12 @@ static INLINE PhysPt PAGING_GetPhysicalPage(const PhysPt linePage) {
 
 static INLINE PhysPt PAGING_GetPhysicalAddress(const PhysPt linAddr) {
 	return (paging.tlb.phys_page[linAddr>>12]<<12)|(linAddr&0xfff);
+}
+
+//FIXME: #define PHYSPAGE_ADDR  0x00FFFFFF   should be a global constant
+
+static INLINE PhysPt64 PAGING_GetPhysicalAddress64(const PhysPt linAddr) {
+	return ((PhysPt64)(paging.tlb.phys_page[linAddr>>12]&0xFFFFFFul)<<(PhysPt64)12)|(linAddr&0xfff);
 }
 
 #else
@@ -499,7 +582,7 @@ extern bool dosbox_allow_nonrecursive_page_fault;	/* when set, do nonrecursive m
 
 class GuestPageFaultException : public std::exception {
 public:
-	virtual const char *what() const throw() {
+	const char *what() const throw() override {
 		return "Guest page fault exception";
 	}
 	GuestPageFaultException(PhysPt n_lin_addr, Bitu n_page_addr, Bitu n_faultcode) : lin_addr(n_lin_addr), page_addr(n_page_addr), faultcode(n_faultcode) {
@@ -512,7 +595,7 @@ public:
 
 class GuestGenFaultException : public std::exception {
 public:
-	virtual const char *what() const throw() {
+	virtual const char *what() const throw() override {
 		return "Guest general protection fault exception";
 	}
 	GuestGenFaultException() {
