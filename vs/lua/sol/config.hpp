@@ -50,4 +50,9 @@ the build system, or the command line options of your compiler.
 
 // end of sol/config.hpp
 
+// Disable noexcept function type handling: GCC in C++14 mode may define
+// __cpp_noexcept_function_type but not actually treat noexcept as part of
+// the type system, causing redefinition errors in sol2 fx_traits.
+#define SOL_NOEXCEPT_FUNCTION_TYPE 0
+
 #endif // SOL_SINGLE_CONFIG_HPP

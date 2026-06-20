@@ -1,4 +1,8 @@
-AM_CPPFLAGS = -I$(top_srcdir)/include "-DRESDIR=\"$(resdir)\""
+AM_CPPFLAGS = -I$(top_srcdir)/include "-DRESDIR=\"$(resdir)\"" \
+	-I$(top_srcdir)/vs -I$(top_srcdir)/vs/lua -I$(top_srcdir)/vs/imgui \
+	-I$(top_srcdir)/third_party/lrdb/include \
+	-I$(top_srcdir)/third_party/lrdb/third_party/asio/asio/include \
+	-I$(top_srcdir)/third_party/lrdb/third_party/picojson -DASIO_STANDALONE
 
 if EMSCRIPTEN
 # fix https://github.com/emscripten-core/emscripten/issues/10061

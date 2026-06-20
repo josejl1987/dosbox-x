@@ -166,7 +166,7 @@ elif test x$force_cxx11 = xyes; then
 else
     AC_MSG_WARN([ DOSBox-X is still intended to support compilation as C++11. If you add new code please make sure it works as C++11 by running ./configure with --enable-force-cxx11 ])
     CFLAGS="$CFLAGS -std=gnu11"; # no such "gnu14"
-    CXXFLAGS="$CXXFLAGS -std=gnu++14";
+    CXXFLAGS="$CXXFLAGS -std=gnu++17";
 fi
 
 dnl Allow the SDL drawn menu to be enabled on Windows or macOS instead of their native menu system.
@@ -542,7 +542,8 @@ case "$host" in
        ;;
     *-*-linux*)
        AC_DEFINE(LINUX, 1, [Compiling on GNU/Linux])
-       CXXFLAGS="$CXXFLAGS -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L"
+       AC_DEFINE(_GNU_SOURCE, 1, [Enable GNU extensions for ftruncate, close, pipe, etc.])
+       CXXFLAGS="$CXXFLAGS"
        LIBS="$LIBS -lrt" # uses shm_* functions which requires librt on Linux
        dnl FEATURE: Whether to support direct parallel port pass-through
        AC_DEFINE(C_DIRECTLPT, 1, [ Define to 1 if you want parallel pass-through support (Win32, Linux and BSD).])

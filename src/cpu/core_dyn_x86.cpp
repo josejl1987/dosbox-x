@@ -16,10 +16,10 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
+#include "config.h"
+
 #include <stdarg.h>
 #include <string.h>
-
-#include "config.h"
 
 #if (C_DYNAMIC_X86)
 #if defined (WIN32)
