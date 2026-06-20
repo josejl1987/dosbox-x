@@ -12,6 +12,7 @@ from pc98rev.verify import format_report, verify_directory
 from pc98rev.khd_parser import parse_khd as parse_khd_file
 from pc98rev.decompressor import Decompressor
 from pc98rev.memmap import build_memory_map, print_memory_map
+from pc98rev import zstd_io
 
 
 def _fmt_size(num: int) -> str:
@@ -310,6 +311,39 @@ def klb_extract(game_dir: Path, archive: str | None, entry: str | None,
             total += 1
 
     click.echo(f"\nExtracted {total} entries to {output_dir}/")
+
+
+@cli.command("compress-captures")
+@click.argument("incoming", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--pattern", "patterns", multiple=True, default=["*.p98cdl", "*.jsonl", "*.bin"],
+              help="Glob patterns to compress. Can be given multiple times.")
+@click.option("--level", type=int, default=12, show_default=True,
+              help="zstd compression level (1-22).")
+@click.option("--remove/--keep", default=False, help="Delete original files after compression.")
+def compress_captures(incoming: Path, patterns: tuple[str, ...], level: int, remove: bool) -> None:
+    """Compress raw capture files under INCOMING with zstd."""
+    files = zstd_io.iter_compressed_files(incoming, patterns)
+    if not files:
+        click.echo("No uncompressed capture files found.")
+        return
+
+    total_before = 0
+    total_after = 0
+    for path in files:
+        out = zstd_io.compress_file(path, level=level)
+        before = path.stat().st_size
+        after = out.stat().st_size
+        total_before += before
+        total_after += after
+        ratio = after / before * 100 if before else 0
+        click.echo(f"  {path}: {_fmt_size(before)} -> {_fmt_size(after)} ({ratio:.1f}%)")
+        if remove:
+            path.unlink()
+
+    click.echo(
+        f"\nCompressed {len(files)} file(s): {_fmt_size(total_before)} -> "
+        f"{_fmt_size(total_after)} ({total_after / total_before * 100:.1f}%)"
+    )
 
 
 if __name__ == "__main__":

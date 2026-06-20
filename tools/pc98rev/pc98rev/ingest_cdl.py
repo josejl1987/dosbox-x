@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from . import zstd_io
+
 
 @dataclass(frozen=True)
 class CDLModule:
@@ -26,7 +28,7 @@ def _read_string(f) -> str:
 
 def parse_cdl(path: Path) -> Tuple[str, Dict[str, CDLModule]]:
     """Parse a .p98cdl file and return (session_name, {module_id: CDLModule})."""
-    with path.open("rb") as f:
+    with zstd_io.open_read(path) as f:
         magic = f.read(7)
         if magic != b"P98CDL\x00":
             raise ValueError(f"bad CDL magic: {magic!r}")
