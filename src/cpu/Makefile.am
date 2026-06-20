@@ -1,9 +1,5 @@
 SUBDIRS = core_full core_normal
-AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src -I$(top_srcdir)/vs -I$(top_srcdir)/vs/lua -I$(top_srcdir)/vs/imgui \
-	-I$(top_srcdir)/third_party/lrdb/include \
-	-I$(top_srcdir)/third_party/lrdb/third_party/asio/asio/include \
-	-I$(top_srcdir)/third_party/lrdb/third_party/picojson \
-	-DASIO_STANDALONE
+AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src
 
 noinst_LIBRARIES = libcpu.a
 libcpu_a_SOURCES = callback.cpp cpu.cpp flags.cpp modrm.cpp modrm.h instructions.h	\

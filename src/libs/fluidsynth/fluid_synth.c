@@ -20,7 +20,7 @@
 
 #define FLUIDINC
 #include "config.h"
-#if defined(WIN32) && !defined(C_HX_DOS)
+#if !C_FLUIDSYNTH && defined(WIN32) && !defined(C_HX_DOS)
 #include <math.h>
 
 #include "fluid_synth.h"
@@ -31,10 +31,6 @@
 #include "fluid_sfont.h"
 #include "fluid_hash.h"
 #include "fluid_defsfont.h"
-
-#ifndef boolean
-typedef int boolean;
-#endif
 
 #ifdef TRAP_ON_FPE
 #define _GNU_SOURCE

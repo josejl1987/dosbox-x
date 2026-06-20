@@ -45,17 +45,6 @@
 /* Indicate whether SDL_net is present */
 #define C_SDL_NET 1
 
-/* Indicate whether Imgui is present */
-#define HAVE_IMGUI 1
-
-/* Indicate whether SDL is present */
-#define HAVE_SDL   1
-/* Indicate whether OpenGL is present*/
-#define HAVE_OPENGL 1
-
-/* Indicate whether Lua engine is present */
-#define C_LUA 1
-
 /* Define to 1 if you have the <d3d9.h> header file. */
 #define HAVE_D3D9_H 1
 

@@ -45,6 +45,7 @@
 #include "pc98_gdc_const.h"
 #include "regionalloctracking.h"
 #include "build_timestamp.h"
+#include "int10.h"
 extern bool PS1AudioCard;
 #include "parport.h"
 #include "dma.h"
@@ -54,6 +55,9 @@ extern bool PS1AudioCard;
 #include <time.h>
 #include <sys/stat.h>
 #include "version_string.h"
+
+#define DOSBOX_INCLUDE
+#include "iglib.h"
 
 #if C_LIBPNG
 #include <png.h>
@@ -80,10 +84,26 @@ extern bool PS1AudioCard;
 # define S_ISREG(x) ((x & S_IFREG) == S_IFREG)
 #endif
 
+static unsigned char ig_cpu_cycles_set = 0;
+static uint32_t ig_cpu_cycles_value = 0;
+static uint8_t ig_cpu_cycles_max_percent = 0;
+
+struct BIOS_E280_entry {
+	uint64_t	base = 0;
+	uint64_t	length = 0;
+	uint32_t	type = 0;
+	uint32_t	acpi_ext_addr = 0;
+};
+
+#define MAX_E280	16
+static BIOS_E280_entry	E280_table[MAX_E280];
+static unsigned int	E280_table_entries = 0;
+
 bool VGA_InitBiosLogo(unsigned int w,unsigned int h,unsigned int x,unsigned int y);
 void VGA_WriteBiosLogoBMP(unsigned int y,unsigned char *scanline,unsigned int w);
 void VGA_WriteBiosLogoPalette(unsigned int start,unsigned int count,unsigned char *rgb);
 void VGA_FreeBiosLogo(void);
+void VGA_ShowBIOSLogo(void);
 
 extern bool ega200;
 
@@ -118,13 +138,16 @@ extern bool en_bios_ps2mouse;
 extern bool rom_bios_8x8_cga_font;
 extern bool pcibus_enable;
 extern bool enable_fpu;
+extern bool finish_prepare;
+extern bool is_ttfswitched_on;
+
+/* vga_pc98_cg.cpp */
+extern bool pc98_cg_kanji_dot_access_mode;
 
 bool pc98_timestamp5c = true; // port 5ch and 5eh "time stamp/hardware wait"
 
 uint32_t Keyb_ig_status();
 bool VM_Boot_DOSBox_Kernel();
-uint32_t MEM_get_address_bits();
-uint32_t MEM_get_address_bits4GB();
 Bitu bios_post_parport_count();
 Bitu bios_post_comport_count();
 void pc98_update_cpu_page_ptr(void);
@@ -142,9 +165,11 @@ void SetIMPosition(void);
 bool isDBCSCP();
 Bitu INT60_Handler(void);
 Bitu INT6F_Handler(void);
+bool toOutput(const char* what);
 #if defined(USE_TTF)
 void ttf_switch_on(bool ss), ttf_switch_off(bool ss), ttf_setlines(int cols, int lins);
 #endif
+std::string conf_output;
 
 /* Rate limit log entries regarding APM AH=05h CPU IDLE because Windows 98's APM driver likes to call it way too much per second */
 pic_tickindex_t APM_log_cpu_idle_next_report = 0;
@@ -593,15 +618,16 @@ static bool dosbox_int_busy = false;
 #define PPCAT_HELPER(A, B, C) A ## . ## B ## . ## C
 #define PPCAT(A, B, C) PPCAT_HELPER(A, B, C)
 
-#define INTDEV_VERSION_BUMP 2
+#define INTDEV_VERSION_BUMP 0
 #define INTDEV_VERSION_MAJOR 1
-#define INTDEV_VERSION_MINOR 0
-#define INTDEV_VERSION_SUB 1
+#define INTDEV_VERSION_MINOR 1
+#define INTDEV_VERSION_SUB 0
 
 static const char *dosbox_int_version = "DOSBox-X integration device v" STRINGIZE(PPCAT(INTDEV_VERSION_MAJOR, INTDEV_VERSION_MINOR, INTDEV_VERSION_SUB));
 static const char *dosbox_int_ver_read = NULL;
 
 struct dosbox_int_saved_state {
+    const char*     dosbox_int_ver_read;
     unsigned char   dosbox_int_register_shf;
     uint32_t        dosbox_int_register;
     unsigned char   dosbox_int_regsel_shf;
@@ -620,42 +646,43 @@ int                                 dosbox_int_saved_sp = -1;
  * with anything userspace is doing (as an alternative to wrapping all access
  * in CLI/STI or PUSHF/CLI/POPF) */
 bool dosbox_int_push_save_state(void) {
+	if (dosbox_int_saved_sp >= (DOSBOX_INT_SAVED_STATE_MAX-1))
+		return false;
 
-    if (dosbox_int_saved_sp >= (DOSBOX_INT_SAVED_STATE_MAX-1))
-        return false;
+	struct dosbox_int_saved_state *ss = &dosbox_int_saved[++dosbox_int_saved_sp];
 
-    struct dosbox_int_saved_state *ss = &dosbox_int_saved[++dosbox_int_saved_sp];
-
-    ss->dosbox_int_register_shf =       dosbox_int_register_shf;
-    ss->dosbox_int_register =           dosbox_int_register;
-    ss->dosbox_int_regsel_shf =         dosbox_int_regsel_shf;
-    ss->dosbox_int_regsel =             dosbox_int_regsel;
-    ss->dosbox_int_error =              dosbox_int_error;
-    ss->dosbox_int_busy =               dosbox_int_busy;
-    return true;
+	ss->dosbox_int_ver_read =           dosbox_int_ver_read;
+	ss->dosbox_int_register_shf =       dosbox_int_register_shf;
+	ss->dosbox_int_register =           dosbox_int_register;
+	ss->dosbox_int_regsel_shf =         dosbox_int_regsel_shf;
+	ss->dosbox_int_regsel =             dosbox_int_regsel;
+	ss->dosbox_int_error =              dosbox_int_error;
+	ss->dosbox_int_busy =               dosbox_int_busy;
+	return true;
 }
 
 bool dosbox_int_pop_save_state(void) {
-    if (dosbox_int_saved_sp < 0)
-        return false;
+	if (dosbox_int_saved_sp < 0)
+		return false;
 
-    struct dosbox_int_saved_state *ss = &dosbox_int_saved[dosbox_int_saved_sp--];
+	struct dosbox_int_saved_state *ss = &dosbox_int_saved[dosbox_int_saved_sp--];
 
-    dosbox_int_register_shf =           ss->dosbox_int_register_shf;
-    dosbox_int_register =               ss->dosbox_int_register;
-    dosbox_int_regsel_shf =             ss->dosbox_int_regsel_shf;
-    dosbox_int_regsel =                 ss->dosbox_int_regsel;
-    dosbox_int_error =                  ss->dosbox_int_error;
-    dosbox_int_busy =                   ss->dosbox_int_busy;
-    return true;
+	dosbox_int_ver_read =               ss->dosbox_int_ver_read;
+	dosbox_int_register_shf =           ss->dosbox_int_register_shf;
+	dosbox_int_register =               ss->dosbox_int_register;
+	dosbox_int_regsel_shf =             ss->dosbox_int_regsel_shf;
+	dosbox_int_regsel =                 ss->dosbox_int_regsel;
+	dosbox_int_error =                  ss->dosbox_int_error;
+	dosbox_int_busy =                   ss->dosbox_int_busy;
+	return true;
 }
 
 bool dosbox_int_discard_save_state(void) {
-    if (dosbox_int_saved_sp < 0)
-        return false;
+	if (dosbox_int_saved_sp < 0)
+		return false;
 
-    dosbox_int_saved_sp--;
-    return true;
+	dosbox_int_saved_sp--;
+	return true;
 }
 
 extern bool user_cursor_locked;
@@ -668,275 +695,292 @@ extern uint16_t countryNo;
 bool bootvm = false, bootfast = false;
 static std::string dosbox_int_debug_out;
 
-void VGA_SetCaptureStride(uint32_t v);
-void VGA_SetCaptureAddress(uint32_t v);
-void VGA_SetCaptureState(uint32_t v);
-SDL_Rect &VGA_CaptureRectCurrent(void);
-SDL_Rect &VGA_CaptureRectFromGuest(void);
-uint32_t VGA_QueryCaptureAddress(void);
-uint32_t VGA_QueryCaptureState(void);
-uint32_t VGA_QuerySizeIG(void);
-
 uint32_t Mixer_MIXQ(void);
-uint32_t Mixer_MIXC(void);
-void Mixer_MIXC_Write(uint32_t v);
-PhysPt Mixer_MIXWritePos(void);
-void Mixer_MIXWritePos_Write(PhysPt np);
-void Mixer_MIXWriteBegin_Write(PhysPt np);
-void Mixer_MIXWriteEnd_Write(PhysPt np);
+uint32_t VGA_QuerySizeIG(void);
 
 /* read triggered, update the regsel */
 void dosbox_integration_trigger_read() {
-    dosbox_int_error = false;
+	dosbox_int_error = false;
 
-    switch (dosbox_int_regsel) {
-        case 0: /* Identification */
-            dosbox_int_register = 0xD05B0740;
-            break;
-        case 1: /* test */
-            break;
-        case 2: /* version string */
-            if (dosbox_int_ver_read == NULL)
-                dosbox_int_ver_read = dosbox_int_version;
+	switch (dosbox_int_regsel) {
+		case DOSBOX_ID_REG_IDENTIFY:
+			dosbox_int_register = 0xD05B0740;
+			break;
+		case DOSBOX_ID_REG_TEST:
+			break;
+		case DOSBOX_ID_REG_VERSION_STRING:
+			if (dosbox_int_ver_read == NULL)
+				dosbox_int_ver_read = dosbox_int_version;
 
-            dosbox_int_register = 0;
-            for (Bitu i=0;i < 4;i++) {
-                if (*dosbox_int_ver_read == 0) {
-                    dosbox_int_ver_read = dosbox_int_version;
-                    break;
-                }
+			dosbox_int_register = 0;
+			for (Bitu i=0;i < 4;i++) {
+				if (*dosbox_int_ver_read == 0) {
+					dosbox_int_ver_read = dosbox_int_version;
+					break;
+				}
 
-                dosbox_int_register += ((uint32_t)((unsigned char)(*dosbox_int_ver_read++))) << (uint32_t)(i * 8);
-            }
-            break;
-        case 3: /* version number */
-            dosbox_int_register = INTDEV_VERSION_MAJOR + (INTDEV_VERSION_MINOR << 8U) + (INTDEV_VERSION_SUB << 16U) + (INTDEV_VERSION_BUMP << 24U);
-            break;
-        case 4: /* current emulator time as 16.16 fixed point */
-            dosbox_int_register = (uint32_t)(PIC_FullIndex() * 0x10000);
-            break;
-        case 5: // DOSBox-X version number major (e.g. 2022)
-        {
-            const char * ver = strchr(VERSION, '.');
-            dosbox_int_register = ver == NULL ? 0 : atoi(std::string(VERSION).substr(0, strlen(ver) - strlen(VERSION)).c_str());
-            break;
-        }
-        case 6: // DOSBox-X version number minor (e.g. 8)
-        {
-            const char * ver = strchr(VERSION, '.');
-            dosbox_int_register = ver == NULL ? 0 : atoi(ver + 1);
-            break;
-        }
-        case 7: // DOSBox-X version number sub (e.g. 0)
-        {
-            const char * ver = strchr(VERSION, '.');
-            ver = strchr(ver + 1, '.');
-            dosbox_int_register = ver == NULL ? 0 : atoi(ver + 1);
-            break;
-        }
-        case 8: // DOSBox-X platform type
-            dosbox_int_register = 0;
+				dosbox_int_register += ((uint32_t)((unsigned char)(*dosbox_int_ver_read++))) << (uint32_t)(i * 8);
+			}
+			break;
+		case DOSBOX_ID_REG_VERSION_NUMBER:
+			dosbox_int_register = INTDEV_VERSION_MAJOR + (INTDEV_VERSION_MINOR << 8U) + (INTDEV_VERSION_SUB << 16U) + (INTDEV_VERSION_BUMP << 24U);
+			break;
+		case DOSBOX_ID_REG_READ_EMTIME: /* current emulator time as 16.16 fixed point */
+			dosbox_int_register = (uint32_t)(PIC_FullIndex() * 0x10000);
+			break;
+		case DOSBOX_ID_REG_DOSBOX_VERSION_MAJOR: // DOSBox-X version number major (e.g. 2022)
+			{
+				const char * ver = strchr(VERSION, '.');
+				dosbox_int_register = ver == NULL ? 0 : atoi(std::string(VERSION).substr(0, strlen(ver) - strlen(VERSION)).c_str());
+				break;
+			}
+		case DOSBOX_ID_REG_DOSBOX_VERSION_MINOR: // DOSBox-X version number minor (e.g. 8)
+			{
+				const char * ver = strchr(VERSION, '.');
+				dosbox_int_register = ver == NULL ? 0 : atoi(ver + 1);
+				break;
+			}
+		case DOSBOX_ID_REG_DOSBOX_VERSION_SUB: // DOSBox-X version number sub (e.g. 0)
+			{
+				const char * ver = strchr(VERSION, '.');
+				ver = strchr(ver + 1, '.');
+				dosbox_int_register = ver == NULL ? 0 : atoi(ver + 1);
+				break;
+			}
+		case DOSBOX_ID_REG_DOSBOX_PLATFORM_TYPE: // DOSBox-X platform type
+			dosbox_int_register = 0;
 #if defined(HX_DOS)
-            dosbox_int_register = 4;
+			dosbox_int_register = 4;
 #elif defined(WIN32)
-            dosbox_int_register = 1;
+			dosbox_int_register = 1;
 #elif defined(LINUX)
-            dosbox_int_register = 2;
+			dosbox_int_register = 2;
 #elif defined(MACOSX)
-            dosbox_int_register = 3;
+			dosbox_int_register = 3;
 #elif defined(OS2)
-            dosbox_int_register = 5;
+			dosbox_int_register = 5;
 #else
-            dosbox_int_register = 0;
+			dosbox_int_register = 0;
 #endif
-            if (control->opt_securemode || control->SecureMode()) dosbox_int_register = 0;
+			if (control->opt_securemode || control->SecureMode()) dosbox_int_register = 0;
 #if OS_BIT_INT == 64
-            dosbox_int_register += 0x20; // 64-bit
+			dosbox_int_register += 0x20; // 64-bit
 #else
-            dosbox_int_register += 0x10; // 32-bit
+			dosbox_int_register += 0x10; // 32-bit
 #endif
 #if defined(C_SDL2)
-            dosbox_int_register += 0x200; // SDL2
+			dosbox_int_register += 0x200; // SDL2
 #elif defined(SDL_DOSBOX_X_SPECIAL)
-            dosbox_int_register += 0x100; // SDL1 (modified)
+			dosbox_int_register += 0x100; // SDL1 (modified)
 #endif
-            break;
-        case 9: // DOSBox-X machine type
-            dosbox_int_register = machine;
-            break;
+			break;
+		case DOSBOX_ID_REG_DOSBOX_MACHINE_TYPE: // DOSBox-X machine type
+			dosbox_int_register = machine;
+			break;
 
-        case 0x4B6F4400: // DOS kernel status
-            dosbox_int_register = dos_kernel_disabled ? 0: 1;
-            break;
-        case 0x4B6F4401: // DOS codepage number
-            dosbox_int_register = dos_kernel_disabled ? 0: dos.loaded_codepage;
-            break;
-        case 0x4B6F4402: // DOS country number
-            dosbox_int_register = dos_kernel_disabled ? 0: countryNo;
-            break;
-        case 0x4B6F4403: // DOS version major
-            dosbox_int_register = dos_kernel_disabled ? 0: dos.version.major;
-            break;
-        case 0x4B6F4404: // DOS version minor
-            dosbox_int_register = dos_kernel_disabled ? 0: dos.version.minor;
-            break;
-        case 0x4B6F4405: // DOS error code
-            dosbox_int_register = dos_kernel_disabled ? 0 : dos.errorcode;
-            break;
-        case 0x4B6F4406: // DOS boot drive
-            dosbox_int_register = bootdrive;
-            break;
-        case 0x4B6F4407: // DOS current drive
-            dosbox_int_register = dos_kernel_disabled ? 0 : DOS_GetDefaultDrive();
-            break;
-        case 0x4B6F4408: // DOS LFN status
-            dosbox_int_register = dos_kernel_disabled || !uselfn ? 0: 1;
-            break;
+		case DOSBOX_ID_REG_MIXER_QUERY: /* query mixer output 'MIXQ' */
+			/* bits [19:0] = sample rate in Hz or 0 if mixer is not mixing AT ALL
+			 * bits [23:20] = number of channels (at this time, always 2 aka stereo)
+			 * bits [29:29] = 1=swap stereo  0=normal
+			 * bits [30:30] = 1=muted  0=not muted
+			 * bits [31:31] = 1=sound  0=nosound */
+			dosbox_int_register = Mixer_MIXQ();
+			break;
 
-        case 0x5158494D: /* query mixer output 'MIXQ' */
-            /* bits [19:0] = sample rate in Hz or 0 if mixer is not mixing AT ALL
-             * bits [23:20] = number of channels (at this time, always 2 aka stereo)
-             * bits [29:29] = 1=swap stereo  0=normal
-             * bits [30:30] = 1=muted  0=not muted
-             * bits [31:31] = 1=sound  0=nosound */
-            dosbox_int_register = Mixer_MIXQ();
-            break;
+		case DOSBOX_ID_REG_DOS_KERNEL_STATUS: // DOS kernel status
+			dosbox_int_register = dos_kernel_disabled ? 0: 1;
+			break;
+		case DOSBOX_ID_REG_DOS_KERNEL_CODEPAGE: // DOS codepage number
+			dosbox_int_register = dos_kernel_disabled ? 0: dos.loaded_codepage;
+			break;
+		case DOSBOX_ID_REG_DOS_KERNEL_COUNTRY: // DOS country number
+			dosbox_int_register = dos_kernel_disabled ? 0: countryNo;
+			break;
+		case DOSBOX_ID_REG_DOS_KERNEL_VERSION_MAJOR: // DOS version major
+			dosbox_int_register = dos_kernel_disabled ? 0: dos.version.major;
+			break;
+		case DOSBOX_ID_REG_DOS_KERNEL_VERSION_MINOR: // DOS version minor
+			dosbox_int_register = dos_kernel_disabled ? 0: dos.version.minor;
+			break;
+		case DOSBOX_ID_REG_DOS_KERNEL_ERROR_CODE: // DOS error code
+			dosbox_int_register = dos_kernel_disabled ? 0 : dos.errorcode;
+			break;
+		case DOSBOX_ID_REG_DOS_KERNEL_BOOT_DRIVE: // DOS boot drive
+			dosbox_int_register = bootdrive;
+			break;
+		case DOSBOX_ID_REG_DOS_KERNEL_CURRENT_DRIVE: // DOS current drive
+			dosbox_int_register = dos_kernel_disabled ? 0 : DOS_GetDefaultDrive();
+			break;
+		case DOSBOX_ID_REG_DOS_KERNEL_LFN_STATUS: // DOS LFN status
+			dosbox_int_register = dos_kernel_disabled || !uselfn ? 0: 1;
+			break;
 
-        case 0x4358494D: /* query mixer output 'MIXC' */
-            dosbox_int_register = Mixer_MIXC();
-            break;
+		case DOSBOX_ID_REG_GET_VGA_MEMBASE:
+			dosbox_int_register = S3_LFB_BASE;
+			break;
+		case DOSBOX_ID_REG_GET_VGA_MEMSIZE:
+			dosbox_int_register = vga.mem.memsize;
+			break;
+		case DOSBOX_ID_REG_GET_VGA_SIZE: /* query VGA display size */
+			dosbox_int_register = VGA_QuerySizeIG();
+			break;
 
-        case 0x5058494D: /* query mixer output 'MIXP' */
-            dosbox_int_register = Mixer_MIXWritePos();
-            break;
+		case DOSBOX_ID_REG_GET_WINDOW_SIZE: /* query window size (so user mouse cursor has meaning) */
+			dosbox_int_register = user_cursor_sw | (user_cursor_sh << 16);
+			break;
 
-        case 0x4258494D: /* query mixer output 'MIXB' */
-            break;
+		case DOSBOX_ID_REG_8237_INJECT_READ: /* ISA DMA injection, single byte/word (read from memory) */
+			break;
 
-        case 0x4558494D: /* query mixer output 'MIXE' */
-            break;
+		case DOSBOX_ID_REG_8259_PIC_INFO: /* PIC configuration */
+			/* bits [7:0] = cascade interrupt or 0xFF if none
+			 * bit  [8:8] = primary PIC present
+			 * bit  [9:9] = secondary PIC present */
+			if (master_cascade_irq >= 0)
+				dosbox_int_register = ((unsigned int)master_cascade_irq & 0xFFu);
+			else
+				dosbox_int_register = 0xFFu;
 
-        case 0x6845C0: /* query VGA display size */
-            dosbox_int_register = VGA_QuerySizeIG();
-            break;
+			dosbox_int_register |= 0x100; // primary always present
+			if (enable_slave_pic) dosbox_int_register |= 0x200;
+			break;
 
-        case 0x6845C1: /* query VGA capture state */
-            dosbox_int_register = VGA_QueryCaptureState();
-            break;
+		case DOSBOX_ID_REG_8042_KB_STATUS: /* keyboard status */
+			dosbox_int_register = Keyb_ig_status();
+			break;
 
-        case 0x6845C2: /* query VGA capture address (what is being captured to NOW) */
-            dosbox_int_register = VGA_QueryCaptureAddress();
-            break;
+		case DOSBOX_ID_REG_USER_MOUSE_STATUS: /* read user mouse status */
+			dosbox_int_register =
+				(user_cursor_locked        ? (1UL << 0UL) : 0UL) |    /* bit 0 = mouse capture lock */
+				(sdl.mouse.locked          ? (1UL << 1UL) : 0UL);     /* bit 1 = mouse captured */
+			break;
 
-        case 0x6845C3: /* query VGA capture current crop rectangle (position) will not reflect new rectangle until VGA capture finishes capture. */
-            {
-                const SDL_Rect &r = VGA_CaptureRectCurrent();
-                dosbox_int_register = ((uint32_t)r.y << (uint32_t)16ul) + (uint32_t)r.x;
-            }
-            break;
+		case DOSBOX_ID_REG_USER_MOUSE_CURSOR: /* read user mouse cursor position */
+			dosbox_int_register = (uint32_t((uint16_t)user_cursor_y & 0xFFFFUL) << 16UL) | uint32_t((uint16_t)user_cursor_x & 0xFFFFUL);
+			break;
 
-        case 0x6845C4: /* query VGA capture current crop rectangle (size). will not reflect new rectangle until VGA capture finishes capture. */
-            {
-                const SDL_Rect &r = VGA_CaptureRectCurrent();
-                dosbox_int_register = ((uint32_t)r.h << (uint32_t)16ul) + (uint32_t)r.w;
-            }
-            break;
+		case DOSBOX_ID_REG_USER_MOUSE_CURSOR_NORMALIZED:
+			{ /* read user mouse cursor position (normalized for Windows 1.x/2.x/3.x/95/98/ME mouse driver interface) */
+				signed long long x = ((signed long long)user_cursor_x << 16LL) / (signed long long)(user_cursor_sw-1);
+				signed long long y = ((signed long long)user_cursor_y << 16LL) / (signed long long)(user_cursor_sh-1);
+				if (x < 0x0000LL) x = 0x0000LL;
+				if (x > 0xFFFFLL) x = 0xFFFFLL;
+				if (y < 0x0000LL) y = 0x0000LL;
+				if (y > 0xFFFFLL) y = 0xFFFFLL;
+				dosbox_int_register = ((unsigned int)y << 16UL) | (unsigned int)x;
+			} break;
 
-        case 0x825901: /* PIC configuration */
-            /* bits [7:0] = cascade interrupt or 0xFF if none
-             * bit  [8:8] = primary PIC present
-             * bit  [9:9] = secondary PIC present */
-            if (master_cascade_irq >= 0)
-                dosbox_int_register = ((unsigned int)master_cascade_irq & 0xFFu);
-            else
-                dosbox_int_register = 0xFFu;
-
-            dosbox_int_register |= 0x100; // primary always present
-            if (enable_slave_pic) dosbox_int_register |= 0x200;
-            break;
-
-        case 0x823780: /* ISA DMA injection, single byte/word (read from memory) */
-            break;
-
-//      case 0x804200: /* keyboard input injection -- not supposed to read */
-//          break;
-
-        case 0x804201: /* keyboard status */
-            dosbox_int_register = Keyb_ig_status();
-            break;
-
-        case 0x434D54: /* read user mouse status */
-            dosbox_int_register =
-                (user_cursor_locked ? (1UL << 0UL) : 0UL);      /* bit 0 = mouse capture lock */
-            break;
-
-        case 0x434D55: /* read user mouse cursor position */
-            dosbox_int_register = (uint32_t((uint16_t)user_cursor_y & 0xFFFFUL) << 16UL) | uint32_t((uint16_t)user_cursor_x & 0xFFFFUL);
-            break;
-
-        case 0x434D56: { /* read user mouse cursor position (normalized for Windows 3.x) */
-            signed long long x = ((signed long long)user_cursor_x << 16LL) / (signed long long)(user_cursor_sw-1);
-            signed long long y = ((signed long long)user_cursor_y << 16LL) / (signed long long)(user_cursor_sh-1);
-            if (x < 0x0000LL) x = 0x0000LL;
-            if (x > 0xFFFFLL) x = 0xFFFFLL;
-            if (y < 0x0000LL) y = 0x0000LL;
-            if (y > 0xFFFFLL) y = 0xFFFFLL;
-            dosbox_int_register = ((unsigned int)y << 16UL) | (unsigned int)x;
-            } break;
-
-        case 0xC54010: /* Screenshot/capture trigger */
-            /* TODO: This should also be hidden behind an enable switch, so that rogue DOS development
-             *       can't retaliate if the user wants to capture video or screenshots. */
+		case DOSBOX_ID_REG_SCREENSHOT_TRIGGER: /* Screenshot/capture trigger */
+			       /* TODO: This should be designed so that rogue DOS development cannot abuse this interface
+				*       to prevent the user from recording anything */
 #if (C_SSHOT)
-            dosbox_int_register = 0x00000000; // available
-            if (CaptureState & CAPTURE_IMAGE)
-                dosbox_int_register |= 1 << 0; // Image capture is in progress
-            if (CaptureState & CAPTURE_VIDEO)
-                dosbox_int_register |= 1 << 1; // Video capture is in progress
-            if (CaptureState & CAPTURE_WAVE)
-                dosbox_int_register |= 1 << 2; // WAVE capture is in progress
+			dosbox_int_register = 0x00000000; // available
+			if (CaptureState & CAPTURE_IMAGE)
+				dosbox_int_register |= 1 << 0; // Image capture is in progress
+			if (CaptureState & CAPTURE_VIDEO)
+				dosbox_int_register |= 1 << 1; // Video capture is in progress
+			if (CaptureState & CAPTURE_WAVE)
+				dosbox_int_register |= 1 << 2; // WAVE capture is in progress
 #else
-            dosbox_int_register = 0xC0000000; // not available (bit 31 set), not enabled (bit 30 set)
+			dosbox_int_register = 0xC0000000; // not available (bit 31 set), not enabled (bit 30 set)
 #endif
-            break;
+			break;
 
-        case 0xAA55BB66UL: /* interface reset result */
-            break;
+		case DOSBOX_ID_RESET_INDEX_CODE: /* interface reset result */
+			break;
 
-        default:
-            dosbox_int_register = 0xAA55AA55;
-            dosbox_int_error = true;
-            break;
-    }
+		case DOSBOX_ID_REG_CPU_CYCLES:
+			ig_cpu_cycles_set = 0;
+			if (CPU_CycleMax < 0x80000000)
+				dosbox_int_register = (uint32_t)CPU_CycleMax;
+			else
+				dosbox_int_register = (uint32_t)0x7FFFFFFFUL;
+			break;
 
-    LOG(LOG_MISC,LOG_DEBUG)("DOSBox-X integration read 0x%08lx got 0x%08lx (err=%u)\n",
-        (unsigned long)dosbox_int_regsel,
-        (unsigned long)dosbox_int_register,
-        dosbox_int_error?1:0);
+		case DOSBOX_ID_REG_CPU_MAX_PERCENT:
+			dosbox_int_register = CPU_CyclePercUsed;
+			ig_cpu_cycles_set = 0;
+			break;
+
+		case DOSBOX_ID_REG_CPU_CYCLES_INFO:
+			ig_cpu_cycles_set = 0;
+			dosbox_int_register = 0;
+			if (CPU_CycleAutoAdjust)
+			       dosbox_int_register |= DOSBOX_ID_REG_CPU_CYCLES_INFO_MAX;
+			else if (CPU_AutoDetermineMode &CPU_AUTODETERMINE_CYCLES)
+			       dosbox_int_register |= DOSBOX_ID_REG_CPU_CYCLES_INFO_AUTO;
+			else
+			       dosbox_int_register |= DOSBOX_ID_REG_CPU_CYCLES_INFO_FIXED;
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_CAPS:
+			if (IS_VGA_ARCH && svgaCard == SVGA_DOSBoxIG) {
+				dosbox_int_register = DOSBOX_ID_REG_VGAIG_CAPS_ENABLED;
+			}
+			else {
+				dosbox_int_register = 0;
+			}
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_CTL:
+			/* Windows 3.1 "grabber" driver needs to be able to save/restore the IG registers,
+			 * or perhaps switch on/off things at runtime. */
+			if (IS_VGA_ARCH && svgaCard == SVGA_DOSBoxIG) {
+				dosbox_int_register = vga.dosboxig.ctlreg;
+			}
+			else {
+				dosbox_int_register = 0;
+			}
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_DISPLAYSIZE:
+			dosbox_int_register = vga.dosboxig.width | (vga.dosboxig.height << 16u);
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_RBANKWINDOW:
+			dosbox_int_register = vga.dosboxig.rbank_offset;
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_WBANKWINDOW:
+			dosbox_int_register = vga.dosboxig.wbank_offset;
+			break;
+
+		default:
+			dosbox_int_register = 0xAA55AA55;
+			dosbox_int_error = true;
+			break;
+	}
+
+	LOG(LOG_MISC,LOG_DEBUG)("DOSBox-X integration read 0x%08lx got 0x%08lx (err=%u)\n",
+			(unsigned long)dosbox_int_regsel,
+			(unsigned long)dosbox_int_register,
+			dosbox_int_error?1:0);
 }
 
 bool watchdog_set = false;
 
 void Watchdog_Timeout_Event(Bitu /*val*/) {
-    LOG_MSG("Watchdog timeout occurred");
-    CPU_Raise_NMI();
+	LOG_MSG("Watchdog timeout occurred");
+	CPU_Raise_NMI();
 }
 
 void Watchdog_Timer_Clear(void) {
-    if (watchdog_set) {
-        PIC_RemoveEvents(Watchdog_Timeout_Event);
-        watchdog_set = false;
-    }
+	if (watchdog_set) {
+		PIC_RemoveEvents(Watchdog_Timeout_Event);
+		watchdog_set = false;
+	}
 }
 
 void Watchdog_Timer_Set(uint32_t timeout_ms) {
-    Watchdog_Timer_Clear();
+	Watchdog_Timer_Clear();
 
-    if (timeout_ms != 0) {
-        watchdog_set = true;
-        PIC_AddEvent(Watchdog_Timeout_Event,(double)timeout_ms);
-    }
+	if (timeout_ms != 0) {
+		watchdog_set = true;
+		PIC_AddEvent(Watchdog_Timeout_Event,(double)timeout_ms);
+	}
 }
+
+void VGA_DOSBoxIG_FmtToVGA(void);
 
 unsigned int mouse_notify_mode = 0;
 // 0 = off
@@ -944,255 +988,429 @@ unsigned int mouse_notify_mode = 0;
 
 /* write triggered */
 void dosbox_integration_trigger_write() {
-    dosbox_int_error = false;
+	dosbox_int_error = false;
 
-    LOG(LOG_MISC,LOG_DEBUG)("DOSBox-X integration write 0x%08lx val 0x%08lx\n",
-        (unsigned long)dosbox_int_regsel,
-        (unsigned long)dosbox_int_register);
+	LOG(LOG_MISC,LOG_DEBUG)("DOSBox-X integration write 0x%08lx val 0x%08lx\n",
+			(unsigned long)dosbox_int_regsel,
+			(unsigned long)dosbox_int_register);
 
-    switch (dosbox_int_regsel) {
-        case 1: /* test */
-            break;
+	switch (dosbox_int_regsel) {
+		case DOSBOX_ID_REG_TEST:
+			break;
 
-        case 2: /* version string */
-            dosbox_int_ver_read = NULL;
-            break;
+		case DOSBOX_ID_REG_VERSION_STRING:
+			dosbox_int_ver_read = NULL;
+			break;
 
-        case 0xDEB0: /* debug output (to log) */
-            for (unsigned int b=0;b < 4;b++) {
-                unsigned char c = (unsigned char)(dosbox_int_register >> (b * 8U));
-                if (c == '\n' || dosbox_int_debug_out.length() >= 200) {
-                    LOG_MSG("Client debug message: %s\n",dosbox_int_debug_out.c_str());
-                    dosbox_int_debug_out.clear();
-                }
-                else if (c != 0) {
-                    dosbox_int_debug_out += ((char)c);
-                }
-                else {
-                    break;
-                }
-            }
-            dosbox_int_register = 0;
-            break;
+		case DOSBOX_ID_REG_DEBUG_OUT: /* debug output (to log) */
+			for (unsigned int b=0;b < 4;b++) {
+				unsigned char c = (unsigned char)(dosbox_int_register >> (b * 8U));
+				if (c == '\n' || dosbox_int_debug_out.length() >= 200) {
+					LOG_MSG("Client debug message: %s\n",dosbox_int_debug_out.c_str());
+					dosbox_int_debug_out.clear();
+				}
+				else if (c != 0) {
+					dosbox_int_debug_out += ((char)c);
+				}
+				else {
+					break;
+				}
+			}
+			dosbox_int_register = 0;
+			break;
 
-        case 0xDEB1: /* debug output clear */
-            dosbox_int_debug_out.clear();
-            break;
+		case DOSBOX_ID_REG_DEBUG_CLEAR: /* debug output clear */
+			dosbox_int_debug_out.clear();
+			break;
 
-        case 0x6845C1: /* query VGA capture state */
-            VGA_SetCaptureState(dosbox_int_register);
-            break;
+		case DOSBOX_ID_REG_RELEASE_MOUSE_CAPTURE: /* release mouse capture 'MCR' */
+			void GFX_ReleaseMouse(void);
+			GFX_ReleaseMouse();
+			break;
 
-        case 0x6845C2: /* set VGA capture address, will be applied to next capture */
-            VGA_SetCaptureAddress(dosbox_int_register);
-            break;
+		case DOSBOX_ID_REG_SET_WATCHDOG: /* Set/clear watchdog timer 'WATD' */
+			Watchdog_Timer_Set(dosbox_int_register);
+			break;
 
-        case 0x6845C3: /* set VGA capture crop rectangle (position), will be applied to next capture */
-            {
-                SDL_Rect &r = VGA_CaptureRectFromGuest();
-                r.x = (int)(dosbox_int_register & 0xFFFF);
-                r.y = (int)(dosbox_int_register >> 16ul);
-            }
-            break;
+		case DOSBOX_ID_REG_INJECT_NMI: /* NMI (INT 02h) interrupt injection */
+			{
+				dosbox_int_register_shf = 0;
+				dosbox_int_regsel_shf = 0;
+				CPU_Raise_NMI();
+			}
+			break;
 
-        case 0x6845C4: /* set VGA capture crop rectangle (size), will be applied to next capture */
-            {
-                SDL_Rect &r = VGA_CaptureRectFromGuest();
-                r.w = (int)(dosbox_int_register & 0xFFFF);
-                r.h = (int)(dosbox_int_register >> 16ul);
-            }
-            break;
+		case DOSBOX_ID_REG_8259_INJECT_IRQ: /* PIC interrupt injection */
+			{
+				dosbox_int_register_shf = 0;
+				dosbox_int_regsel_shf = 0;
+				/* bits  [7:0]  = IRQ to signal (must be 0-15)
+				 * bit   [8:8]  = 1=raise 0=lower IRQ */
+				uint8_t IRQ = dosbox_int_register&0xFFu;
+				bool raise = (dosbox_int_register>>8u)&1u;
 
-        case 0x6845C5: /* set VGA capture stride (bytes per scan line) */
-            VGA_SetCaptureStride(dosbox_int_register);
-            break;
+				if (IRQ < 16) {
+					if (raise)
+						PIC_ActivateIRQ(IRQ);
+					else
+						PIC_DeActivateIRQ(IRQ);
+				}
+			}
+			break;
 
-        case 0x52434D: /* release mouse capture 'MCR' */
-            void GFX_ReleaseMouse(void);
-            GFX_ReleaseMouse();
-            break;
+		case DOSBOX_ID_REG_8237_INJECT_WRITE: /* ISA DMA injection, single byte/word (write to memory) */
+			{
+				dosbox_int_register_shf = 0;
+				dosbox_int_regsel_shf = 0;
+				/* bits  [7:0]  = data byte if 8-bit DNA
+				 * bits [15:0]  = data word if 16-bit DMA
+				 * bits [18:16] = DMA channel to send to */
+				DmaChannel *ch = GetDMAChannel((dosbox_int_register>>16u)&7u);
+				if (ch != NULL) {
+					unsigned char tmp[2];
 
-        case 0x5158494D: /* query mixer output 'MIXQ' */
-            break;
+					tmp[0] = (unsigned char)( dosbox_int_register         & 0xFFu);
+					tmp[1] = (unsigned char)((dosbox_int_register >>  8u) & 0xFFu);
 
-        case 0x4358494D: /* query mixer output 'MIXC' */
-            Mixer_MIXC_Write(dosbox_int_register);
-            break;
+					/* NTS: DMA channel write will write tmp[0] if 8-bit, tmp[0]/tmp[1] if 16-bit */
+					if (ch->Write(1/*one unit of transfer*/,tmp) == 1) {
+						dosbox_int_register = 0;
+						dosbox_int_error = false;
+					}
+					else {
+						dosbox_int_register = 0x823700;
+						dosbox_int_error = true;
+					}
+				}
+				else {
+					dosbox_int_register = 0x8237FF;
+					dosbox_int_error = true;
+				}
+			}
+			break;
 
-        case 0x5058494D: /* query mixer output 'MIXP' */
-            Mixer_MIXWritePos_Write(dosbox_int_register);
-            break;
+		case DOSBOX_ID_REG_8237_INJECT_READ: /* ISA DMA injection, single byte/word (read from memory) */
+			{
+				dosbox_int_register_shf = 0;
+				dosbox_int_regsel_shf = 0;
+				/* bits [18:16] = DMA channel to send to */
+				DmaChannel *ch = GetDMAChannel((dosbox_int_register>>16u)&7u);
+				if (ch != NULL) {
+					unsigned char tmp[2];
 
-        case 0x4258494D: /* query mixer output 'MIXB' */
-            Mixer_MIXWriteBegin_Write(dosbox_int_register);
-            break;
+					/* NTS: DMA channel write will write tmp[0] if 8-bit, tmp[0]/tmp[1] if 16-bit */
+					tmp[0] = tmp[1] = 0;
+					if (ch->Read(1/*one unit of transfer*/,tmp) == 1) {
+						dosbox_int_register = ((unsigned int)tmp[1] << 8u) + (unsigned int)tmp[0];
+						dosbox_int_error = false;
+					}
+					else {
+						dosbox_int_register = 0x823700;
+						dosbox_int_error = true;
+					}
+				}
+				else {
+					dosbox_int_register = 0x8237FF;
+					dosbox_int_error = true;
+				}
+			}
+			break;
 
-        case 0x4558494D: /* query mixer output 'MIXE' */
-            Mixer_MIXWriteEnd_Write(dosbox_int_register);
-            break;
+		case DOSBOX_ID_REG_8042_KB_INJECT: /* keyboard input injection */
+			void Mouse_ButtonPressed(uint8_t button);
+			void Mouse_ButtonReleased(uint8_t button);
+			void pc98_keyboard_send(const unsigned char b);
+			void Mouse_CursorMoved(float xrel,float yrel,float x,float y,bool emulate);
+			void KEYBOARD_AUX_Event(float x,float y,Bitu buttons,int scrollwheel);
+			void KEYBOARD_AddBuffer(uint16_t data);
 
-        case 0x57415444: /* Set/clear watchdog timer 'WATD' */
-            Watchdog_Timer_Set(dosbox_int_register);
-            break;
+			switch ((dosbox_int_register>>8)&0xFF) {
+				case 0x00: // keyboard
+					if (IS_PC98_ARCH)
+						pc98_keyboard_send(dosbox_int_register&0xFF);
+					else
+						KEYBOARD_AddBuffer(dosbox_int_register&0xFF);
+					break;
+				case 0x01: // AUX
+					if (!IS_PC98_ARCH)
+						KEYBOARD_AddBuffer((dosbox_int_register&0xFF)|0x100/*AUX*/);
+					else   // no such interface in PC-98 mode
+						dosbox_int_error = true;
+					break;
+				case 0x08: // mouse button injection
+					if (dosbox_int_register&0x80) Mouse_ButtonPressed(dosbox_int_register&0x7F);
+					else Mouse_ButtonReleased(dosbox_int_register&0x7F);
+					break;
+				case 0x09: // mouse movement injection (X)
+					Mouse_CursorMoved(((dosbox_int_register>>16UL) / 256.0f) - 1.0f,0,0,0,true);
+					break;
+				case 0x0A: // mouse movement injection (Y)
+					Mouse_CursorMoved(0,((dosbox_int_register>>16UL) / 256.0f) - 1.0f,0,0,true);
+					break;
+				case 0x0B: // mouse scrollwheel injection
+					// TODO
+					break;
+				default:
+					dosbox_int_error = true;
+					break;
+			}
+			break;
 
-        case 0x808602: /* NMI (INT 02h) interrupt injection */
-            {
-                dosbox_int_register_shf = 0;
-                dosbox_int_regsel_shf = 0;
-                CPU_Raise_NMI();
-            }
-            break;
+			/* this command is used to enable notification of mouse movement over the windows even if the mouse isn't captured */
+		case DOSBOX_ID_REG_USER_MOUSE_CURSOR: /* read user mouse cursor position */
+		case DOSBOX_ID_REG_USER_MOUSE_CURSOR_NORMALIZED: /* read user mouse cursor position (normalized for Windows 3.x) */
+			mouse_notify_mode = dosbox_int_register & 0xFF;
+			LOG(LOG_MISC,LOG_DEBUG)("Mouse notify mode=%u",mouse_notify_mode);
+			break;
 
-        case 0x825900: /* PIC interrupt injection */
-            {
-                dosbox_int_register_shf = 0;
-                dosbox_int_regsel_shf = 0;
-                /* bits  [7:0]  = IRQ to signal (must be 0-15)
-                 * bit   [8:8]  = 1=raise 0=lower IRQ */
-                uint8_t IRQ = dosbox_int_register&0xFFu;
-                bool raise = (dosbox_int_register>>8u)&1u;
-
-                if (IRQ < 16) {
-                    if (raise)
-                        PIC_ActivateIRQ(IRQ);
-                    else
-                        PIC_DeActivateIRQ(IRQ);
-                }
-            }
-            break;
-
-        case 0x823700: /* ISA DMA injection, single byte/word (write to memory) */
-            {
-                dosbox_int_register_shf = 0;
-                dosbox_int_regsel_shf = 0;
-                /* bits  [7:0]  = data byte if 8-bit DNA
-                 * bits [15:0]  = data word if 16-bit DMA
-                 * bits [18:16] = DMA channel to send to */
-                DmaChannel *ch = GetDMAChannel((dosbox_int_register>>16u)&7u);
-                if (ch != NULL) {
-                    unsigned char tmp[2];
-
-                    tmp[0] = (unsigned char)( dosbox_int_register         & 0xFFu);
-                    tmp[1] = (unsigned char)((dosbox_int_register >>  8u) & 0xFFu);
-
-                    /* NTS: DMA channel write will write tmp[0] if 8-bit, tmp[0]/tmp[1] if 16-bit */
-                    if (ch->Write(1/*one unit of transfer*/,tmp) == 1) {
-                        dosbox_int_register = 0;
-                        dosbox_int_error = false;
-                    }
-                    else {
-                        dosbox_int_register = 0x823700;
-                        dosbox_int_error = true;
-                    }
-                }
-                else {
-                    dosbox_int_register = 0x8237FF;
-                    dosbox_int_error = true;
-                }
-            }
-            break;
-
-        case 0x823780: /* ISA DMA injection, single byte/word (read from memory) */
-            {
-                dosbox_int_register_shf = 0;
-                dosbox_int_regsel_shf = 0;
-                /* bits [18:16] = DMA channel to send to */
-                DmaChannel *ch = GetDMAChannel((dosbox_int_register>>16u)&7u);
-                if (ch != NULL) {
-                    unsigned char tmp[2];
-
-                    /* NTS: DMA channel write will write tmp[0] if 8-bit, tmp[0]/tmp[1] if 16-bit */
-                    tmp[0] = tmp[1] = 0;
-                    if (ch->Read(1/*one unit of transfer*/,tmp) == 1) {
-                        dosbox_int_register = ((unsigned int)tmp[1] << 8u) + (unsigned int)tmp[0];
-                        dosbox_int_error = false;
-                    }
-                    else {
-                        dosbox_int_register = 0x823700;
-                        dosbox_int_error = true;
-                    }
-                }
-                else {
-                    dosbox_int_register = 0x8237FF;
-                    dosbox_int_error = true;
-                }
-            }
-            break;
-
-        case 0x804200: /* keyboard input injection */
-            void Mouse_ButtonPressed(uint8_t button);
-            void Mouse_ButtonReleased(uint8_t button);
-            void pc98_keyboard_send(const unsigned char b);
-            void Mouse_CursorMoved(float xrel,float yrel,float x,float y,bool emulate);
-            void KEYBOARD_AUX_Event(float x,float y,Bitu buttons,int scrollwheel);
-            void KEYBOARD_AddBuffer(uint16_t data);
-
-            switch ((dosbox_int_register>>8)&0xFF) {
-                case 0x00: // keyboard
-                    if (IS_PC98_ARCH)
-                        pc98_keyboard_send(dosbox_int_register&0xFF);
-                    else
-                        KEYBOARD_AddBuffer(dosbox_int_register&0xFF);
-                    break;
-                case 0x01: // AUX
-                    if (!IS_PC98_ARCH)
-                        KEYBOARD_AddBuffer((dosbox_int_register&0xFF)|0x100/*AUX*/);
-                    else   // no such interface in PC-98 mode
-                        dosbox_int_error = true;
-                    break;
-                case 0x08: // mouse button injection
-                    if (dosbox_int_register&0x80) Mouse_ButtonPressed(dosbox_int_register&0x7F);
-                    else Mouse_ButtonReleased(dosbox_int_register&0x7F);
-                    break;
-                case 0x09: // mouse movement injection (X)
-                    Mouse_CursorMoved(((dosbox_int_register>>16UL) / 256.0f) - 1.0f,0,0,0,true);
-                    break;
-                case 0x0A: // mouse movement injection (Y)
-                    Mouse_CursorMoved(0,((dosbox_int_register>>16UL) / 256.0f) - 1.0f,0,0,true);
-                    break;
-                case 0x0B: // mouse scrollwheel injection
-                    // TODO
-                    break;
-                default:
-                    dosbox_int_error = true;
-                    break;
-            }
-            break;
-
-//      case 0x804201: /* keyboard status do not write */
-//          break;
-
-        /* this command is used to enable notification of mouse movement over the windows even if the mouse isn't captured */
-        case 0x434D55: /* read user mouse cursor position */
-        case 0x434D56: /* read user mouse cursor position (normalized for Windows 3.x) */
-            mouse_notify_mode = dosbox_int_register & 0xFF;
-            LOG(LOG_MISC,LOG_DEBUG)("Mouse notify mode=%u",mouse_notify_mode);
-            break;
- 
-        case 0xC54010: /* Screenshot/capture trigger */
+		case DOSBOX_ID_REG_SCREENSHOT_TRIGGER: /* Screenshot/capture trigger */
 #if (C_SSHOT)
-            void CAPTURE_ScreenShotEvent(bool pressed);
-            void CAPTURE_VideoEvent(bool pressed);
+			void CAPTURE_ScreenShotEvent(bool pressed);
+			void CAPTURE_VideoEvent(bool pressed);
 #endif
-            void CAPTURE_WaveEvent(bool pressed);
+			void CAPTURE_WaveEvent(bool pressed);
 
-            /* TODO: It would be wise to grant/deny access to this register through another dosbox-x.conf option
-             *       so that rogue DOS development cannot shit-spam the capture folder */
+			/* TODO: It would be wise to grant/deny access to this register through another dosbox-x.conf option
+			 *       so that rogue DOS development cannot shit-spam the capture folder */
 #if (C_SSHOT)
-            if (dosbox_int_register & 1)
-                CAPTURE_ScreenShotEvent(true);
-            if (dosbox_int_register & 2)
-                CAPTURE_VideoEvent(true);
+			if (dosbox_int_register & 1)
+				CAPTURE_ScreenShotEvent(true);
+			if (dosbox_int_register & 2)
+				CAPTURE_VideoEvent(true);
 #endif
-            if (dosbox_int_register & 4)
-                CAPTURE_WaveEvent(true);
-            break;
+			if (dosbox_int_register & 4)
+				CAPTURE_WaveEvent(true);
+			break;
 
-        default:
-            dosbox_int_register = 0x55AA55AA;
-            dosbox_int_error = true;
-            break;
-    }
+		case DOSBOX_ID_REG_VGAIG_CTL: {
+			bool modechange = false;
+			bool mapchange = false;
+			bool pv;
+
+			if (IS_VGA_ARCH && svgaCard == SVGA_DOSBoxIG) {
+				vga.dosboxig.ctlreg = dosbox_int_register;
+
+				pv = vga.dosboxig.svga;
+				vga.dosboxig.svga = !!(dosbox_int_register & DOSBOX_ID_REG_VGAIG_CTL_OVERRIDE);
+				if (vga.dosboxig.svga != pv) modechange = true;
+
+				pv = vga.dosboxig.override_refresh;
+				vga.dosboxig.override_refresh = !!(dosbox_int_register & DOSBOX_ID_REG_VGAIG_CTL_OVERRIDE_REFRESH);
+				if (vga.dosboxig.override_refresh != pv) modechange = true;
+
+				pv = vga.dosboxig.force_A0000;
+				vga.dosboxig.force_A0000 = !!(dosbox_int_register & DOSBOX_ID_REG_VGAIG_CTL_A0000_FORCE);
+				if (vga.dosboxig.force_A0000 != pv) mapchange = true;
+
+				vga.dosboxig.vesa_bios_lockout = !!(dosbox_int_register & DOSBOX_ID_REG_VGAIG_CTL_VBEMODESET_DISABLE);
+				vga.dosboxig.vga_reg_lockout = !!(dosbox_int_register & DOSBOX_ID_REG_VGAIG_CTL_VGAREG_LOCKOUT);
+				vga.dosboxig.vga_acpal_bypass = !!(dosbox_int_register & DOSBOX_ID_REG_VGAIG_CTL_ACPAL_BYPASS);
+				vga.dosboxig.vga_3da_lockout = !!(dosbox_int_register & DOSBOX_ID_REG_VGAIG_CTL_3DA_LOCKOUT);
+				vga.dosboxig.vga_dac_lockout = !!(dosbox_int_register & DOSBOX_ID_REG_VGAIG_CTL_DAC_LOCKOUT);
+
+				if (modechange) {
+					VGA_DetermineMode();
+					VGA_StartResize(0);
+					VGA_DAC_UpdateColorPalette();
+				}
+
+				if (mapchange) {
+					VGA_SetupHandlers();
+				}
+			}
+			break; }
+
+		case DOSBOX_ID_REG_VGAIG_DISPLAYSIZE:
+			{
+				unsigned int nw = dosbox_int_register & 0xFFFFu;
+				unsigned int nh = dosbox_int_register >> 16u;
+
+				if (nw < 16) nw = 16;
+				if (nh < 16) nh = 16;
+				if (nw > vga.max_svga_width) nw = vga.max_svga_width;
+				if (nh > vga.max_svga_height) nh = vga.max_svga_height;
+
+				if (vga.dosboxig.width != nw || vga.dosboxig.height != nh) {
+					vga.dosboxig.width = nw;
+					vga.dosboxig.height = nh;
+					if (vga.dosboxig.svga) VGA_StartResize(0);
+				}
+			}
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_HVTOTALADD:
+			{
+				unsigned int nw = dosbox_int_register & 0xFFFFu;
+				unsigned int nh = dosbox_int_register >> 16u;
+
+				if (vga.dosboxig.wa_total != nw || vga.dosboxig.ha_total != nh) {
+					vga.dosboxig.wa_total = nw;
+					vga.dosboxig.ha_total = nh;
+					if (vga.dosboxig.svga) VGA_StartResize(0);
+				}
+			}
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_FMT_BYTESPERSCANLINE:
+			{
+				unsigned int bpl = dosbox_int_register & 0xFFFFu;
+				unsigned int fmt = (dosbox_int_register >> 16u) & 0xFFu;
+
+				if (vga.dosboxig.vidformat != fmt && fmt != 0xFFu) {
+					vga.dosboxig.vidformat = fmt;
+					if (vga.dosboxig.svga) {
+						VGA_DetermineMode();
+						VGA_StartResize(0);
+					}
+				}
+				if (vga.dosboxig.bytes_per_scanline != bpl) {
+					vga.dosboxig.bytes_per_scanline = bpl;
+					if (vga.dosboxig.svga) VGA_CheckScanLength();
+				}
+			}
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_REFRESHRATE:
+			{
+				uint32_t nr = dosbox_int_register;
+
+				if (nr > (240ul << 16ul)) nr = 240ul << 16ul; /* 240fps is enough! */
+
+				if (vga.dosboxig.vratefp16 != nr) {
+					vga.dosboxig.vratefp16 = nr;
+					if (vga.dosboxig.svga) VGA_StartResize(0);
+				}
+			}
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_DISPLAYOFFSET: {
+			vga.dosboxig.display_offset = dosbox_int_register;
+			break; }
+
+		case DOSBOX_ID_REG_VGAIG_HVPELSCALE: {
+			uint8_t vs = (dosbox_int_register >> 24u) & 0xFFu;
+			uint8_t hs = (dosbox_int_register >> 16u) & 0xFFu;
+			uint8_t vp = (dosbox_int_register >>  8u) & 0xFFu;
+			uint8_t hp =  dosbox_int_register         & 0xFFu;
+			bool modechange = false;
+
+			if (vs != 0xFFu && vga.dosboxig.vscale != vs) { vga.dosboxig.vscale = vs; modechange = true; }
+			if (hs != 0xFFu && vga.dosboxig.hscale != hs) { vga.dosboxig.hscale = hs; modechange = true; }
+			if (vp != 0xFFu && vga.dosboxig.vpel != vp) { vga.dosboxig.vpel = vp; modechange = true; }
+			if (hp != 0xFFu && vga.dosboxig.hpel != hp) { vga.dosboxig.hpel = hp; modechange = true; }
+
+			if (modechange && vga.dosboxig.svga) VGA_StartResize(0);
+			break; }
+
+		case DOSBOX_ID_REG_VGAIG_BANKWINDOW:
+			{
+				uint32_t nr = dosbox_int_register & (~0xFFFul);
+				vga.dosboxig.rbank_offset = nr;
+				vga.dosboxig.wbank_offset = nr;
+				VGA_SetupHandlers();
+			}
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_RBANKWINDOW:
+			{
+				uint32_t nr = dosbox_int_register & (~0xFFFul);
+				vga.dosboxig.rbank_offset = nr;
+				VGA_SetupHandlers();
+			}
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_WBANKWINDOW:
+			{
+				uint32_t nr = dosbox_int_register & (~0xFFFul);
+				vga.dosboxig.wbank_offset = nr;
+				VGA_SetupHandlers();
+			}
+			break;
+
+		case DOSBOX_ID_REG_VGAIG_ASPECTRATIO:
+			{
+				uint16_t w = dosbox_int_register & 0xFFFFu;
+				uint16_t h = dosbox_int_register >> 16u;
+
+				if (vga.dosboxig.dar_width != w || vga.dosboxig.dar_height != h) {
+					vga.dosboxig.dar_width = w;
+					vga.dosboxig.dar_height = h;
+					if (vga.dosboxig.svga) VGA_StartResize(0);
+				}
+			}
+			break;
+
+		case DOSBOX_ID_REG_CPU_CYCLES:
+			ig_cpu_cycles_set |= 1u;
+			ig_cpu_cycles_value = dosbox_int_register;
+			if (ig_cpu_cycles_value == 0) ig_cpu_cycles_value = 3000;
+			if (ig_cpu_cycles_value > 0x7FFFFFFFul) ig_cpu_cycles_value = 0x7FFFFFFFul;
+			break;
+
+		case DOSBOX_ID_REG_CPU_MAX_PERCENT:
+			ig_cpu_cycles_set |= 2u;
+			ig_cpu_cycles_max_percent = dosbox_int_register;
+			if (ig_cpu_cycles_max_percent == 0) ig_cpu_cycles_max_percent = 100;
+			if (ig_cpu_cycles_max_percent > 100) ig_cpu_cycles_max_percent = 100;
+			break;
+
+		case DOSBOX_ID_REG_CPU_CYCLES_INFO:
+			dosbox_int_error = false;
+			{
+				unsigned int mode = dosbox_int_register & DOSBOX_ID_REG_CPU_CYCLES_INFO_MODE_MASK;
+				char setting[256] = {0};
+
+				if (mode == 0) {
+					if (CPU_CycleAutoAdjust)
+						mode = DOSBOX_ID_REG_CPU_CYCLES_INFO_MAX;
+					else if (CPU_AutoDetermineMode &CPU_AUTODETERMINE_CYCLES)
+						mode = DOSBOX_ID_REG_CPU_CYCLES_INFO_AUTO;
+					else
+						mode = DOSBOX_ID_REG_CPU_CYCLES_INFO_FIXED;
+				}
+
+				switch (mode) {
+					case DOSBOX_ID_REG_CPU_CYCLES_INFO_MAX:
+						if (ig_cpu_cycles_set & 2)
+							sprintf(setting,"cycles=max %lu%%",(unsigned long)ig_cpu_cycles_max_percent);
+						break;
+					case DOSBOX_ID_REG_CPU_CYCLES_INFO_AUTO:
+						if (ig_cpu_cycles_set & 2)
+							sprintf(setting,"cycles=auto %lu%%",(unsigned long)ig_cpu_cycles_max_percent);
+						break;
+					case DOSBOX_ID_REG_CPU_CYCLES_INFO_FIXED:
+						if (ig_cpu_cycles_set & 1)
+							sprintf(setting,"cycles=fixed %lu",(unsigned long)ig_cpu_cycles_value);
+						break;
+					default:
+						dosbox_int_error = true;
+						break;
+				};
+
+				if (setting) {
+					LOG(LOG_MISC,LOG_DEBUG)("Integratoin device cycle change: %s\n",setting);
+					Section* sec = control->GetSection("cpu");
+					if (sec) sec->HandleInputline(setting);
+				}
+				else {
+					LOG(LOG_MISC,LOG_DEBUG)("Integratoin device cycle change ignored (setmask 0x%x mode 0x%x)\n",
+						ig_cpu_cycles_set,mode);
+				}
+			}
+			ig_cpu_cycles_set = 0;
+			break;
+
+		default:
+			dosbox_int_register = 0x55AA55AA;
+			dosbox_int_error = true;
+			break;
+	}
+}
+
+void dosbox_integration_trigger_write_direct32(const uint32_t reg,const uint32_t val) {
+	dosbox_int_regsel = reg;
+	dosbox_int_register = val;
+	dosbox_integration_trigger_write();
 }
 
 /* PORT 0x28: Index
@@ -1206,164 +1424,164 @@ void dosbox_integration_trigger_write() {
  *      read one byte out of 4. */
 
 static Bitu dosbox_integration_port00_index_r(Bitu port,Bitu iolen) {
-    (void)port;//UNUSED
-    Bitu retb = 0;
-    Bitu ret = 0;
+	(void)port;//UNUSED
+	Bitu retb = 0;
+	Bitu ret = 0;
 
-    while (iolen > 0) {
-        ret += ((dosbox_int_regsel >> (dosbox_int_regsel_shf * 8)) & 0xFFU) << (retb * 8);
-        if ((++dosbox_int_regsel_shf) >= 4) dosbox_int_regsel_shf = 0;
-        iolen--;
-        retb++;
-    }
+	while (iolen > 0) {
+		ret += ((dosbox_int_regsel >> (dosbox_int_regsel_shf * 8)) & 0xFFU) << (retb * 8);
+		if ((++dosbox_int_regsel_shf) >= 4) dosbox_int_regsel_shf = 0;
+		iolen--;
+		retb++;
+	}
 
-    return ret;
+	return ret;
 }
 
 static void dosbox_integration_port00_index_w(Bitu port,Bitu val,Bitu iolen) {
-    (void)port;//UNUSED
+	(void)port;//UNUSED
 
-    while (iolen > 0) {
-        uint32_t msk = 0xFFU << (dosbox_int_regsel_shf * 8);
-        dosbox_int_regsel = (dosbox_int_regsel & ~msk) + ((val & 0xFF) << (dosbox_int_regsel_shf * 8));
-        if ((++dosbox_int_regsel_shf) >= 4) dosbox_int_regsel_shf = 0;
-        val >>= 8U;
-        iolen--;
-    }
+	while (iolen > 0) {
+		uint32_t msk = 0xFFU << (dosbox_int_regsel_shf * 8);
+		dosbox_int_regsel = (dosbox_int_regsel & ~msk) + ((val & 0xFF) << (dosbox_int_regsel_shf * 8));
+		if ((++dosbox_int_regsel_shf) >= 4) dosbox_int_regsel_shf = 0;
+		val >>= 8U;
+		iolen--;
+	}
 }
 
 static Bitu dosbox_integration_port01_data_r(Bitu port,Bitu iolen) {
-    (void)port;//UNUSED
-    Bitu retb = 0;
-    Bitu ret = 0;
+	(void)port;//UNUSED
+	Bitu retb = 0;
+	Bitu ret = 0;
 
-    while (iolen > 0) {
-        if (dosbox_int_register_shf == 0) dosbox_integration_trigger_read();
-        ret += ((dosbox_int_register >> (dosbox_int_register_shf * 8)) & 0xFFU) << (retb * 8);
-        if ((++dosbox_int_register_shf) >= 4) dosbox_int_register_shf = 0;
-        iolen--;
-        retb++;
-    }
+	while (iolen > 0) {
+		if (dosbox_int_register_shf == 0) dosbox_integration_trigger_read();
+		ret += ((dosbox_int_register >> (dosbox_int_register_shf * 8)) & 0xFFU) << (retb * 8);
+		if ((++dosbox_int_register_shf) >= 4) dosbox_int_register_shf = 0;
+		iolen--;
+		retb++;
+	}
 
-    return ret;
+	return ret;
 }
 
 static void dosbox_integration_port01_data_w(Bitu port,Bitu val,Bitu iolen) {
-    (void)port;//UNUSED
+	(void)port;//UNUSED
 
-    while (iolen > 0) {
-        uint32_t msk = 0xFFU << (dosbox_int_register_shf * 8);
-        dosbox_int_register = (dosbox_int_register & ~msk) + ((val & 0xFF) << (dosbox_int_register_shf * 8));
-        if ((++dosbox_int_register_shf) >= 4) dosbox_int_register_shf = 0;
-        if (dosbox_int_register_shf == 0) dosbox_integration_trigger_write();
-        val >>= 8U;
-        iolen--;
-    }
+	while (iolen > 0) {
+		uint32_t msk = 0xFFU << (dosbox_int_register_shf * 8);
+		dosbox_int_register = (dosbox_int_register & ~msk) + ((val & 0xFF) << (dosbox_int_register_shf * 8));
+		if ((++dosbox_int_register_shf) >= 4) dosbox_int_register_shf = 0;
+		if (dosbox_int_register_shf == 0) dosbox_integration_trigger_write();
+		val >>= 8U;
+		iolen--;
+	}
 }
 
 static Bitu dosbox_integration_port02_status_r(Bitu port,Bitu iolen) {
-    (void)iolen;//UNUSED
-    (void)port;//UNUSED
-    /* status */
-    /* 7:6 = regsel byte index
-     * 5:4 = register byte index
-     * 3:2 = reserved
-     *   1 = error
-     *   0 = busy */
-    return
-        ((unsigned int)dosbox_int_regsel_shf << 6u) + ((unsigned int)dosbox_int_register_shf << 4u) +
-        (dosbox_int_error ? 2u : 0u) + (dosbox_int_busy ? 1u : 0u);
+	(void)iolen;//UNUSED
+	(void)port;//UNUSED
+	/* status */
+	/* 7:6 = regsel byte index
+	 * 5:4 = register byte index
+	 * 3:2 = reserved
+	 *   1 = error
+	 *   0 = busy */
+	return
+		((unsigned int)dosbox_int_regsel_shf << 6u) + ((unsigned int)dosbox_int_register_shf << 4u) +
+		(dosbox_int_error ? 2u : 0u) + (dosbox_int_busy ? 1u : 0u);
 }
 
 static void dosbox_integration_port02_command_w(Bitu port,Bitu val,Bitu iolen) {
-    (void)port;
-    (void)iolen;
-    switch (val) {
-        case 0x00: /* reset latch */
-            dosbox_int_register_shf = 0;
-            dosbox_int_regsel_shf = 0;
-            break;
-        case 0x01: /* flush write */
-            if (dosbox_int_register_shf != 0) {
-                dosbox_integration_trigger_write();
-                dosbox_int_register_shf = 0;
-            }
-            break;
-        case 0x20: /* push state */
-            if (dosbox_int_push_save_state()) {
-                dosbox_int_register_shf = 0;
-                dosbox_int_regsel_shf = 0;
-                dosbox_int_error = false;
-                dosbox_int_busy = false;
-                dosbox_int_regsel = 0xAA55BB66;
-                dosbox_int_register = 0xD05B0C5;
-                LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG state saved");
-            }
-            else {
-                LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG unable to push state, stack overflow");
-                dosbox_int_error = true;
-            }
-            break;
-        case 0x21: /* pop state */
-            if (dosbox_int_pop_save_state()) {
-                LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG state restored");
-            }
-            else {
-                LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG unable to pop state, stack underflow");
-                dosbox_int_error = true;
-            }
-            break;
-        case 0x22: /* discard state */
-            if (dosbox_int_discard_save_state()) {
-                LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG state discarded");
-            }
-            else {
-                LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG unable to discard state, stack underflow");
-                dosbox_int_error = true;
-            }
-            break;
-        case 0x23: /* discard all state */
-            while (dosbox_int_discard_save_state());
-            break;
-        case 0xFE: /* clear error */
-            dosbox_int_error = false;
-            break;
-        case 0xFF: /* reset interface */
-            dosbox_int_busy = false;
-            dosbox_int_error = false;
-            dosbox_int_regsel = 0xAA55BB66;
-            dosbox_int_register = 0xD05B0C5;
-            break;
-        default:
-            dosbox_int_error = true;
-            break;
-    }
+	(void)port;
+	(void)iolen;
+	switch (val) {
+		case DOSBOX_ID_CMD_RESET_LATCH:
+			dosbox_int_register_shf = 0;
+			dosbox_int_regsel_shf = 0;
+			break;
+		case DOSBOX_ID_CMD_FLUSH_WRITE:
+			if (dosbox_int_register_shf != 0) {
+				dosbox_integration_trigger_write();
+				dosbox_int_register_shf = 0;
+			}
+			break;
+		case DOSBOX_ID_CMD_PUSH_STATE:
+			if (dosbox_int_push_save_state()) {
+				dosbox_int_register_shf = 0;
+				dosbox_int_regsel_shf = 0;
+				dosbox_int_error = false;
+				dosbox_int_busy = false;
+				dosbox_int_regsel = DOSBOX_ID_RESET_INDEX_CODE;
+				dosbox_int_register = DOSBOX_ID_RESET_DATA_CODE;
+				LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG state saved");
+			}
+			else {
+				LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG unable to push state, stack overflow");
+				dosbox_int_error = true;
+			}
+			break;
+		case DOSBOX_ID_CMD_POP_STATE:
+			if (dosbox_int_pop_save_state()) {
+				LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG state restored");
+			}
+			else {
+				LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG unable to pop state, stack underflow");
+				dosbox_int_error = true;
+			}
+			break;
+		case DOSBOX_ID_CMD_DISCARD_STATE:
+			if (dosbox_int_discard_save_state()) {
+				LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG state discarded");
+			}
+			else {
+				LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X IG unable to discard state, stack underflow");
+				dosbox_int_error = true;
+			}
+			break;
+		case DOSBOX_ID_CMD_DISCARD_ALL_STATE:
+			while (dosbox_int_discard_save_state());
+			break;
+		case DOSBOX_ID_CMD_CLEAR_ERROR:
+			dosbox_int_error = false;
+			break;
+		case DOSBOX_ID_CMD_RESET_INTERFACE:
+			dosbox_int_busy = false;
+			dosbox_int_error = false;
+			dosbox_int_regsel = DOSBOX_ID_RESET_INDEX_CODE;
+			dosbox_int_register = DOSBOX_ID_RESET_DATA_CODE;
+			break;
+		default:
+			dosbox_int_error = true;
+			break;
+	}
 }
 
 static IO_ReadHandler* const dosbox_integration_cb_ports_r[4] = {
-    dosbox_integration_port00_index_r,
-    dosbox_integration_port01_data_r,
-    dosbox_integration_port02_status_r,
-    NULL
+	dosbox_integration_port00_index_r,
+	dosbox_integration_port01_data_r,
+	dosbox_integration_port02_status_r,
+	NULL
 };
 
 static IO_ReadHandler* dosbox_integration_cb_port_r(IO_CalloutObject &co,Bitu port,Bitu iolen) {
-    (void)co;
-    (void)iolen;
-    return dosbox_integration_cb_ports_r[port&3];
+	(void)co;
+	(void)iolen;
+	return dosbox_integration_cb_ports_r[port&3];
 }
 
 static IO_WriteHandler* const dosbox_integration_cb_ports_w[4] = {
-    dosbox_integration_port00_index_w,
-    dosbox_integration_port01_data_w,
-    dosbox_integration_port02_command_w,
-    NULL
+	dosbox_integration_port00_index_w,
+	dosbox_integration_port01_data_w,
+	dosbox_integration_port02_command_w,
+	NULL
 };
 
 static IO_WriteHandler* dosbox_integration_cb_port_w(IO_CalloutObject &co,Bitu port,Bitu iolen) {
-    (void)co;
-    (void)iolen;
-    return dosbox_integration_cb_ports_w[port&3];
+	(void)co;
+	(void)iolen;
+	return dosbox_integration_cb_ports_w[port&3];
 }
 
 /* if mem_systems 0 then size_extended is reported as the real size else 
@@ -1938,6 +2156,14 @@ void ISAPNP_Cfg_Reset(Section *sec) {
     APMBIOS_allow_realmode = section->Get_bool("apmbios allow realmode");
     APMBIOS_allow_prot16 = section->Get_bool("apmbios allow 16-bit protected mode");
     APMBIOS_allow_prot32 = section->Get_bool("apmbios allow 32-bit protected mode");
+
+    /* The DOSBox Integration Graphics require the integration device */
+    if (IS_VGA_ARCH && svgaCard == SVGA_DOSBoxIG) {
+        if (!enable_integration_device) {
+            LOG(LOG_MISC,LOG_WARN)("Machine type is SVGA DOSBox Integrated Graphics, which requires integration device. Enabling it.");
+            enable_integration_device = true;
+        }
+    }
 
     std::string apmbiosver = section->Get_string("apmbios version");
 
@@ -3391,8 +3617,6 @@ void PC98_InitDefFuncRow(void) {
     }
 }
 
-#include "int10.h"
-
 void draw_pc98_function_row_elem(unsigned int o, unsigned int co, const struct pc98_func_key_shortcut_def& key) {
     const unsigned char *str = key.shortcut;
     unsigned int j = 0,i = 0;
@@ -3861,7 +4085,17 @@ static Bitu INT18_PC98_Handler(void) {
                 SegValue(es));
     }
 #endif
- 
+#if defined(USE_TTF)
+    if(!finish_prepare){
+        conf_output= static_cast<Section_prop*>(control->GetSection("sdl"))->Get_string("output");
+        if(conf_output == "ttf") { // BIOS screen does not like TTF mode, switch it on later
+            toOutput("ttf");
+            ttf_switch_off(true);
+            is_ttfswitched_on = true;
+            //LOG_MSG("TTF output is temporary switched off");
+        }
+    }
+#endif
     /* NTS: Based on information gleaned from Neko Project II source code including comments which
      *      I've run through GNU iconv to convert from SHIFT-JIS to UTF-8 here in case Google Translate
      *      got anything wrong. */
@@ -3978,7 +4212,7 @@ static Bitu INT18_PC98_Handler(void) {
                 0       25lines     20lines
                 1       80cols      40cols
                 2       v.lines     simp.graphics
-                3       K-CG access mode(not used in PC-98) */
+                3       K-CG access mode(not available on original PC-9801) */
             
             //TODO: set 25/20 lines mode and 80/40 columns mode.
             //Attribute bit (bit 2)
@@ -3990,8 +4224,7 @@ static Bitu INT18_PC98_Handler(void) {
 
             mem_writeb(0x53C,(mem_readb(0x53C) & 0xF0u) | (reg_al & 0x0Fu));
 
-            if (reg_al & 8)
-                LOG_MSG("INT 18H AH=0Ah warning: K-CG dot access mode not supported");
+            pc98_cg_kanji_dot_access_mode = !!(reg_al & 8);
 
             pc98_update_text_lineheight_from_bda();
             pc98_update_text_layer_lineheight_from_bda();
@@ -4004,7 +4237,7 @@ static Bitu INT18_PC98_Handler(void) {
                 0       25lines     20lines
                 1       80cols      40cols
                 2       v.lines     simp.graphics
-                3       K-CG access mode(not used in PC-98) 
+                3       K-CG access mode(not available on original PC-9801)
                 7       std CRT     hi-res CRT */
             /* NTS: I assume that real hardware doesn't offer a way to read back the state of these bits,
              *      so the BIOS's only option is to read the mode byte back from the data area.
@@ -4052,6 +4285,11 @@ static Bitu INT18_PC98_Handler(void) {
             pc98_gdc[GDC_MASTER].param_ram[1] = (reg_dx >> 9) & 0xFF;
             pc98_gdc[GDC_MASTER].param_ram[2] = (400 << 4) & 0xFF;
             pc98_gdc[GDC_MASTER].param_ram[3] = (400 << 4) >> 8;
+            break;
+        case 0x10: /* set cursor blink */
+            PC98_show_cursor(false); /* side effect: hides the cursor */
+            pc98_gdc[GDC_MASTER].force_fifo_complete();
+            pc98_gdc[GDC_MASTER].cursor_blink = !!(reg_al & 1);
             break;
         case 0x11: /* show cursor */
             PC98_show_cursor(true);
@@ -5486,8 +5724,8 @@ void PC98_EXTMEMCPY(void) {
 
     Bitu   bytes    = ((reg_cx - 1u) & 0xFFFFu) + 1u; // bytes, except that 0 == 64KB
     PhysPt data     = SegPhys(es)+reg_bx;
-    PhysPt source   = (mem_readd(data+0x12u) & 0x00FFFFFFu) + ((unsigned int)mem_readb(data+0x17u)<<24u);
-    PhysPt dest     = (mem_readd(data+0x1Au) & 0x00FFFFFFu) + ((unsigned int)mem_readb(data+0x1Fu)<<24u);
+    PhysPt source = (mem_readd(data + 0x12u) & 0x00FFFFFFu) + ((unsigned int)mem_readb(data + 0x17u) << 24u) + reg_si;
+    PhysPt dest = (mem_readd(data + 0x1Au) & 0x00FFFFFFu) + ((unsigned int)mem_readb(data + 0x1Fu) << 24u) + reg_di;
 
     LOG_MSG("PC-98 memcpy: src=0x%x dst=0x%x data=0x%x count=0x%x",
         (unsigned int)source,(unsigned int)dest,(unsigned int)data,(unsigned int)bytes);
@@ -5638,74 +5876,148 @@ static Bitu INTDC_PC98_Handler(void) {
     if (dos_kernel_disabled) goto unknown;
 
     switch (reg_cl) {
+        /* Tracking implementation according to [http://hackipedia.org/browse.cgi/Computer/Platform/PC%2c%20NEC%20PC%2d98/Collections/Undocumented%209801%2c%209821%20Volume%201%20English%20translation/INTDC%2eTXT] */
         case 0x0C: /* CL=0x0C General entry point to read function key state */
-            if (reg_ax == 0xFF) { /* Extended version of the API when AX == 0, DS:DX = data to store to */
-                /* DS:DX contains
-                 *       16*10 bytes, 16 bytes per entry for function keys F1-F10
-                 *       16*5 bytes, 16 bytes per entry for VF1-VF5
-                 *       16*10 bytes, 16 bytes per entry for function key shortcuts Shift+F1 to Shift+F10
-                 *       16*5 bytes, 16 bytes per entry for shift VF1-VF5
-                 *       6*11 bytes, 6 bytes per entry for editor keys
-                 *       16*10 bytes, 16 bytes per entry for function key shortcuts Control+F1 to Control+F10
-                 *       16*5 bytes, 16 bytes per entry for control VF1-VF5
+/*===================================================================================================
+Table            [List of key specification values and corresponding keys]
+                 ------------------------+---------------------------------------------------
+                 Key specification value | Corresponding key
+                 ------------------------+---------------------------------------------------
+                 0000h                   | [f･1] to [f･10], [SHIFT] + [f･1] to [SHIFT] + [f･10],
+                                         | [ROLL UP], [ROLL DOWN], [INS], [DEL], [↑], [←], [→], [↓],
+                                         | [HOME/CLR], [HELP], [SHIFT] + [HOME/CLR]
+                 0001 to 000Ah           | [f･1] to [f･10]
+                 000B to 0014h           | [SHIFT] + [f･1] to [SHIFT] + [f･10]
+                 0015h                   | [ROLL UP]
+                 0016h                   | [ROLL DOWN]
+                 0017h                   | [INS]
+                 0018h                   | [DEL]
+                 0019h                   | [↑]
+                 001Ah                   | [←]
+                 001Bh                   | [→]
+                 001Ch                   | [↓]
+                 001Dh                   | [HOME/CLR](XA keyboard:[CLR])
+                 001Eh                   | [HELP]
+                 001Fh                   | [SHIFT]+[HOME/CLR](XA keyboard:[HOME])
+                 0020-0024h              | [vf･1]-[vf･5]
+                 0025-0029h              | [SHIFT]+[vf･1]-[vf･5]
+                 002A-0033h              | [CTRL]+[f･1]-[f･10]
+                 0034-0038h              | [CTRL]+[vf･1]-[vf･5]
+                 0039h                   | [CTRL]+[XFER]/[NFER] (Undocumented)
+                 003Ah                   | [CTRL]+[XFER]/[NFER],[CTRL]+[f･1]～[f･10]
+                                         | (Undocumented)
+                 00FFh                   | [f･1]〜[f･10],[vf･1]〜[vf･5],
+                                         | [SHIFT]+[f･1]〜[SHIFT]+[f･10],[SHIFT]+[vf･1]〜[vf･5],
+                                         | [ROLL UP],[ROLL DOWN],[INS],[DEL],[↑],[←],[→],[↓],
+                                         | [HOME/CLR],[HELP],[SHIFT]+[HOME/CLR],
+                                         | [CTRL]+[f･1] to [f･10], [CTRL]+[vf･1] to [vf･5]
+                 ------------------------+---------------------------------------------------
+
+                 Table [Supported range of key specification values for each MS-DOS version]
+                 ------------------------+---+---+---+---+---+---+---+---+-----+
+                 Key specification value | MS-DOS version (PS98-XXX)
+                                         |111|121|122|123|125|127|129|011|XA125
+                 ------------------------+---+---+---+---+---+---+---+---+-----+
+                 0000 to 001Fh           | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○
+                 0020 to 0029h           | × | × | × | × | × | × | × | ○ | ○
+                 002A-0033h              | × | × | × | × | ○ | ○ | ○ | ○ | △
+                 0034-0038h              | × | × | × | × | × | × | × | ○ | △
+                 0039h                   | × | × | × | × | × | ○ | ○ | ○ | ×
+                 003Ah                   | × | × | × | × | ○ | ○ | ○ | ○ | ×
+                 00FFh                   | × | × | × | × | × | × | × | ○ | ○
+                 ------------------------+---+---+---+---+---+---+---+---+-----+
+                 * PC-98LT/HA is the same as PS98-127.
+                 * MS-DOS 3.3(all), 5.0, 5.0A is the same as PS98-011.
+                 * For the PS98-XA125 triangle mark, the keys are as follows.
+                   Key values 002B to 0033h specify [CTRL]+[f･1] to [f･9].
+                   Key values 0035 to 0038h specify [CTRL]+[vf･1] to [vf･4].
+===============================================================================================
+                 * NTS: According to a translation table in the MS-DOS kernel, where
+                 *      AX=1h to AX=29h inclusive look up from this 0x29-element table:
                  *
-                 * For whatever reason, the buffer is copied to the DOS buffer +1, meaning that on write it skips the 0x08 byte. */
+                 *      Table starts with AX=1h, ends with AX=29h
+                 *
+                 *                    01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10
+                 *                     |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+                 *      0ADC:00003DE0 01 02 03 04 05 06 07 08 09 0A 10 11 12 13 14 15  ................
+                 *      0ADC:00003DF0 16 17 18 19 1F 20 21 22 23 24 25 26 27 28 29 0B  ..... !"#$%&'().
+                 *      0ADC:00003E00 0C 0D 0E 0F 1A 1B 1C 1D 1E|
+                 *
+                 *      The table is read, then the byte is decremented by one.
+                 *
+                 *      If the result of that is less than 0x1E, it's an index into
+                 *      the 16 byte/entry Fn key table.
+                 *
+                 *      If the result is 0x1E or larger, then (result - 0x1E) is an
+                 *      index into the editor table, 8 bytes/entry.
+                 *
+                 *      Meanings:
+                 *
+                 *                    01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10
+                 *                     |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+                 *      0ADC:00003DE0 01 02 03 04 05 06 07 08 09 0A 10 11 12 13 14 15  ................
+                 *                   | --- Function keys F1-F10 ---| Fn shift F1-F6 -
+                 *      0ADC:00003DF0 16 17 18 19 1F 20 21 22 23 24 25 26 27 28 29 0B  ..... !"#$%&'().
+                 *                   | Sh F7-F10 | ------- EDITOR KEYS -----------| -
+                 *      0ADC:00003E00 0C 0D 0E 0F 1A 1B 1C 1D 1E|
+                 *                   | --------- | ------------ |
+===============================================================================================*/
+            if (reg_ax == 0x00) { /* Read all state, DS:DX = data to store to */
+/*=============================================================================================
+                 DS:DX contains
+
+Table            [Programmable key setting data buffer structure]
+                 (1) Key specification value 0000h
+                 -------+--------------------+--------------------------------------
+                 Offset | Key type           | Size of key setting data
+                 -------+--------------------+--------------------------------------
+                 +0000h | [f･1]              | 16 bytes (15 bytes of key setting data + 00h)
+                 +0010h | [f･2]              | 16 bytes (15 bytes of key setting data + 00h)
+                 +0020h | [f･3]              | 16 bytes (15 bytes of key setting data + 00h)
+                 +0030h | [f･4]              | 16 bytes (15 bytes of key setting data + 00h)
+                 +0040h | [f･5]              | 16 bytes (15 bytes of key setting data + 00h)
+                 +0050h | [f･6]              | 16 bytes (15 bytes of key setting data + 00h)
+                 +0060h | [f･7]              | 16 bytes (15 bytes of key setting data + 00h)
+                 +0070h | [f･8]              | 16 bytes (15 bytes of key setting data + 00h)
+                 +0080h | [f･9]              | 16 bytes (15 bytes of key setting data + 00h)
+                 +0090h | [f･10]             | 16 bytes (15 bytes of key setting data + 00h)
+                 +00A0h | [SHIFT]+[f･1]      | 16 bytes (15 bytes of key setting data + 00h)
+                 +00B0h | [SHIFT]+[f･2]      | 16 bytes (15 bytes of key setting data + 00h)
+                 +00C0h | [SHIFT]+[f･3]      | 16 bytes (15 bytes of key setting data + 00h)
+                 +00D0h | [SHIFT]+[f･4]      | 16 bytes (15 bytes of key setting data + 00h)
+                 +00E0h | [SHIFT]+[f･5]      | 16 bytes (15 bytes of key setting data + 00h)
+                 +00F0h | [SHIFT]+[f･6]      | 16 bytes (15 bytes of key setting data + 00h)
+                 +0100h | [SHIFT]+[f･7]      | 16 bytes (15 bytes of key setting data + 00h)
+                 +0110h | [SHIFT]+[f･8]      | 16 bytes (15 bytes of key setting data + 00h)
+                 +0120h | [SHIFT]+[f･9]      | 16 bytes (15 bytes of key setting data + 00h)
+                 +0130h | [SHIFT]+[f･10]     | 16 bytes (15 bytes of key setting data + 00h)
+                 +0140h | [ROLL UP]          | 6 bytes (5 bytes of key setting data + 00h)
+                 +0146h | [ROLL DOWN]        | 6 bytes (5 bytes of key setting data + 00h)
+                 +014Ch | [INS]              | 6 bytes (5 bytes of key setting data + 00h)
+                 +0152h | [DEL]              | 6 bytes (5 bytes of key setting data + 00h)
+                 +0158h | [↑]                | 6 bytes (5 bytes of key setting data + 00h)
+                 +015Eh | [←]                | 6 bytes (5 bytes of key setting data + 00h)
+                 +0164h | [→]                | 6 bytes (5 bytes of key setting data + 00h)
+                 +016Ah | [↓]                | 6 bytes (5 bytes of key setting data + 00h)
+                 +0170h | [HOME/CLR]         | 6 bytes (5 bytes of key setting data + 00h)
+                 +0176h | [HELP]             | 6 bytes (5 bytes of key setting data + 00h)
+                 +017Ch | [SHIFT]+[HOME/CLR] | 6 bytes (5 bytes of key setting data + 00h)
+                 -------+--------------------+--------------------------------------
+===============================================================================================*/
                 Bitu ofs = (Bitu)(SegValue(ds) << 4ul) + (Bitu)reg_dx;
 
                 /* function keys F1-F10 */
                 for (unsigned int f=0;f < 10;f++,ofs += 16)
                     INTDC_STORE_FUNCDEC(ofs,pc98_func_key[f]);
-                /* VF1-VF5 */
-                for (unsigned int f=0;f < 5;f++,ofs += 16)
-                    INTDC_STORE_FUNCDEC(ofs,pc98_vfunc_key[f]);
                 /* function keys Shift+F1 - Shift+F10 */
                 for (unsigned int f=0;f < 10;f++,ofs += 16)
                     INTDC_STORE_FUNCDEC(ofs,pc98_func_key_shortcut[f]);
-                /* VF1-VF5 */
-                for (unsigned int f=0;f < 5;f++,ofs += 16)
-                    INTDC_STORE_FUNCDEC(ofs,pc98_vfunc_key_shortcut[f]);
                 /* editor keys */
                 for (unsigned int f=0;f < 11;f++,ofs += 6)
                     INTDC_STORE_EDITDEC(ofs,pc98_editor_key_escapes[f]);
-                /* function keys Control+F1 - Control+F10 */
-                for (unsigned int f=0;f < 10;f++,ofs += 16)
-                    INTDC_STORE_FUNCDEC(ofs,pc98_func_key_ctrl[f]);
-                /* VF1-VF5 */
-                for (unsigned int f=0;f < 5;f++,ofs += 16)
-                    INTDC_STORE_FUNCDEC(ofs,pc98_vfunc_key_ctrl[f]);
- 
+
                 goto done;
             }
-            /* NTS: According to a translation table in the MS-DOS kernel, where
-             *      AX=1h to AX=29h inclusive look up from this 0x29-element table:
-             *
-             *      Table starts with AX=1h, ends with AX=29h
-             *
-             *                    01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10
-             *                     |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-             *      0ADC:00003DE0 01 02 03 04 05 06 07 08 09 0A 10 11 12 13 14 15  ................
-             *      0ADC:00003DF0 16 17 18 19 1F 20 21 22 23 24 25 26 27 28 29 0B  ..... !"#$%&'().
-             *      0ADC:00003E00 0C 0D 0E 0F 1A 1B 1C 1D 1E|
-             *
-             *      The table is read, then the byte is decremented by one.
-             *
-             *      If the result of that is less than 0x1E, it's an index into
-             *      the 16 byte/entry Fn key table.
-             *
-             *      If the result is 0x1E or larger, then (result - 0x1E) is an
-             *      index into the editor table, 8 bytes/entry.
-             *
-             *      Meanings:
-             *
-             *                    01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10
-             *                     |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-             *      0ADC:00003DE0 01 02 03 04 05 06 07 08 09 0A 10 11 12 13 14 15  ................
-             *                   | --- Function keys F1-F10 ---| Fn shift F1-F6 -
-             *      0ADC:00003DF0 16 17 18 19 1F 20 21 22 23 24 25 26 27 28 29 0B  ..... !"#$%&'().
-             *                   | Sh F7-F10 | ------- EDITOR KEYS -----------| -
-             *      0ADC:00003E00 0C 0D 0E 0F 1A 1B 1C 1D 1E|
-             *                   | --------- | ------------ |
-             */
             else if (reg_ax >= 0x01 && reg_ax <= 0x0A) { /* Read individual function keys, DS:DX = data to store to */
                 Bitu ofs = (Bitu)(SegValue(ds) << 4ul) + (Bitu)reg_dx;
                 INTDC_STORE_FUNCDEC(ofs,pc98_func_key[reg_ax - 0x01]);
@@ -5741,11 +6053,15 @@ static Bitu INTDC_PC98_Handler(void) {
                 INTDC_STORE_FUNCDEC(ofs,pc98_vfunc_key_ctrl[reg_ax - 0x34]);
                 goto done;
             }
-            else if (reg_ax == 0x00) { /* Read all state, DS:DX = data to store to */
+            else if (reg_ax == 0xFF) { /* Extended version of the API when AX == 0, DS:DX = data to store to */
                 /* DS:DX contains
                  *       16*10 bytes, 16 bytes per entry for function keys F1-F10
+                 *       16*5 bytes, 16 bytes per entry for VF1-VF5
                  *       16*10 bytes, 16 bytes per entry for function key shortcuts Shift+F1 to Shift+F10
-                 *       6*11 bytes, 6 bytes per entry of unknown relevance (GUESS: Escapes for other keys like INS, DEL?)
+                 *       16*5 bytes, 16 bytes per entry for shift VF1-VF5
+                 *       6*11 bytes, 6 bytes per entry for editor keys
+                 *       16*10 bytes, 16 bytes per entry for function key shortcuts Control+F1 to Control+F10
+                 *       16*5 bytes, 16 bytes per entry for control VF1-VF5
                  *
                  * For whatever reason, the buffer is copied to the DOS buffer +1, meaning that on write it skips the 0x08 byte. */
                 Bitu ofs = (Bitu)(SegValue(ds) << 4ul) + (Bitu)reg_dx;
@@ -5753,13 +6069,25 @@ static Bitu INTDC_PC98_Handler(void) {
                 /* function keys F1-F10 */
                 for (unsigned int f=0;f < 10;f++,ofs += 16)
                     INTDC_STORE_FUNCDEC(ofs,pc98_func_key[f]);
+                /* VF1-VF5 */
+                for (unsigned int f=0;f < 5;f++,ofs += 16)
+                    INTDC_STORE_FUNCDEC(ofs,pc98_vfunc_key[f]);
                 /* function keys Shift+F1 - Shift+F10 */
                 for (unsigned int f=0;f < 10;f++,ofs += 16)
                     INTDC_STORE_FUNCDEC(ofs,pc98_func_key_shortcut[f]);
+                /* VF1-VF5 */
+                for (unsigned int f=0;f < 5;f++,ofs += 16)
+                    INTDC_STORE_FUNCDEC(ofs,pc98_vfunc_key_shortcut[f]);
                 /* editor keys */
                 for (unsigned int f=0;f < 11;f++,ofs += 6)
                     INTDC_STORE_EDITDEC(ofs,pc98_editor_key_escapes[f]);
-
+                /* function keys Control+F1 - Control+F10 */
+                for (unsigned int f=0;f < 10;f++,ofs += 16)
+                    INTDC_STORE_FUNCDEC(ofs,pc98_func_key_ctrl[f]);
+                /* VF1-VF5 */
+                for (unsigned int f=0;f < 5;f++,ofs += 16)
+                    INTDC_STORE_FUNCDEC(ofs,pc98_vfunc_key_ctrl[f]);
+ 
                 goto done;
             }
             goto unknown;
@@ -5802,42 +6130,49 @@ static Bitu INTDC_PC98_Handler(void) {
                 update_pc98_function_row(pc98_function_row_mode,true);
                 goto done;
             }
-            else if (reg_ax >= 0x01 && reg_ax <= 0x0A) { /* Read individual function keys, DS:DX = data to set */
+            else if (reg_ax >= 0x01 && reg_ax <= 0x0A) { /* Write individual function keys, DS:DX = data to set */
                 Bitu ofs = (Bitu)(SegValue(ds) << 4ul) + (Bitu)reg_dx;
                 INTDC_LOAD_FUNCDEC(pc98_func_key[reg_ax - 0x01],ofs);
+                update_pc98_function_row(pc98_function_row_mode,true);
                 goto done;
             }
-            else if (reg_ax >= 0x0B && reg_ax <= 0x14) { /* Read individual shift + function keys, DS:DX = data to set */
+            else if (reg_ax >= 0x0B && reg_ax <= 0x14) { /* Write individual shift + function keys, DS:DX = data to set */
                 Bitu ofs = (Bitu)(SegValue(ds) << 4ul) + (Bitu)reg_dx;
                 INTDC_LOAD_FUNCDEC(pc98_func_key_shortcut[reg_ax - 0x0B],ofs);
+                update_pc98_function_row(pc98_function_row_mode,true);
                 goto done;
             }
-            else if (reg_ax >= 0x15 && reg_ax <= 0x1F) { /* Read individual editor keys, DS:DX = data to set */
+            else if (reg_ax >= 0x15 && reg_ax <= 0x1F) { /* Write individual editor keys, DS:DX = data to set */
                 Bitu ofs = (Bitu)(SegValue(ds) << 4ul) + (Bitu)reg_dx;
                 INTDC_LOAD_EDITDEC(pc98_editor_key_escapes[reg_ax - 0x15],ofs);
+                update_pc98_function_row(pc98_function_row_mode,true);
                 goto done;
             }
-            else if (reg_ax >= 0x20 && reg_ax <= 0x24) { /* Read VF1-VF5 keys, DS:DX = data to store to */
+            else if (reg_ax >= 0x20 && reg_ax <= 0x24) { /* Write VF1-VF5 keys, DS:DX = data to set */
                 Bitu ofs = (Bitu)(SegValue(ds) << 4ul) + (Bitu)reg_dx;
                 INTDC_LOAD_FUNCDEC(pc98_vfunc_key[reg_ax - 0x20],ofs);
+                update_pc98_function_row(pc98_function_row_mode,true);
                 goto done;
             }
-            else if (reg_ax >= 0x25 && reg_ax <= 0x29) { /* Read shift VF1-VF5 keys, DS:DX = data to store to */
+            else if (reg_ax >= 0x25 && reg_ax <= 0x29) { /* Write shift VF1-VF5 keys, DS:DX = data to set */
                 Bitu ofs = (Bitu)(SegValue(ds) << 4ul) + (Bitu)reg_dx;
                 INTDC_LOAD_FUNCDEC(pc98_vfunc_key_shortcut[reg_ax - 0x25],ofs);
+                update_pc98_function_row(pc98_function_row_mode,true);
                 goto done;
             }
-            else if (reg_ax >= 0x2A && reg_ax <= 0x33) { /* Read individual function keys, DS:DX = data to store to */
+            else if (reg_ax >= 0x2A && reg_ax <= 0x33) { /* Write individual function keys, DS:DX = data to set */
                 Bitu ofs = (Bitu)(SegValue(ds) << 4ul) + (Bitu)reg_dx;
                 INTDC_LOAD_FUNCDEC(pc98_func_key_ctrl[reg_ax - 0x2A],ofs);
+                update_pc98_function_row(pc98_function_row_mode,true);
                 goto done;
             }
-            else if (reg_ax >= 0x34 && reg_ax <= 0x38) { /* Read control VF1-VF5 keys, DS:DX = data to store to */
+            else if (reg_ax >= 0x34 && reg_ax <= 0x38) { /* Write control VF1-VF5 keys, DS:DX = data to set */
                 Bitu ofs = (Bitu)(SegValue(ds) << 4ul) + (Bitu)reg_dx;
                 INTDC_LOAD_FUNCDEC(pc98_vfunc_key_ctrl[reg_ax - 0x34],ofs);
+                update_pc98_function_row(pc98_function_row_mode,true);
                 goto done;
             }
-            else if (reg_ax == 0x00) { /* Read all state, DS:DX = data to set */
+            else if (reg_ax == 0x00) { /* Write all state, DS:DX = data to set */
                 /* DS:DX contains
                  *       16*10 bytes, 16 bytes per entry for function keys F1-F10
                  *       16*10 bytes, 16 bytes per entry for function key shortcuts Shift+F1 to Shift+F10
@@ -7454,30 +7789,21 @@ static Bitu INT15_Handler(void) {
                          *    0) 0x000000-0x09EFFF       Free memory
                          *    1) 0x0C0000-0x0FFFFF       Reserved
                          *    2) 0x100000-...            Free memory (no ACPI tables) */
-                        if (reg_ebx < 3) {
-                            uint32_t base = 0,len = 0,type = 0;
+                        if (reg_ebx < E280_table_entries) {
+                            BIOS_E280_entry &ent = E280_table[reg_ebx];
                             Bitu seg = SegValue(es);
 
-                            assert((MEM_TotalPages()*4096) >= 0x100000);
-
-                            switch (reg_ebx) {
-                                case 0: base=0x000000; len=0x09F000; type=1; break;
-                                case 1: base=0x0C0000; len=0x040000; type=2; break;
-                                case 2: base=0x100000; len=(MEM_TotalPages()*4096)-0x100000; type=1; break;
-                                default: E_Exit("Despite checks EBX is wrong value"); /* BUG! */
-                            }
-
                             /* write to ES:DI */
-                            real_writed(seg,reg_di+0x00,base);
-                            real_writed(seg,reg_di+0x04,0);
-                            real_writed(seg,reg_di+0x08,len);
-                            real_writed(seg,reg_di+0x0C,0);
-                            real_writed(seg,reg_di+0x10,type);
+                            real_writed(seg,reg_di+0x00,ent.base);
+                            real_writed(seg,reg_di+0x04,(uint32_t)(ent.base >> (uint64_t)32u));
+                            real_writed(seg,reg_di+0x08,ent.length);
+                            real_writed(seg,reg_di+0x0C,(uint32_t)(ent.length >> (uint64_t)32u));
+                            real_writed(seg,reg_di+0x10,ent.type);
                             reg_ecx = 20;
 
                             /* return EBX pointing to next entry. wrap around, as most BIOSes do.
                              * the program is supposed to stop on CF=1 or when we return EBX == 0 */
-                            if (++reg_ebx >= 3) reg_ebx = 0;
+                            if (++reg_ebx >= E280_table_entries) reg_ebx = 0;
                         }
                         else {
                             CALLBACK_SCF(true);
@@ -7719,6 +8045,14 @@ unsigned char do_isapnp_chksum(const unsigned char* d, int i) {
 void MEM_ResetPageHandler_Unmapped(Bitu phys_page, Bitu pages);
 
 unsigned int dos_conventional_limit = 0;
+
+Bitu MEM_ConventionalPages(void) {
+    if (dos_conventional_limit == 0) return MEM_TotalPages();
+    unsigned int x = dos_conventional_limit / 4u;
+    if (x == 0) x = 1;
+    if (x > MEM_TotalPages()) x = MEM_TotalPages();
+    return x;
+}
 
 bool AdapterROM_Read(Bitu address,unsigned long *size) {
     unsigned char c[3];
@@ -8052,7 +8386,7 @@ void showBIOSSetup(const char* card, int x, int y) {
         BIOS_Int10RightJustifiedPrint(x,y,"              ESC: Exit  Arrows: Select Item  +/-: Change Values              ");
 }
 
-static Bitu ulimit = 0;
+static Bitu mlimit = 0;
 static Bitu t_conv = 0;
 static Bitu t_conv_real = 0;
 static bool bios_first_init=true;
@@ -8091,6 +8425,12 @@ Bitu call_irq0 = 0;
 Bitu call_irq07default = 0;
 Bitu call_irq815default = 0;
 
+
+/* NEC PC-98 detection notes:
+ *  - Documented: No ASCII date at F000:FFF5
+ *  - CWSDPMI (PC-98 patched version): Call INT 10h AH=0F BH=FF. If registers don't change, it's PC-98
+ *  - DJGPP libc, crt1.c (PC-98 patched version): If the WORD at F000:FFF3 (segment part of JMP FAR) is 0xFD80, it's PC-98 */
+
 void write_FFFF_PC98_signature() {
     /* this may overwrite the existing signature.
      * PC-98 systems DO NOT have an ASCII date at F000:FFF5
@@ -8098,8 +8438,11 @@ void write_FFFF_PC98_signature() {
 
     // The farjump at the processor reset entry point (jumps to POST routine)
     phys_writeb(0xffff0,0xEA);                  // FARJMP
-    phys_writew(0xffff1,RealOff(BIOS_DEFAULT_RESET_LOCATION));  // offset
-    phys_writew(0xffff3,RealSeg(BIOS_DEFAULT_RESET_LOCATION));  // segment
+
+    /* Segment value must be 0xFD80 to satisfy PC-98 patched DJGPP check */
+    const uint16_t oseg = RealSeg(BIOS_DEFAULT_RESET_LOCATION);
+    phys_writew(0xffff1,RealOff(BIOS_DEFAULT_RESET_LOCATION)-((0xFD80-oseg)*16));  // offset
+    phys_writew(0xffff3,0xFD80);  // segment
 
     // write nothing (not used)
     for(Bitu i = 0; i < 9; i++) phys_writeb(0xffff5+i,0);
@@ -8212,7 +8555,9 @@ extern uint32_t tandy_128kbase;
 static int bios_post_counter = 0;
 
 extern void BIOSKEY_PC98_Write_Tables(void);
+#if !defined(OSFREE)
 extern Bitu PC98_AVSDRV_PCM_Handler(void);
+#endif
 
 static unsigned int acpiptr2ofs(unsigned char *w) {
 	return w - ACPI_buffer;
@@ -9371,7 +9716,9 @@ static void BIOSLOGO_PNG_READ(png_structp context,png_bytep buf,size_t count) {
 
 #endif
 
+#if !defined(OSFREE)
 extern unsigned int INT13Xfer;
+#endif
 
 class BIOS:public Module_base{
 private:
@@ -9391,7 +9738,9 @@ private:
 	INT13_ElTorito_NoEmuDriveNumber = 0;
 	INT13_ElTorito_NoEmuCDROMDrive = 0;
 	INT13_ElTorito_IDEInterface = -1;
+#if !defined(OSFREE)
 	INT13Xfer = 0;
+#endif
 
 	ACPI_mem_enable(false);
 	ACPI_REGION_SIZE = 0;
@@ -9403,6 +9752,33 @@ private:
 	ACPI_BM_RLD = false;
 	ACPI_PM1_Status = 0;
 	ACPI_PM1_Enable = 0;
+
+	E280_table_entries = 0;
+
+	{/*Conventional memory*/
+		BIOS_E280_entry &ent = E280_table[E280_table_entries++];
+		ent.base = 0x00000000;
+		ent.length = 0x9F000; /* 640KB minus the EBDA */
+		ent.type = 1;/*Normal RAM*/
+	}
+	{/*Conventional adapter ROM/RAM/BIOS*/
+		BIOS_E280_entry &ent = E280_table[E280_table_entries++];
+		ent.base = 0x000C0000;
+		ent.length = 0x40000;
+		ent.type = 2;/*Reserved*/
+	}
+	if (MEM_TotalPages() > 0x100) { /* more than 1MB of RAM */
+		BIOS_E280_entry &ent = E280_table[E280_table_entries++];
+		ent.base = 0x00100000;
+		ent.length = (MEM_TotalPages()-0x100u)*4096u;
+		ent.type = 1;/*Normal RAM*/
+	}
+	if (MEM_TotalPagesAt4GB() > 0) { /* anything above 4GB? */
+		BIOS_E280_entry &ent = E280_table[E280_table_entries++];
+		ent.base = uint64_t(0x100000000ull);
+		ent.length = uint64_t(MEM_TotalPagesAt4GB())*uint64_t(4096ul);
+		ent.type = 1;/*Normal RAM*/
+	}
 
         /* If we're here because of a JMP to F000:FFF0 from a DOS program, then
          * an actual reset is needed to prevent reentrancy problems with the DOS
@@ -9486,7 +9862,6 @@ private:
             /* clear out 0x50 segment (TODO: 0x40 too?) */
             for (unsigned int i=0;i < 0x100;i++) phys_writeb(0x500+i,0);
 
-            write_FFFF_PC98_signature();
             BIOS_ZeroExtendedSize(false);
 
             if (call_pc98_default_stop == 0)
@@ -9726,7 +10101,7 @@ private:
         bios_has_exec_vga_bios = false;
         LOG(LOG_MISC,LOG_DEBUG)("BIOS: executing POST routine");
 
-	if (ACPI_REGION_SIZE != 0) {
+	if (ACPI_REGION_SIZE != 0 && !IS_PC98_ARCH) {
 		// place it just below the mirror of the BIOS at FFFF0000
 		ACPI_BASE = 0xFFFF0000 - ACPI_REGION_SIZE;
 
@@ -9750,7 +10125,7 @@ private:
         SegSet16(ss,0x0000);
 
         {
-            Bitu sz = MEM_TotalPages();
+            Bitu sz = MEM_ConventionalPages();
 
             /* The standard BIOS is said to put its stack (at least at OS boot time) 512 bytes past the end of the boot sector
              * meaning that the boot sector loads to 0000:7C00 and the stack is set grow downward from 0000:8000 */
@@ -10066,8 +10441,10 @@ private:
                 }
             }
 
+#if !defined(OSFREE)
             callback_pc98_avspcm.Install(&PC98_AVSDRV_PCM_Handler,CB_IRET,"AVSDRV.SYS PCM driver");
             callback_pc98_avspcm.Set_RealVec(0xd9, true);
+#endif
         }
 
         if (IS_PC98_ARCH) {
@@ -10802,6 +11179,9 @@ startfunction:
         if (IS_VGA_ARCH) {
             reg_eax = 18;       // 640x480 16-color
             CALLBACK_RunRealInt(0x10);
+
+            if (svgaCard == SVGA_DOSBoxIG)
+                VGA_StartUpdateLFB();
         }
         else if (machine == MCH_PC98) {
             // clear the graphics layer
@@ -10823,6 +11203,25 @@ startfunction:
             CALLBACK_RunRealInt(0x18);
 
             bios_pc98_posx = x;
+
+            reg_eax = 0x4200;   // setup 640x400 graphics
+            reg_ecx = 0xC000;
+            CALLBACK_RunRealInt(0x18);
+
+            IO_Write(0x6A, 0x01);    // enable 16-color analog mode (this makes the 4th bitplane appear)
+            IO_Write(0x6A, 0x04);    // but we don't need the EGC graphics
+            IO_Write(0xA4, 0x00);    // display page 0
+            IO_Write(0xA6, 0x00);    // write to page 0
+
+            // setup palette for TTF mode
+            for(unsigned int i = 0; i < 16; i++) {
+                unsigned int bias = (i & 8) ? 0x5 : 0x0;
+
+                IO_Write(0xA8, i);   // DAC index
+                IO_Write(0xAA, ((i & 2) ? 0xA : 0x0) + bias);    // green
+                IO_Write(0xAC, ((i & 4) ? 0xA : 0x0) + bias);    // red
+                IO_Write(0xAE, ((i & 1) ? 0xA : 0x0) + bias);    // blue
+            }
         }
         else {
             reg_eax = 3;        // 80x25 text
@@ -10866,6 +11265,7 @@ startfunction:
              * indicated in the filename. There are multiple versions, one for each vertical resolution of common
              * CGA/EGA/VGA/etc. modes: 480-line, 400-line, 350-line, and 200-line. All images other than the 480-line
              * one have a non-square pixel aspect ratio. Please take that into consideration. */
+            /* 2026/03/29: You can now put it in the DOSBox config directory in your home directory as well. */
             if (IS_VGA_ARCH) {
                 if (logo) user_filename = std::string(logo) + "224x224.png";
                 filename = "dosbox224x224.png";
@@ -10873,7 +11273,7 @@ startfunction:
                 inpng = dosbox224x224_png;
                 rowheight = 16;
             }
-            else if (IS_PC98_ARCH) {
+            else if (IS_PC98_ARCH || machine == MCH_MCGA) {
                 if (logo) user_filename = std::string(logo) + "224x186.png";
                 filename = "dosbox224x186.png";
                 inpng_size = dosbox224x186_png_len;
@@ -10909,6 +11309,12 @@ startfunction:
                 inpng = dosbox224x93_png;
             }
 
+            const std::string configdir = Cross::GetPlatformConfigDir();
+
+            if (png_fp == NULL && !configdir.empty() && !user_filename.empty())
+                png_fp = fopen((configdir + user_filename).c_str(),"rb");
+            if (png_fp == NULL && !configdir.empty() && filename != NULL)
+                png_fp = fopen((configdir + filename).c_str(),"rb");
             if (png_fp == NULL && !user_filename.empty())
                 png_fp = fopen(user_filename.c_str(),"rb");
             if (png_fp == NULL && filename != NULL)
@@ -10978,6 +11384,7 @@ startfunction:
                             png_read_rows(png_context,rows,NULL,1);
                             VGA_WriteBiosLogoBMP(y,row,png_width);
                         }
+                        VGA_ShowBIOSLogo();
                     }
 
                     delete[] row;
@@ -11106,6 +11513,9 @@ startfunction:
                             case ATI_Mach64:           card = "ATI Mach64"; break;
                         }
                         break;
+                    case SVGA_DOSBoxIG:
+                        card = "DOSBox Integrated Graphics";
+                        break;
                     default:
                         card = "Standard VGA";
                         break;
@@ -11187,6 +11597,10 @@ startfunction:
         if (ISAPNPBIOS) {
             BIOS_Int10RightJustifiedPrint(x,y,"ISA Plug & Play BIOS active\n");
         }
+
+#if defined(OSFREE)
+        BIOS_Int10RightJustifiedPrint(x,y,"OS-FREE BUILD\n");
+#endif
 
         if (*logo_text) {
             const size_t max_w = 76;
@@ -11587,7 +12001,7 @@ startfunction:
         // TODO: If instructed to boot a guest OS...
 
         /* wipe out the stack so it's not there to interfere with the system, point it at top of memory or top of segment */
-        reg_esp = std::min((unsigned int)((MEM_TotalPages() << 12) - 0x600 - 4),0xFFFCu);
+        reg_esp = std::min((unsigned int)((MEM_ConventionalPages() << 12) - 0x600 - 4),0xFFFCu);
         reg_eip = 0;
         CPU_SetSegGeneral(cs, 0x60);
         CPU_SetSegGeneral(ss, 0x60);
@@ -11726,6 +12140,8 @@ public:
 	 *       "Pitstop II" uses that as a method to test for PCjr [https://www.vogons.org/viewtopic.php?t=50417] */
 	if (machine == MCH_PCJR)
 		BIOS_DEFAULT_RESET_LOCATION = PhysToReal416(ROMBIOS_GetMemory(3/*JMP NEAR*/,"BIOS default reset location (JMP, PCjr style)",/*align*/1,0xF0043));
+        else if (IS_PC98_ARCH)
+		BIOS_DEFAULT_RESET_LOCATION = PhysToReal416(ROMBIOS_GetMemory(5/*JMP NEAR*/,"BIOS default reset location (JMP, PC-98)",/*align*/1,IS_PC98_ARCH ? 0 : 0xFE05B));
 	else
 		BIOS_DEFAULT_RESET_LOCATION = PhysToReal416(ROMBIOS_GetMemory(3/*JMP NEAR*/,"BIOS default reset location (JMP)",/*align*/1,IS_PC98_ARCH ? 0 : 0xFE05B));
 
@@ -11738,6 +12154,8 @@ public:
         BIOS_DEFAULT_IRQ815_DEF_LOCATION = PhysToReal416(ROMBIOS_GetMemory(9/*see callback.cpp for EOI_PIC1*/,"BIOS default IRQ8-15 location",/*align*/1,IS_PC98_ARCH ? 0 : 0xFE880));
 
         write_FFFF_signature();
+        if (IS_PC98_ARCH)
+            write_FFFF_PC98_signature();
 
         /* Setup all the interrupt handlers the bios controls */
 
@@ -11754,7 +12172,7 @@ public:
         /* INT 12 Memory Size default at 640 kb */
         callback[2].Install(&INT12_Handler,CB_IRET,"Int 12 Memory");
 
-        ulimit = 640;
+        mlimit = 640;
         t_conv = MEM_TotalPages() << 2; /* convert 4096/byte pages -> 1024/byte KB units */
         /* NTS: Tandy machines, because top of memory shares video memory, need more than 640KB of memory to present 640KB of memory
          *      to DOS. In that case, apparently, that gives 640KB to DOS and 128KB to video memory. 640KB of memory in a Tandy system
@@ -11770,18 +12188,18 @@ public:
          *      hardware in such a system. */
         if (allow_more_than_640kb) {
             if (machine == MCH_CGA)
-                ulimit = 736;       /* 640KB + 96KB = 0x00000-0xB7FFF */
+                mlimit = 736;       /* 640KB + 96KB = 0x00000-0xB7FFF */
             else if (machine == MCH_HERC || machine == MCH_MDA)
-                ulimit = 704;       /* 640KB + 64KB = 0x00000-0xAFFFF */
+                mlimit = 704;       /* 640KB + 64KB = 0x00000-0xAFFFF */
 	    else if (machine == MCH_TANDY)
-                ulimit = 768;       /* 640KB + 128KB = 0x00000-0xBFFFF */
+                mlimit = 768;       /* 640KB + 128KB = 0x00000-0xBFFFF */
 
             /* NTS: Yes, this means Tandy video memory at B8000 overlaps conventional memory, but the
              *      top of conventional memory is stolen as video memory anyway. Tandy documentation
              *      suggests that memory is only installed in multiples of 128KB so there doesn't seem
              *      to be a way to install only 704KB for example. */
 
-            if (t_conv > ulimit) t_conv = ulimit;
+            if (t_conv > mlimit) t_conv = mlimit;
             if (t_conv > 640 && machine != MCH_TANDY) {
                 /* because the memory emulation has already set things up
                  * HOWEVER Tandy emulation has already properly mapped A0000-BFFFF so don't mess with it */
@@ -11830,10 +12248,10 @@ public:
                 LOG(LOG_MISC,LOG_WARN)("Warning: Conventional memory size %uKB in PCjr mode is not a multiple of 32KB, games may not display graphics correctly",(unsigned int)t_conv);
         }
 
-        /* and then unmap RAM between t_conv and ulimit */
-        if (t_conv < ulimit) {
+        /* and then unmap RAM between t_conv and mlimit */
+        if (t_conv < mlimit) {
             Bitu start = (t_conv+3)/4;  /* start = 1KB to page round up */
-            Bitu end = ulimit/4;        /* end = 1KB to page round down */
+            Bitu end = mlimit/4;        /* end = 1KB to page round down */
             if (start < end) MEM_ResetPageHandler_Unmapped(start,end-start);
         }
 
@@ -11859,16 +12277,16 @@ public:
              * is installed! */
             if (t_conv > (640+32)) {
                 if (t_conv > 640) t_conv = 640;
-                if (ulimit > 640) ulimit = 640;
+                if (mlimit > 640) mlimit = 640;
 
                 /* Video memory takes the rest */
                 tandy_128kbase = 0xA0000;
             }
             else {
                 if (t_conv > 640) t_conv = 640;
-                if (ulimit > 640) ulimit = 640;
+                if (mlimit > 640) mlimit = 640;
                 t_conv -= 16;
-                ulimit -= 16;
+                mlimit -= 16;
 
                 /* if 32KB would cross a 128KB boundary, then adjust again or else
                  * things will horribly break between text and graphics modes */
@@ -11897,9 +12315,9 @@ public:
                 if (t_conv > 128) t_conv = 128;
                 t_conv -= 16;
             }
-            if (ulimit <= (128+16)) {
-                if (ulimit > 128) ulimit = 128;
-                ulimit -= 16;
+            if (mlimit <= (128+16)) {
+                if (mlimit > 128) mlimit = 128;
+                mlimit -= 16;
             }
         }
 
@@ -11996,10 +12414,19 @@ public:
             Bitu wo_fence;
 
 	    {
-		    unsigned int delta = (Real2Phys(BIOS_DEFAULT_RESET_CODE_LOCATION) - (Real2Phys(BIOS_DEFAULT_RESET_LOCATION) + 3u)) & 0xFFFFu;
-		    Bitu wo = Real2Phys(BIOS_DEFAULT_RESET_LOCATION);
-		    phys_writeb(wo+0,0xE9);/*JMP near*/
-		    phys_writew(wo+1,delta);
+		const Bitu wo = Real2Phys(BIOS_DEFAULT_RESET_LOCATION);
+		if (IS_PC98_ARCH) {
+			const unsigned int ofs = Real2Phys(BIOS_DEFAULT_RESET_CODE_LOCATION) - 0xF0000u;
+			phys_writeb(wo+0,0xEA);/*JMP far*/
+			phys_writew(wo+1,ofs);
+			phys_writew(wo+3,0xF000);
+		}
+		else {
+			const unsigned int delta = (Real2Phys(BIOS_DEFAULT_RESET_CODE_LOCATION) - (Real2Phys(BIOS_DEFAULT_RESET_LOCATION) + 3u)) & 0xFFFFu;
+			const Bitu wo = Real2Phys(BIOS_DEFAULT_RESET_LOCATION);
+			phys_writeb(wo+0,0xE9);/*JMP near*/
+			phys_writew(wo+1,delta);
+		}
 	    }
 
             Bitu wo = Real2Phys(BIOS_DEFAULT_RESET_CODE_LOCATION);
@@ -12332,6 +12759,11 @@ void BIOS_Destroy(Section* /*sec*/){
         delete test;
         test = NULL;
     }
+
+    if (INT13_ElTorito_cdrom) {
+        INT13_ElTorito_cdrom->Release();
+        INT13_ElTorito_cdrom = NULL;
+    }
 }
 
 void BIOS_OnPowerOn(Section* sec) {
@@ -12361,6 +12793,11 @@ void BIOS_OnResetComplete(Section *x) {
     if (biosConfigSeg != 0u) {
         ROMBIOS_FreeMemory((Bitu)(biosConfigSeg << 4u)); /* remember it was alloc'd paragraph aligned, then saved >> 4 */
         biosConfigSeg = 0u;
+    }
+
+    if (INT13_ElTorito_cdrom) {
+        INT13_ElTorito_cdrom->Release();
+        INT13_ElTorito_cdrom = NULL;
     }
 
     call_pnp_rp = 0;
@@ -12447,7 +12884,6 @@ void GEN_PowerButton(bool pressed) {
 }
 
 
-extern uint8_t int10_font_08[256 * 8];
 extern uint16_t j3_font_offset;
 
 /* NTS: Do not use callbacks! This function is called before CALLBACK_Init() */
@@ -12698,6 +13134,13 @@ void ROMBIOS_Init() {
 //! \brief Updates the state of a lockable key.
 void UpdateKeyWithLed(int nVirtKey, int flagAct, int flagLed);
 
+bool IsSafeToMemIOOnBehalfOfGuest()
+{
+    if(cpu.pmode) return false; // protected mode (including virtual 8086 mode): NO
+    if(dos_kernel_disabled) return false; // guest OS not running under our own DOS kernel: NO
+    return true;
+}
+
 void BIOS_SynchronizeNumLock()
 {
 #if defined(WIN32)
@@ -12753,3 +13196,4 @@ void UpdateKeyWithLed(int nVirtKey, int flagAct, int flagLed)
 
 #endif
 }
+

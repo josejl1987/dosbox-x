@@ -45,6 +45,8 @@
 #include "lazyflags.h"
 #include "pic.h"
 
+extern bool do_lds_wraparound;
+
 #define CACHE_MAXSIZE	(4096*2)
 #define CACHE_TOTAL		(1024*1024*8)
 #define CACHE_PAGES		(512)
@@ -264,8 +266,6 @@ Bits CPU_Core_Dynrec_Run(void) {
 		PhysPt ip_point=SegPhys(cs)+reg_eip;
 		#if C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
-		#else
-			if (DEBUG_Breakpoint()) return (Bits)debugCallback;
 		#endif
 
 		CodePageHandlerDynRec * chandler=nullptr;
@@ -327,8 +327,6 @@ run_block:
 #if C_DEBUG
 #if C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
-#else
-			if (DEBUG_Breakpoint()) return (Bits)debugCallback;
 #endif
 #endif
 			if (!GETFLAG(TF)) {
@@ -347,8 +345,6 @@ run_block:
 #if C_DEBUG
 #if C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
-#else
-			if (DEBUG_Breakpoint()) return (Bits)debugCallback;
 #endif
 #endif
 			break;
@@ -359,8 +355,6 @@ run_block:
 #if C_DEBUG
 #if C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
-#else
-			if (DEBUG_Breakpoint()) return (Bits)debugCallback;
 #endif
 #endif
 			return CBRET_NONE;
@@ -397,10 +391,6 @@ run_block:
 	#if C_DEBUG
 	#if C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) {
-				return debugCallback;
-			}
-	#else
-			if (DEBUG_Breakpoint()) {
 				return debugCallback;
 			}
 	#endif

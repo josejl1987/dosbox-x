@@ -33,6 +33,25 @@
 #include "clockdomain.h"
 #include "config.h"
 
+/* HACK: To make SDL3 porting easier, define SDL2 to prevent SDL1 code from compiling */
+#if defined(C_SDL3) && !defined(C_SDL2)
+# define C_SDL2 1
+#endif
+
+/* allow for OS-free builds where the MS-DOS emulation is disabled and
+ * you have to provide your own boot disks to run MS-DOS or whatever you like. */
+#ifdef C_OSFREE
+# define OSFREE 1
+#endif
+
+#if defined(OS2) && defined(C_SDL2)
+#undef VERSION
+#endif
+
+#if defined(C_HAVE_LINUX_KVM) && (C_TARGETCPU == X86 || C_TARGETCPU == X86_64)
+# define C_HAVE_LINUX_KVM_X86
+#endif
+
 #if defined(C_ICONV)
 /* good */
 #elif defined(C_ICONV_WIN32)
@@ -97,7 +116,6 @@ typedef Bitu cpu_cycles_countu_t;
 
 class Config;
 class Section;
-struct LuaEngine;
 
 #if defined(__GNUC__)
 # define DEPRECATED __attribute__((deprecated))
@@ -133,7 +151,8 @@ enum SVGACards {
 	SVGA_TsengET4K,
 	SVGA_TsengET3K,
 	SVGA_ParadisePVGA1A,
-	SVGA_ATI
+	SVGA_ATI,
+	SVGA_DOSBoxIG                // special "integrated graphics" emulator accelerated card
 };
 
 enum S3Card {
@@ -166,14 +185,12 @@ enum ATICard {
 
 typedef Bitu				(LoopHandler)(void);
 
-
 extern Config*				control;
 extern SVGACards			svgaCard;
 extern ATICard				atiCard;
 extern S3Card				s3Card;
 extern HerculesCard			hercCard;
 extern MachineType			machine;
-extern LuaEngine            luaEngine;
 extern bool             SDLNetInited, uselfn;
 extern bool				mono_cga;
 extern bool				DEPRECATED mainline_compatible_mapping;
@@ -184,12 +201,15 @@ extern bool				sse2_available;
 extern bool				avx2_available;
 #endif
 
-void					MSG_Add(const char*,const char*); //add messages to the internal languagefile
-const char*				MSG_Get(char const *);     //get messages from the internal languagefile
+void                    MSG_Add(const char*,const char*);      // Add messages to the internal languagefile
+const char*             MSG_Get(char const *);                 // Get messages from the internal languagefile
+std::string             formatString(const char* format, ...); // Generates a formatted string using a format specifier and variable arguments.
 
 void					DOSBOX_RunMachine();
 void					DOSBOX_SetLoop(LoopHandler * handler);
 void					DOSBOX_SetNormalLoop();
+
+void MenuBrowseImageFile(char drive, bool arc, bool boot, bool multiple, const std::string &dev_spec=std::string(), const std::string &dev_spec_opts=std::string());
 
 /* machine tests for use with if() statements */
 #define IS_TANDY_ARCH			((machine==MCH_TANDY) || (machine==MCH_PCJR))
@@ -235,36 +255,37 @@ enum {
 
 extern uint32_t guest_msdos_LoL;
 extern uint16_t guest_msdos_mcb_chain;
+extern uint32_t guest_msdos_dev_chain;
 extern int boothax;
 
 /* C++11 user-defined literal, to help with byte units */
 typedef unsigned long long bytecount_t;
 
-static inline constexpr bytecount_t operator "" _bytes(const bytecount_t x) {
+static inline constexpr bytecount_t operator""_bytes(const bytecount_t x) {
     return x;
 }
 
-static inline constexpr bytecount_t operator "" _parabytes(const bytecount_t x) { /* AKA bytes per segment increment in real mode */
+static inline constexpr bytecount_t operator""_parabytes(const bytecount_t x) { /* AKA bytes per segment increment in real mode */
     return x << bytecount_t(4u);
 }
 
-static inline constexpr bytecount_t operator "" _kibibytes(const bytecount_t x) {
+static inline constexpr bytecount_t operator""_kibibytes(const bytecount_t x) {
     return x << bytecount_t(10u);
 }
 
-static inline constexpr bytecount_t operator "" _pagebytes(const bytecount_t x) { /* bytes per 4KB page in protected mode */
+static inline constexpr bytecount_t operator""_pagebytes(const bytecount_t x) { /* bytes per 4KB page in protected mode */
     return x << bytecount_t(12u);
 }
 
-static inline constexpr bytecount_t operator "" _mibibytes(const bytecount_t x) {
+static inline constexpr bytecount_t operator""_mibibytes(const bytecount_t x) {
     return x << bytecount_t(20u);
 }
 
-static inline constexpr bytecount_t operator "" _gibibytes(const bytecount_t x) {
+static inline constexpr bytecount_t operator""_gibibytes(const bytecount_t x) {
     return x << bytecount_t(30u);
 }
 
-static inline constexpr bytecount_t operator "" _tebibytes(const bytecount_t x) {
+static inline constexpr bytecount_t operator""_tebibytes(const bytecount_t x) {
     return x << bytecount_t(40u);
 }
 
@@ -358,25 +379,10 @@ private:
     SaveState(const SaveState&);
     SaveState& operator=(const SaveState&);
 
-    class RawBytes
-    {
-    public:
-        RawBytes() {}
-        void set(const std::string& stream);
-        std::string get() const; //throw (Error)
-        void compress() const;   //throw (Error)
-        bool dataAvailable() const;
-    private:
-        bool dataExists = false; //determine whether set method (even with empty string) was called
-        mutable bool isCompressed = false; //design for logical not binary const
-        mutable std::string bytes; //
-    };
-
     struct CompData
     {
         CompData(Component& cmp) : comp(cmp) {}
         Component& comp;
-        std::vector<RawBytes> rawBytes = std::vector<RawBytes>(MAX_PAGE * SLOT_COUNT);
     };
 
     typedef std::map<std::string, CompData> CompEntry;
@@ -394,10 +400,11 @@ void readPOD(std::istream& stream, T& data);
 void writeString(std::ostream& stream, const std::string& data);
 void readString(std::istream& stream, std::string& data);
 
+
+//Implementation of SaveState::Component for saving POD types only
 class SerializeGlobalPOD : public SaveState::Component
 {
 public:
-
     SerializeGlobalPOD(const std::string& compName)
     {
         SaveState::instance().registerComponent(compName, *this);
@@ -412,19 +419,14 @@ public:
 protected:
     void getBytes(std::ostream& stream) override
     {
-        std::for_each(podRef.begin(), podRef.end(), [&stream](POD& pod) {
-            WriteGlobalPOD()(stream, pod);
-
-            });
+        for (auto& x : podRef) { WriteGlobalPOD(stream, x); }
     }
 
     void setBytes(std::istream& stream) override
     {
-        std::for_each(podRef.begin(), podRef.end(), [&stream](POD& pod) {
-            ReadGlobalPOD()(stream, pod);
-            }
-        );
+        for (auto& x : podRef) { ReadGlobalPOD(stream, x); }
     }
+
 
 private:
     struct POD
@@ -435,24 +437,19 @@ private:
         size_t size;
     };
 
-    struct WriteGlobalPOD
+    static inline void WriteGlobalPOD(std::ostream& stream, const POD& data)
     {
-        void operator()(std::ostream& stream, const POD& data) const
-        {
-            stream.write(static_cast<const char*>(data.address), data.size);
-        }
-    };
+        stream.write(static_cast<const char*>(data.address), data.size);
+    }
 
-    struct ReadGlobalPOD
+    static inline void ReadGlobalPOD(std::istream& stream, POD& data)
     {
-        void operator()(std::istream& stream, POD& data) const
-        {
-            stream.read(static_cast<char*>(data.address), data.size);
-        }
-    };
+        stream.read(static_cast<char*>(data.address), data.size);
+    }
 
     std::vector<POD> podRef;
 };
+
 //---------------- inline implementation -------------------------
 template <class T>
 inline
@@ -493,5 +490,11 @@ void readString(std::istream& stream, std::string& data)
 int _wmkdir_p(const wchar_t *pathname);
 #else
 int mkdir_p(const char *pathname, mode_t mode);
+#endif
+
+#if defined(C_HAVE_DUKTAPE)
+# include "duktape.h"
+
+extern duk_context *js_heap;
 #endif
 

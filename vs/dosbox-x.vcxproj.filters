@@ -127,14 +127,11 @@
     <Filter Include="Sources\hardware\RetroWaveLib">
       <UniqueIdentifier>{2a582629-0964-4559-9992-810e70c2f6ce}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Sources\imgui">
-      <UniqueIdentifier>{1502e823-d2c9-4de2-91e7-ded1765369e5}</UniqueIdentifier>
+    <Filter Include="Sources\gamelink">
+      <UniqueIdentifier>{a4caad95-7f37-479a-be67-29228662d0fd}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Sources\luaengine">
-      <UniqueIdentifier>{e8c65823-d2c9-4de2-91e7-ded1765369e5}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Sources\memory">
-      <UniqueIdentifier>{f8c65823-d2c9-4de2-91e7-ded1765369e5}</UniqueIdentifier>
+    <Filter Include="Sources\libs\tinyfiledialogs">
+      <UniqueIdentifier>{d5990f4f-fb75-4276-9b30-a54d290d8822}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -1614,17 +1611,12 @@
     <ClCompile Include="..\src\hardware\snd_pc98\cbus\pcm86io.c">
       <Filter>Sources\hardware\snd_pc98\cbus</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\gamelink\gamelink.cpp" />
-    <ClCompile Include="..\src\gamelink\gamelink_term.cpp" />
-    <ClCompile Include="..\src\output\output_gamelink.cpp" />
     <ClCompile Include="..\src\hardware\imfc_rom.c">
       <Filter>Sources\hardware</Filter>
     </ClCompile>
     <ClCompile Include="..\src\hardware\imfc.cpp">
       <Filter>Sources\hardware</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\hardware\esfmu\esfm.c" />
-    <ClCompile Include="..\src\hardware\esfmu\esfm_registers.c" />
     <ClCompile Include="..\src\builtin\4dos.cpp">
       <Filter>Sources\builtin</Filter>
     </ClCompile>
@@ -1661,66 +1653,45 @@
     <ClCompile Include="..\src\builtin\ne2000bin.cpp">
       <Filter>Sources\builtin</Filter>
     </ClCompile>
-    <ClCompile Include="imgui\imgui.cpp">
-      <Filter>Sources\imgui</Filter>
+    <ClCompile Include="..\src\hardware\pc98_artic.cpp">
+      <Filter>Sources\hardware</Filter>
     </ClCompile>
-    <ClCompile Include="imgui\imgui_draw.cpp">
-      <Filter>Sources\imgui</Filter>
+    <ClCompile Include="..\src\builtin\cwsdpmi_exe_pc98.cpp">
+      <Filter>Sources\builtin</Filter>
     </ClCompile>
-    <ClCompile Include="imgui\imgui_tables.cpp">
-      <Filter>Sources\imgui</Filter>
+    <ClCompile Include="..\src\builtin\ipspatch.cpp">
+      <Filter>Sources\builtin</Filter>
     </ClCompile>
-    <ClCompile Include="imgui\imgui_widgets.cpp">
-      <Filter>Sources\imgui</Filter>
+    <ClCompile Include="..\src\builtin\ipsmake.cpp">
+      <Filter>Sources\builtin</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\luaengine\LuaEngine.cpp">
-      <Filter>Sources\luaengine</Filter>
+    <ClCompile Include="..\src\hardware\mic_input_win32.cpp">
+      <Filter>Sources\hardware</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\gui\imgui_window.cpp" />
-    <ClCompile Include="..\src\luaengine\event_manager.cpp">
-      <Filter>Sources\luaengine</Filter>
+    <ClCompile Include="..\src\output\output_direct3d11.cpp">
+      <Filter>Sources\output</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\luaengine\savestate_manager.cpp">
-      <Filter>Sources\luaengine</Filter>
+    <ClCompile Include="..\src\hardware\cqm.c">
+      <Filter>Sources\hardware</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\luaengine\savestate_shim.cpp">
-      <Filter>Sources\luaengine</Filter>
+    <ClCompile Include="..\src\hardware\esfmu\esfm_registers.c">
+      <Filter>Sources\hardware</Filter>
     </ClCompile>
-        <ClCompile Include="..\src\luaengine\frame_control.cpp">
-      <Filter>Sources\luaengine</Filter>
+    <ClCompile Include="..\src\hardware\esfmu\esfm.c">
+      <Filter>Sources\hardware</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\luaengine\gui_windows.cpp">
-      <Filter>Sources\luaengine</Filter>
+    <ClCompile Include="..\src\gamelink\gamelink.cpp">
+      <Filter>Sources\gamelink</Filter>
     </ClCompile>
-    <ClCompile Include="imgui\backends\imgui_impl_sdl2.cpp" />
-    <ClCompile Include="imgui\backends\imgui_impl_opengl3.cpp" />
-    <ClCompile Include="..\src\luaengine\lua_imgui_windows.cpp" />
-    <ClCompile Include="..\src\luaengine\lua_api_memory.cpp" />
-    <ClCompile Include="..\src\luaengine\lua_api_cpu.cpp" />
-    <ClCompile Include="..\src\luaengine\lua_api_debug.cpp" />
-    <ClCompile Include="..\src\luaengine\autocomplete.cpp" />
-    <ClCompile Include="..\src\luaengine\cheat_engine.cpp" />
-    <ClCompile Include="..\src\luaengine\cheat_window.cpp" />
-    <ClCompile Include="..\src\luaengine\debug_config.cpp" />
-    <ClCompile Include="..\src\luaengine\debug_logger.cpp" />
-    <ClCompile Include="..\src\luaengine\debug_tools_manager.cpp" />
-    <ClCompile Include="..\src\luaengine\disassembly_window.cpp" />
-    <ClCompile Include="..\src\luaengine\hex_editor_window.cpp" />
-    <ClCompile Include="..\src\luaengine\lua_memory_domains.cpp" />
-    <ClCompile Include="..\src\luaengine\ram_search_engine.cpp" />
-    <ClCompile Include="..\src\luaengine\ram_search_window.cpp" />
-    <ClCompile Include="..\src\luaengine\trace_logger.cpp" />
-    <ClCompile Include="..\src\luaengine\trace_logger_window.cpp" />
-    <ClCompile Include="..\src\luaengine\watch_list.cpp" />
-    <ClCompile Include="..\src\luaengine\watch_window.cpp" />
-    <ClCompile Include="..\src\luaengine\symbol_manager.cpp" />
-    <ClCompile Include="..\src\luaengine\core_debug_interface.cpp" />
-    <ClCompile Include="..\src\luaengine\hex_editor.cpp" />
-    <ClCompile Include="..\src\luaengine\lua_api_breakpoint.cpp" />
-    <ClCompile Include="..\src\luaengine\lua_symbol_bindings.cpp" />
-    <ClCompile Include="..\src\memory\memory_domains.cpp" />
-    <ClCompile Include="imgui\backends\imgui_impl_dx11.cpp" />
-    <ClCompile Include="..\src\luaengine\symbolic_breakpoints.cpp" />
+    <ClCompile Include="..\src\gamelink\gamelink_term.cpp">
+      <Filter>Sources\gamelink</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\libs\tinyfiledialogs\tinyfiledialogs.c">
+      <Filter>Sources\libs\tinyfiledialogs</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\output\output_gamelink.cpp">
+      <Filter>Sources\output</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\aviwriter\avi.h">
@@ -1850,6 +1821,9 @@
       <Filter>Sources\hardware</Filter>
     </ClInclude>
     <ClInclude Include="..\src\hardware\nukedopl.h">
+      <Filter>Sources\hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\hardware\nukedopl_wf_rom.h">
       <Filter>Sources\hardware</Filter>
     </ClInclude>
     <ClInclude Include="..\src\hardware\opl.h">
@@ -2046,21 +2020,6 @@
     </ClInclude>
     <ClInclude Include="..\include\cp437_uni.h">
       <Filter>Includes</Filter>
-    </ClInclude>
-    <ClInclude Include="..\src\luaengine\luaengine.h">
-      <Filter>Sources\luaengine</Filter>
-    </ClInclude>
-    <ClInclude Include="..\src\luaengine\event_manager.h">
-      <Filter>Sources\luaengine</Filter>
-    </ClInclude>
-    <ClInclude Include="..\src\luaengine\savestate_manager.h">
-      <Filter>Sources\luaengine</Filter>
-    </ClInclude>
-        <ClInclude Include="..\src\luaengine\frame_control.h">
-      <Filter>Sources\luaengine</Filter>
-    </ClInclude>
-    <ClInclude Include="..\src\luaengine\gui_windows.h">
-      <Filter>Sources\luaengine</Filter>
     </ClInclude>
     <ClInclude Include="..\include\cp808_uni.h">
       <Filter>Includes</Filter>
@@ -2683,40 +2642,39 @@
     <ClInclude Include="..\src\hardware\snd_pc98\cbus\pcm86io.h">
       <Filter>Sources\hardware\snd_pc98\cbus</Filter>
     </ClInclude>
-    <ClInclude Include="..\src\libs\mt32\Types.h" />
-    <ClInclude Include="..\src\gamelink\gamelink.h" />
-    <ClInclude Include="..\src\gamelink\scancodes_windows.h" />
-    <ClInclude Include="..\src\output\output_gamelink.h" />
     <ClInclude Include="..\src\cpu\dynamic_alloc_common.h">
       <Filter>Sources\cpu</Filter>
     </ClInclude>
-    <ClInclude Include="..\include\version_string.h" />
-    <ClInclude Include="..\src\hardware\esfmu\esfm.h" />
-    <ClInclude Include="..\src\luaengine\lua_imgui_windows.h" />
-    <ClInclude Include="..\src\luaengine\autocomplete.h" />
-    <ClInclude Include="..\src\luaengine\cheat_engine.h" />
-    <ClInclude Include="..\src\luaengine\cheat_window.h" />
-    <ClInclude Include="..\src\luaengine\core_debug_interface.h" />
-    <ClInclude Include="..\src\luaengine\debug_config.h" />
-    <ClInclude Include="..\src\luaengine\debug_logger.h" />
-    <ClInclude Include="..\src\luaengine\debug_tools_manager.h" />
-    <ClInclude Include="..\src\luaengine\disassembly_window.h" />
-    <ClInclude Include="..\src\luaengine\hex_editor_window.h" />
-    <ClInclude Include="..\src\luaengine\ram_search_engine.h" />
-    <ClInclude Include="..\src\luaengine\ram_search_window.h" />
-    <ClInclude Include="..\src\luaengine\trace_logger.h" />
-    <ClInclude Include="..\src\luaengine\trace_logger_window.h" />
-    <ClInclude Include="..\src\luaengine\watch_list.h" />
-    <ClInclude Include="..\src\luaengine\watch_window.h" />
-    <ClInclude Include="..\include\memory_domains.h" />
-    <ClInclude Include="..\src\luaengine\lua_memory_domains.h" />
-    <ClInclude Include="..\src\luaengine\hex_editor.h" />
-    <ClInclude Include="..\src\luaengine\lua_symbol_bindings.h" />
-    <ClInclude Include="..\src\luaengine\memory_domains.h" />
-    <ClInclude Include="..\src\luaengine\symbol_manager.h" />
-    <ClInclude Include="..\src\luaengine\memory_protection.h" />
-    <ClInclude Include="imgui\backends\imgui_impl_dx11.h" />
-    <ClInclude Include="..\src\luaengine\symbolic_breakpoints.h" />
+    <ClInclude Include="..\src\hardware\mic_input_win32.h">
+      <Filter>Sources\hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\output\output_direct3d11.h">
+      <Filter>Sources\output</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\libs\mt32\Types.h">
+      <Filter>Sources\libs\mt32</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\hardware\cqm.h">
+      <Filter>Sources\hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\hardware\esfmu\esfm.h">
+      <Filter>Sources\hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\gamelink\gamelink.h">
+      <Filter>Sources\gamelink</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\gamelink\scancodes_windows.h">
+      <Filter>Sources\gamelink</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\libs\tinyfiledialogs\tinyfiledialogs.h">
+      <Filter>Sources\libs\tinyfiledialogs</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\output\output_gamelink.h">
+      <Filter>Sources\output</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\version_string.h">
+      <Filter>Includes</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="..\src\winres.rc">
@@ -2725,12 +2683,5 @@
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="String.natvis" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="..\src\luaengine\Makefile.am" />
-    <None Include="..\src\luaengine\LUA_ENGINE_FEATURE_STATUS.md" />
-  </ItemGroup>
-  <ItemGroup>
-    <Text Include="..\src\luaengine\repomix-output.txt" />
   </ItemGroup>
 </Project>

@@ -1,6 +1,6 @@
 # Main Makefile for DOSBox-X
 
-EXTRA_DIST = autogen.sh tools/pc98rev
+EXTRA_DIST = autogen.sh
 SUBDIRS = src include
 
 if MACOSX

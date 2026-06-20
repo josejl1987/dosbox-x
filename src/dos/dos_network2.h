@@ -11,6 +11,7 @@ August 8 2005		cyberwalker
 		Make all functions  to avoid modifying makefile.
 
 */
+#if !defined(OSFREE)
 
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
 
@@ -304,7 +305,7 @@ bool Network_SetFileAttr(char const * const filename, uint16_t attr) {
     t->tm_mon  = ((int)(odate >> 5) & 0x0f) - 1;
     t->tm_year = ((int)(odate >> 9) & 0x7f) + 80;
     ttime=mktime(t);
-    LONGLONG ll = Int32x32To64(ttime, 10000000) + 116444736000000000;
+    LONGLONG ll = (ttime * 10000000LL) + 116444736000000000LL;
     time.dwLowDateTime = (DWORD) ll;
     time.dwHighDateTime = (DWORD) (ll >> 32);
 	if (!SetFileTime(hand, NULL, NULL, &time)) {
@@ -422,10 +423,7 @@ bool Network_SetFileAttr(char const * const filename, uint16_t attr) {
 #if defined(__MINGW64_VERSION_MAJOR)
 #define _nhandle 32
 #else
- extern "C"
- {
-     int _nhandle;
- }
+extern "C" int _nhandle;
 #endif
 
  bool Network_CloseFile(uint16_t entry)
@@ -519,3 +517,6 @@ bool Network_SetFileAttr(char const * const filename, uint16_t attr) {
 }//bool	Network_WriteFile(uint16_t entry,uint8_t * data,uint16_t * amount)
 
 #endif // defined(WIN32) && !defined(__MINGW32__)
+
+#endif //OSFREE
+

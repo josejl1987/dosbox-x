@@ -18,7 +18,6 @@
 
 
 #include "libserial.h"
-#include <cstdlib>
 
 #include "config.h"
 

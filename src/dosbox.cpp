@@ -78,9 +78,17 @@
 #include "pci_bus.h"
 #include "parport.h"
 #include "keyboard.h"
-#include "luaengine/core_debug_interface.h"
-#include "regs.h"
 #include "clockdomain.h"
+
+#if __APPLE__ && __MAC_OS_X_VERSION_MIN_REQUIRED < 101200
+/* FIX_ME: A workaround to avoid build error. Change version to 101300 if error occurs for Sierra (10.12) */
+struct __processor_model {
+  unsigned int __cpu_vendor;
+  unsigned int __cpu_type;
+  unsigned int __cpu_subtype;
+  unsigned int __cpu_features[1];
+} __cpu_model = {0, 0, 0, {0}};
+#endif
 
 #if C_EMSCRIPTEN
 # include <emscripten.h>
@@ -92,21 +100,11 @@
 #endif
 
 #include <list>
-#include <sol/sol.hpp>
-
-#if C_LUA
-#include "luaengine/luaengine.h"
-#endif
 
 bool int10_vp_use_always = false;
 bool int10_vp_use_auto = true;
 
 unsigned int preventcap = PREVCAP_NONE;
-
-#if C_LUA
-extern LuaEngine luaEngine;
-extern void LUA_Init(Section* section);
-#endif
 
 #ifndef WDA_NONE
 # define WDA_NONE 0x00
@@ -245,19 +243,25 @@ extern unsigned int page;
 
 uint32_t              guest_msdos_LoL = 0;
 uint16_t              guest_msdos_mcb_chain = 0;
+uint32_t              guest_msdos_dev_chain = 0;
 int                 boothax = BOOTHAX_NONE;
 bool                gbk = false;
 bool                chinasea = false;
 bool                uao = false;
 bool                jp_ega = false;
+#if !defined(OSFREE)
 bool                j3100_start = false;
+#endif
 bool                want_fm_towns = false;
 
 bool                dos_con_use_int16_to_detect_input = true;
 
-bool                dbg_zero_on_dos_allocmem = true;
-bool                dbg_zero_on_xms_allocmem = true;
-bool                dbg_zero_on_ems_allocmem = true;
+#if !defined(OSFREE)
+bool                dbg_zero_on_dos_allocmem = false;
+bool                dbg_zero_on_xms_allocmem = false;
+bool                dbg_zero_on_ems_allocmem = false;
+#endif
+
 /* the exact frequency of the NTSC color subcarrier ~3.579545454...MHz or 315/88 */
 /* see: https://en.wikipedia.org/wiki/Colorburst */
 #define             NTSC_COLOR_SUBCARRIER_NUM       (315000000ULL)
@@ -470,11 +474,6 @@ static Bitu Normal_Loop(void) {
                 dosbox_allow_nonrecursive_page_fault = true;
                 ret = (*cpudecoder)();
                 dosbox_allow_nonrecursive_page_fault = saved_allow;
-
-#if C_LUA
-                // Call LuaEngine hook after CPU instruction execution
-                luaEngine.LuaInstructionHook();
-#endif
 
                 if (GCC_UNLIKELY(ret<0))
                     return 1;
@@ -742,7 +741,7 @@ void DOSBOX_RunMachine(void){
     extern unsigned int last_callback;
     unsigned int p_last_callback = last_callback;
     last_callback = 0;
-    
+
 #ifdef DEBUG_RECURSION
     if (runmachine_recursion++ != 0)
         LOG_MSG("RunMachine recursion");
@@ -962,13 +961,13 @@ void Init_VGABIOS() {
         }
         if (rom_fp == NULL) {
             path = "";
-            Cross::GetPlatformResDir(path);
+            path = Cross::GetPlatformResDir();
             path += VGA_BIOS_rom;
             rom_fp = fopen(path.c_str(),"rb");
         }
         if (rom_fp == NULL) {
             path = "";
-            Cross::GetPlatformConfigDir(path);
+            path = Cross::GetPlatformConfigDir();
             path += VGA_BIOS_rom;
             rom_fp = fopen(path.c_str(),"rb");
         }
@@ -1107,16 +1106,39 @@ void SetIME() {
 #endif
 }
 
+unsigned int BeepDuration() {
+	Section_prop *section = static_cast<Section_prop *>(control->GetSection("dosbox"));
+	unsigned int d = section->Get_int("beep duration");
+
+	if (d == 0) {//default
+		if (IS_EGAVGA_ARCH || machine == MCH_TANDY || machine == MCH_AMSTRAD || machine == MCH_MCGA) {
+			d = 333; /* DOSBox SVN default */
+		}
+		else if (IS_PC98_ARCH) {
+			d = 300; /* FIXME: Guess */
+		}
+		else { // MDA, CGA, Hercules, PCjr, anything IBM
+			d = 500; /* IBM standard in the 1980s, see BIOS listings to see what I mean */
+		}
+	}
+
+	return d;
+}
+
 void DOSBOX_RealInit() {
     DOSBoxMenu::item *item;
 
     LOG(LOG_MISC,LOG_DEBUG)("DOSBOX-X RealInit: loading settings and initializing");
 
-    MAPPER_AddHandler(DOSBOX_UnlockSpeed2, MK_rightarrow, MMODHOST,"speedlock","Toggle Speedlock");
     {
-        MAPPER_AddHandler(DOSBOX_UnlockSpeed2, MK_nothing, 0, "speedlock2", "Turbo (Fast Forward)", &item);
-        item->set_description("Toggle emulation speed, to allow running faster than realtime (fast forward)");
-        item->set_text("Turbo (Fast Forward)");
+        MAPPER_AddHandler(DOSBOX_UnlockSpeed, MK_grave, MMODHOST, "speedlock", "Turbo (fast-forward): burst", &item);
+        item->set_description("Burst turbo (fast-forward) emulation speed, to allow running faster than realtime");
+        item->set_text("Turbo (fast-forward): burst mode");
+    }
+    {
+        MAPPER_AddHandler(DOSBOX_UnlockSpeed2, MK_rightarrow, MMODHOST, "speedlock2", "Turbo (fast-forward): toggle", &item);
+        item->set_description("Toggle turbo (fast-forward) emulation speed, to allow running faster than realtime");
+        item->set_text("Turbo (fast-forward)");
     }
     {
         MAPPER_AddHandler(DOSBOX_NormalSpeed, MK_leftarrow, MMODHOST, "speednorm","Normal speed", &item);
@@ -1200,6 +1222,7 @@ void DOSBOX_RealInit() {
     s3Card = S3_Generic;
     machine = MCH_VGA;
     jp_ega = false;
+    int10.vesa_vbe3 = false;
     int10.vesa_nolfb = false;
     int10.vesa_oldvbe = false;
     int10.vesa_oldvbe10 = false;
@@ -1243,6 +1266,7 @@ void DOSBOX_RealInit() {
     else if (mtype == "vesa_nolfb")    { svgaCard = SVGA_S3Trio; s3Card = S3_Trio32; int10.vesa_nolfb = true;}
     else if (mtype == "vesa_oldvbe")   { svgaCard = SVGA_S3Trio; s3Card = S3_Trio32; int10.vesa_oldvbe = true;}
     else if (mtype == "vesa_oldvbe10") { svgaCard = SVGA_S3Trio; s3Card = S3_Trio32; int10.vesa_oldvbe = true; int10.vesa_oldvbe10 = true;}
+    else if (mtype == "vesa_vbe3")     { svgaCard = SVGA_S3Trio; s3Card = S3_Trio32; int10.vesa_vbe3 = true;}
     else if (mtype == "svga_et4000")   { svgaCard = SVGA_TsengET4K; }
     else if (mtype == "svga_et3000")   { svgaCard = SVGA_TsengET3K; }
     else if (mtype == "svga_paradise") { svgaCard = SVGA_ParadisePVGA1A; }
@@ -1253,10 +1277,15 @@ void DOSBOX_RealInit() {
     else if (mtype == "pc9821")        { machine = MCH_PC98; } /* Future differentiation */
 
     else if (mtype == "fm_towns")      { machine = MCH_VGA; want_fm_towns = true; /*machine = MCH_FM_TOWNS;*/ }
+    else if (mtype == "svga_dosbox")   { machine = MCH_VGA; svgaCard = SVGA_DOSBoxIG; int10.vesa_vbe3 = true; } /* special emulator accelerator graphics adapter */
+    else if (mtype == "svga_dosbox_vbe2") { machine = MCH_VGA; svgaCard = SVGA_DOSBoxIG; } /* special emulator accelerator graphics adapter */
 
     else E_Exit("DOSBOX-X:Unknown machine type %s",mtype.c_str());
 
+#if !defined(OSFREE)
     dos.set_jdosv_enabled = dos.set_kdosv_enabled = dos.set_pdosv_enabled = dos.set_tdosv_enabled = dos.set_j3100_enabled = j3100_start = false;
+#endif
+#if !defined(OSFREE)
     Section_prop *dosv_section = static_cast<Section_prop *>(control->GetSection("dosv"));
     const char *dosvstr = dosv_section->Get_string("dosv");
     del_flag = dosv_section->Get_bool("del");
@@ -1273,10 +1302,14 @@ void DOSBOX_RealInit() {
     if (!strcasecmp(dosvstr, "ko")) dos.set_kdosv_enabled = true;
     if (!strcasecmp(dosvstr, "chs")||!strcasecmp(dosvstr, "cn")) dos.set_pdosv_enabled = true;
     if (!strcasecmp(dosvstr, "cht")||!strcasecmp(dosvstr, "tw")) dos.set_tdosv_enabled = true;
+#endif
+#if !defined(OSFREE)
     if (machine != MCH_VGA || want_fm_towns) {
         LOG_MSG("WARNING: DOS/V is only supported for VGA video cards.");
         dos.set_jdosv_enabled = dos.set_kdosv_enabled = dos.set_pdosv_enabled = dos.set_tdosv_enabled = false;
     }
+#endif
+#if !defined(OSFREE)
     int cp = dos.loaded_codepage;
     if (!cp) InitCodePage();
 #if defined(USE_TTF)
@@ -1290,6 +1323,7 @@ void DOSBOX_RealInit() {
         if (IS_DOSV) DOSV_SetConfig(dosv_section);
 #endif
     }
+#endif
     Section_prop *ttf_section = static_cast<Section_prop *>(control->GetSection("ttf"));
     gbk = ttf_section->Get_bool("gbk");
     chinasea = ttf_section->Get_bool("chinasea");
@@ -1298,7 +1332,9 @@ void DOSBOX_RealInit() {
         makestdcp950table();
         makeseacp951table();
     }
+#if !defined(OSFREE)
     dos.loaded_codepage = cp;
+#endif
     if (!tonoime) SetIME();
 #if defined(USE_TTF)
     if (IS_PC98_ARCH) ttf.cols = 80; // The number of columns on the screen is apparently fixed to 80 in PC-98 mode at this time
@@ -1368,6 +1404,8 @@ void DOSBOX_RealInit() {
     if (IS_FM_TOWNS || want_fm_towns) LOG_MSG("FM Towns emulation not yet implemented. It's currently just a stub for future development.");
 }
 
+const char *sbGetSectionName(const size_t ci);
+
 void DOSBOX_SetupConfigSections(void) {
     Prop_int* Pint;
     Prop_hex* Phex;
@@ -1407,7 +1445,7 @@ void DOSBOX_SetupConfigSections(void) {
     const char *mt32reverbTimes[] = {"0", "1", "2", "3", "4", "5", "6", "7", nullptr};
     const char *mt32reverbLevels[] = {"0", "1", "2", "3", "4", "5", "6", "7", nullptr};
     const char* gustypes[] = { "classic", "classic37", "max", "interwave", nullptr };
-    const char* sbtypes[] = { "sb1", "sb2", "sbpro1", "sbpro2", "sb16", "sb16vibra", "gb", "ess688", "ess1688", "reveal_sc400", "none", nullptr };
+    const char* sbtypes[] = { "sb1", "sb1.0", "sb1.5", "sb2", "sb2.0", "sb2.01", "sbpro1", "sbpro2", "sb16", "sb16vibra", "gb", "ess688", "ess1688", "reveal_sc400", "none", nullptr };
     const char* cms_settings[] = { "on", "off", "auto", nullptr };
     const char* oplmodes[] = { "auto", "opl2", "dualopl2", "opl3", "opl3gold", "none", "hardware", "hardwaregb", "esfm", nullptr };
     const char* serials[] = { "dummy", "disabled", "modem", "nullmodem", "serialmouse", "directserial", "log", "file", nullptr };
@@ -1448,7 +1486,7 @@ void DOSBOX_SetupConfigSections(void) {
     const char* irqssb[] = { "7", "5", "3", "9", "10", "11", "12", "0", "-1", nullptr };
     const char* dmasgus[] = { "3", "0", "1", "5", "6", "7", nullptr };
     const char* dmassb[] = { "1", "5", "0", "3", "6", "7", "-1", nullptr };
-    const char* oplemus[] = { "default", "compat", "fast", "nuked", "mame", "opl2board", "opl3duoboard", "retrowave_opl3", "esfmu", nullptr };
+    const char* oplemus[] = { "default", "compat", "fast", "nuked", "mame", "opl2board", "opl3duoboard", "retrowave_opl3", "esfmu", "cqm", nullptr};
     const char *qualityno[] = { "0", "1", "2", "3", nullptr };
     const char* tandys[] = { "auto", "on", "off", nullptr };
     const char* ps1opt[] = { "on", "off", nullptr };
@@ -1461,7 +1499,7 @@ void DOSBOX_SetupConfigSections(void) {
     const char* aspectmodes[] = { "false", "true", "0", "1", "yes", "no", "nearest", "bilinear", nullptr };
     const char *vga_ac_mapping_settings[] = { "", "auto", "4x4", "4low", "first16", nullptr };
     const char* fpu_settings[] = { "true", "false", "1", "0", "auto", "8087", "287", "387", nullptr };
-    const char* sb_recording_sources[] = { "silence", "hiss", "1khz tone", nullptr };
+    const char* sb_recording_sources[] = { "silence", "hiss", "1khz tone", "microphone", nullptr };
     const char* int10usevp[] = { "auto", "true", "false", "1", "0", nullptr };
 
     const char* hostkeys[] = {
@@ -1475,6 +1513,9 @@ void DOSBOX_SetupConfigSections(void) {
 
     const char* pseopts[] = {
         "auto", "none", "pse", "pse36", "pse40", "true", "false", nullptr };
+
+    const char* exepackopts[] = {
+        "none", "a20off", "unpack", nullptr };
 
     /* Setup all the different modules making up DOSBox-X */
     const char* machines[] = {
@@ -1498,7 +1539,7 @@ void DOSBOX_SetupConfigSections(void) {
         "svga_s3virge", "svga_s3virgevx",
         "svga_et3000", "svga_et4000",
         "svga_paradise",
-        "vesa_nolfb", "vesa_oldvbe", "vesa_oldvbe10",
+        "vesa_nolfb", "vesa_oldvbe", "vesa_oldvbe10", "vesa_vbe3",
         "pc98", "pc9801", "pc9821",
 	"svga_ati_egavgawonder",
 	"svga_ati_vgawonder",
@@ -1508,6 +1549,8 @@ void DOSBOX_SetupConfigSections(void) {
 	"svga_ati_mach8",
 	"svga_ati_mach32",
 	"svga_ati_mach64",
+	"svga_dosbox",
+	"svga_dosbox_vbe2",
 	"fm_towns", // STUB
         nullptr };
 
@@ -1527,12 +1570,15 @@ void DOSBOX_SetupConfigSections(void) {
         "true", "false", "dosvar", "tilde", "1", "0",
         nullptr };
 
+    /* Do NOT ifdef these off, even if compiled for a platform that does not support the output mode,
+     * so that when the reference config files are made they list all settings. The output code is
+     * expected to pick a default or best equivalent when given a setting not supported for the platform. */
     const char* switchoutputs[] = {
         "auto", "surface",
-#if C_OPENGL
         "opengl", "openglnb", "openglhq", "openglpp",
-#endif
         "direct3d",
+        "direct3d11",
+        "metal",
         nullptr };
 
     const char* scalers[] = {
@@ -1550,11 +1596,14 @@ void DOSBOX_SetupConfigSections(void) {
         nullptr };
 
     const char* cores[] = { "auto",
+#if (C_DYNAMIC_X86) || (C_DYNREC)
+        "dynamic",
+#endif
 #if (C_DYNAMIC_X86)
-        "dynamic", "dynamic_x86", "dynamic_nodhfpu",
+        "dynamic_x86", "dynamic_nodhfpu",
 #endif
 #if (C_DYNREC)
-        "dynamic", "dynamic_rec",
+        "dynamic_rec",
 #endif
         "normal", "full", "simple", nullptr };
 
@@ -1578,6 +1627,11 @@ void DOSBOX_SetupConfigSections(void) {
     Pstring->Set_help("Select a language file for DOSBox-X to use. Encoded with either UTF-8 or a DOS code page.\n"
                       "You can set code page either in the language file or with \"country\" setting in [config] section.");
     Pstring->SetBasic(true);
+
+    Pint = secprop->Add_int("beep duration", Property::Changeable::WhenIdle,0);
+    Pint->SetMinMax(0,5000);
+    Pint->Set_help("If nonzero, set the duration of a beep when DOS or INT 10h is given a BEL character");
+    Pint->SetBasic(true);
 
     Pstring = secprop->Add_string("title",Property::Changeable::Always,"");
     Pstring->Set_help("Additional text to place in the title bar of the window.");
@@ -1768,6 +1822,9 @@ void DOSBOX_SetupConfigSections(void) {
                    "You can increase this size to store more environment variables in DOS, although this does not affect the environment block\n"
                    "of sub-processes spawned from the DOS shell. This option has no effect unless the dynamic kernel allocation is enabled.");
 
+    Pbool = secprop->Add_bool("shell permanent", Property::Changeable::OnlyAtStart, false);
+    Pbool->Set_help("If enabled, initial DOSBox-X shell will stay permanent (equivalent to /P switch).");
+
     Pint = secprop->Add_int("private area size",Property::Changeable::OnlyAtStart,32768); // DOSBox mainline compatible 32KB region
     Pint->SetMinMax(16,128*1024);
     Pint->Set_help("Set DOSBox-X private memory area size. This area contains private memory structures used by the DOS kernel.\n"
@@ -1794,6 +1851,12 @@ void DOSBOX_SetupConfigSections(void) {
     Pbool->Set_help("If enabled, A20 gate is switched off when booting a guest OS.\n"
                     "Enabled by default. Recommended for MS-DOS when HIMEM.SYS is not installed in the guest OS.\n"
                     "If disabled, and MS-DOS does not load HIMEM.SYS, programs and features that rely on the 1MB wraparound will fail.");
+
+    Pbool = secprop->Add_bool("pit any read returns status latch",Property::Changeable::WhenIdle,false);
+    Pbool->Set_help("If set, and the guest issues a command to read status, any I/O read from any counter will return the status of that counter.\n"
+		    "This may be necessary for some games with unusual PIT counter management that requires this.\n"
+		    "Required for:\n"
+		    " - Descent to Undermountain");
 
     /* Ref:
      *
@@ -1916,17 +1979,38 @@ void DOSBOX_SetupConfigSections(void) {
     Pint = secprop->Add_int("acpi reserved size", Property::Changeable::WhenIdle,0);
     Pint->Set_help("Amount of memory at top to reserve for ACPI structures and tables. Set to 0 for automatic assignment.");
 
+    // TODO: At some point we are going to REQUIRE the user to set this option to emulate a memsize option beyond
+    //       some threshhold, say, 4GB, or probably less, in order not to grind the system to a halt if insufficient
+    //       RAM is available. Better yet, require this option if it exceeds 50% of the total RAM installed on the system
+    //       (or for Windows, the available RAM allowed by your Windows license limit such as 32-bit Windows only using
+    //       3GB of your 4GB).
+    //
+    //       Normal DOSBox never has to worry about this as most forks limit memsize to 63MB or less, same as DOSBox SVN,
+    //       which is nothing on the typical modern desktop.
+    //
+    //       No tricks! This code will ensure the path is to a FILE, not a directory, block device, or worse.
+    Pstring = secprop->Add_path("memory file",Property::Changeable::OnlyAtStart,"");
+    Pstring->Set_help("If set, guest memory is memory-mapped from a file on disk, rather than allocated from memory.\n"
+                      "This option can help keep DOSBox-X from consuming too much RAM for large values of memsize.\n"
+                      "This option is required to emulate 4GB or more of RAM. The file will be created if it does not exist\n"
+                      "and it does not require any special maintenance or formatting.");
+    Pstring->SetBasic(true);
+
 #if defined(C_EMSCRIPTEN)
     Pint = secprop->Add_int("memsize", Property::Changeable::OnlyAtStart,4);
 #else
     Pint = secprop->Add_int("memsize", Property::Changeable::OnlyAtStart,16);
 #endif
-    Pint->SetMinMax(0,4096); // 4GB
+    Pint->SetMinMax(0,1048576); // 1TB (PSE-40)
     Pint->Set_help(
         "Amount of memory DOSBox-X has in megabytes.\n"
         "This value is best left at its default to avoid problems with some games,\n"
         "although other games and applications may require a higher value.\n"
-        "Programs that use 286 protected mode like Windows 3.0 in Standard Mode may crash with more than 15MB.");
+        "Programs that use 286 protected mode like Windows 3.0 in Standard Mode may crash with more than 15MB.\n"
+        "A memory file is required to emulate a memory size of 4GB or more.\n"
+        "The maximum value allowed is affected by the memalias setting which affects the maximum amount of memory CPU can access as a power of 2.\n"
+        "The maximum value is also affected by the CPU type. See DOSBox-X console and log file for details.\n"
+        "The maximum setting 1048576 represents 1TB and requires at least a Pentium II and PSE-40 emulation.");
     Pint->SetBasic(true);
 
     Pint = secprop->Add_int("memsizekb", Property::Changeable::OnlyAtStart,0);
@@ -1970,17 +2054,22 @@ void DOSBOX_SetupConfigSections(void) {
         "-1 means to use a reasonable default.");
 
     Pint = secprop->Add_int("memalias", Property::Changeable::WhenIdle,0);
-    Pint->SetMinMax(0,36);
+    Pint->SetMinMax(0,40);
     Pint->Set_help(
         "Memory aliasing emulation, in number of valid address bits.\n"
         "Many 386/486 class motherboards and processors prior to 1995\n"
-        "suffered from memory aliasing for various technical reasons. If the software you are\n"
-        "trying to run assumes aliasing, or otherwise plays cheap tricks with paging,\n"
-        "enabling this option can help. Note that enabling this option can cause slight performance degradation. Set to 0 to disable.\n"
+        "had memory aliases for various technical reasons such as having\n"
+	"less than 32 address bits on the CPU die.\n"
         "Recommended values when enabled:\n"
+        "    0: Pick a value automatically according to cputype.\n"
+        "       NOTE: Changing the cputype after initial startup will not change the auto setting i.e.\n"
+        "       starting with cputype=8086 will use a memalias of 20 even if you later change cputype to 386.\n"
         "    24: 16MB aliasing. Common on 386SX systems (CPU had 24 external address bits)\n"
         "        or 386DX and 486 systems where the CPU communicated directly with the ISA bus (A24-A31 tied off)\n"
-        "    26: 64MB aliasing. Some 486s had only 26 external address bits, some motherboards tied off A26-A31");
+        "    26: 64MB aliasing. Some 486 clones (and 386EX/CX) had only 26 external address bits, some motherboards tied off A26-A31\n"
+        "    32: 4GB aliasing. This is normal for most 486/Pentium and later systems and is the default for most values of cputype.\n"
+        "    36: 64GB aliasing. Recommended if you are emulating more than 3.5GB of RAM and Pentium Pro/II Page Size Extensions.\n"
+        "    40: 1TB aliasing. Recommended if you are emulating more than 63GB of RAM and Pentium Pro/II Page Size Extensions.");
 
     Pbool = secprop->Add_bool("nocachedir",Property::Changeable::WhenIdle,false);
     Pbool->Set_help("If set, MOUNT commands will mount with -nocachedir (disable directory caching) by default.");
@@ -2180,6 +2269,11 @@ void DOSBOX_SetupConfigSections(void) {
             "For pixel-perfect scaling (output=openglpp), it is recommended to turn this option off.");
     Pbool->SetBasic(true);
 
+    Pbool = secprop->Add_bool("modeswitch",Property::Changeable::Always,false);
+    Pbool->Set_help("Let DOSBox-X determine the resolution of the monitor. "
+			"This feature is only available when DOSBox-X is compiled with SDL2 support.");
+    Pbool->SetBasic(false);
+
     Pmulti = secprop->Add_multi("scaler",Property::Changeable::Always," ");
     Pmulti->SetValue("normal2x",/*init*/true);
     Pmulti->Set_help("Scaler used to enlarge/enhance low resolution modes. Add keyword 'forced', "
@@ -2188,7 +2282,8 @@ void DOSBOX_SetupConfigSections(void) {
             "Appending 'prompt' will cause a confirmation message for forcing the scaler.\n"
             "To fit a scaler in the resolution used at full screen may require a border or side bars.\n"
             "To fill the screen entirely, depending on your hardware, a different scaler/fullresolution might work.\n"
-            "Scalers should work with most output options, but they are ignored for openglpp and TrueType font outputs.");
+            "Scalers should work with most output options, but they are ignored for openglpp and TrueType font outputs.\n"
+            "If you are using OpenGL/Direct3D output and a shader that requires it, set to hardware_none or hardware2x.");
     Pmulti->SetBasic(true);
     Pstring = Pmulti->GetSection()->Add_string("type",Property::Changeable::Always,"normal2x");
     Pstring->Set_values(scalers);
@@ -2402,107 +2497,115 @@ void DOSBOX_SetupConfigSections(void) {
                     "at driver startup AND when INT 33h AX=0 is called. This is NEC MOUSE.COM behavior and default\n"
                     "enabled. To emulate other drivers like QMOUSE that do not follow this behavior, set to false.");
 
+    Pbool = secprop->Add_bool("pc-98 chargen vsync-limited access",Property::Changeable::WhenIdle,false);
+    Pbool->Set_help("If set, reading pixels from the character generator while in Code Access mode (or always, for ANK\n"
+                    "characters) will be invalid. Some models (i.e. PC-9821As3) dont seem to have this limitation, but\n"
+                    "many others do.\n"
+                    "This option is set to false by default, set this option to true if you suffer text glitches.\n"
+                    "It is reported that setting this option to true will result in glitches in some titles;"
+                    "therefore revert this option to false in such cases.");
+
     secprop=control->AddSection_prop("dosv",&Null_Init,true);
 
     Pstring = secprop->Add_string("dosv",Property::Changeable::OnlyAtStart,"off");
     Pstring->Set_values(dosv_settings);
     Pstring->Set_help("Enable DOS/V emulation and specify which version to emulate. This option is intended for use with games or software\n"
-            "originating from East Asia (China, Japan, Korea) that use the double byte character set (DBCS) encodings and DOS/V extensions\n"
-            "to display Japanese (jp), Chinese (chs/cht/cn/tw), or Korean (ko) text. Note that enabling DOS/V replaces 80x25 text mode with\n"
-            "a EGA/VGA graphics mode that emulates text mode to display the characters and may be incompatible with non-Asian software that\n"
-            "assumes direct access to the text mode via segment 0xB800. For a general DOS environment with CJK support please disable DOS/V\n"
-            "emulation and use TrueType font (TTF) output with a CJK code page (932, 936, 949, 950) and TTF font with CJK characters instead.");
+                    "originating from East Asia (China, Japan, Korea) that use the double byte character set (DBCS) encodings and DOS/V extensions\n"
+                    "to display Japanese (jp), Chinese (chs/cht/cn/tw), or Korean (ko) text. Note that enabling DOS/V replaces 80x25 text mode with\n"
+                    "a EGA/VGA graphics mode that emulates text mode to display the characters and may be incompatible with non-Asian software that\n"
+                    "assumes direct access to the text mode via segment 0xB800. For a general DOS environment with CJK support please disable DOS/V\n"
+                    "emulation and use TrueType font (TTF) output with a CJK code page (932, 936, 949, 950) and TTF font with CJK characters instead.");
     Pstring->SetBasic(true);
 
-	Pbool = secprop->Add_bool("getsysfont",Property::Changeable::OnlyAtStart,true);
-	Pbool->Set_help("If enabled, DOSBox-X will try to get and use the system fonts on Windows and Linux platforms for the DOS/V emulation.\n"
+    Pbool = secprop->Add_bool("getsysfont",Property::Changeable::OnlyAtStart,true);
+    Pbool->Set_help("If enabled, DOSBox-X will try to get and use the system fonts on Windows and Linux platforms for the DOS/V emulation.\n"
                     "If this cannot be done, then DOSBox-X will try to use the internal Japanese DOS/V font, or you can specify a different font.");
     Pbool->SetBasic(true);
 
-	//For loading FONTX CJK fonts
-	Pstring = secprop->Add_path("fontxsbcs",Property::Changeable::OnlyAtStart,"");
-	Pstring->Set_help("FONTX2 file used to rendering SBCS characters (8x19) in DOS/V or JEGA mode. If not specified, the default one will be used.\n"
+    //For loading FONTX CJK fonts
+    Pstring = secprop->Add_path("fontxsbcs",Property::Changeable::OnlyAtStart,"");
+    Pstring->Set_help("FONTX2 file used to rendering SBCS characters (8x19) in DOS/V or JEGA mode. If not specified, the default one will be used.\n"
                     "Loading the ASC16 and ASCFONT.15 font files (from the UCDOS and ETen Chinese DOS systems) is also supported for the DOS/V mode.");
     Pstring->SetBasic(true);
 
-	Pstring = secprop->Add_path("fontxsbcs16",Property::Changeable::OnlyAtStart,"");
-	Pstring->Set_help("FONTX2 file used to rendering SBCS characters (8x16) in DOS/V or JEGA mode. If not specified, the default one will be used.\n"
+    Pstring = secprop->Add_path("fontxsbcs16",Property::Changeable::OnlyAtStart,"");
+    Pstring->Set_help("FONTX2 file used to rendering SBCS characters (8x16) in DOS/V or JEGA mode. If not specified, the default one will be used.\n"
                     "Loading the ASC16 and ASCFONT.15 font files (from the UCDOS and ETen Chinese DOS systems) is also supported for the DOS/V mode.");
     Pstring->SetBasic(true);
 
-	Pstring = secprop->Add_path("fontxsbcs24",Property::Changeable::OnlyAtStart,"");
-	Pstring->Set_help("FONTX2 file used to rendering SBCS characters (12x24) in DOS/V mode (with V-text). If not specified, the default one will be used.\n"
+    Pstring = secprop->Add_path("fontxsbcs24",Property::Changeable::OnlyAtStart,"");
+    Pstring->Set_help("FONTX2 file used to rendering SBCS characters (12x24) in DOS/V mode (with V-text). If not specified, the default one will be used.\n"
                     "Loading the ASC24 and ASCFONT.24? font files (the latter from the ETen Chinese DOS system) is also supported for the DOS/V mode.");
     Pstring->SetBasic(true);
 
-	Pstring = secprop->Add_path("fontxdbcs",Property::Changeable::OnlyAtStart,"");
-	Pstring->Set_help("FONTX2 file used to rendering DBCS characters (16x16) in DOS/V or VGA/JEGA mode. If not specified, the default one will be used.\n"
+    Pstring = secprop->Add_path("fontxdbcs",Property::Changeable::OnlyAtStart,"");
+    Pstring->Set_help("FONTX2 file used to rendering DBCS characters (16x16) in DOS/V or VGA/JEGA mode. If not specified, the default one will be used.\n"
                     "Alternatively, you can load a BDF or PCF font file (16x16 or 15x15), such as the free bitmap fonts from WenQuanYi (https://wenq.org/).\n"
                     "For Simplified Chinese DOS/V, loading the HZK16 font file (https://github.com/aguegu/BitmapFont/tree/master/font) is also supported.\n"
                     "For Traditional Chinese DOS/V, loading the STDFONT.15 font file from the ETen Chinese DOS system is also supported.");
     Pstring->SetBasic(true);
 
-	Pstring = secprop->Add_path("fontxdbcs14",Property::Changeable::OnlyAtStart,"");
-	Pstring->Set_help("FONTX2 file used to rendering DBCS characters (14x14) for Configuration Tool or EGA mode. If not specified, the default one will be used.\n"
+    Pstring = secprop->Add_path("fontxdbcs14",Property::Changeable::OnlyAtStart,"");
+    Pstring->Set_help("FONTX2 file used to rendering DBCS characters (14x14) for Configuration Tool or EGA mode. If not specified, the default one will be used.\n"
                     "Alternatively, you can load a BDF or PCF font file (14x14 or 15x15), such as the free bitmap fonts from WenQuanYi (https://wenq.org/).\n"
                     "For Simplified Chinese DOS/V, loading the HZK14 font file (https://github.com/aguegu/BitmapFont/tree/master/font) is also supported.\n"
                     "For Traditional Chinese DOS/V, loading the STDFONT.15 font file from the ETen Chinese DOS system is also supported.");
     Pstring->SetBasic(true);
 
-	Pstring = secprop->Add_path("fontxdbcs24",Property::Changeable::OnlyAtStart,"");
-	Pstring->Set_help("FONTX2 file used to rendering DBCS characters (24x24) in DOS/V mode (with V-text and 24-pixel fonts enabled).\n"
+    Pstring = secprop->Add_path("fontxdbcs24",Property::Changeable::OnlyAtStart,"");
+    Pstring->Set_help("FONTX2 file used to rendering DBCS characters (24x24) in DOS/V mode (with V-text and 24-pixel fonts enabled).\n"
                     "For Simplified Chinese DOS/V, loading the HZK24? font file (https://github.com/aguegu/BitmapFont/tree/master/font) is also supported.\n"
                     "For Traditional Chinese DOS/V, loading the STDFONT.24 font file from the ETen Chinese DOS system is also supported.");
     Pstring->SetBasic(true);
 
-	Pstring = secprop->Add_string("showdbcsnodosv",Property::Changeable::WhenIdle,"auto");
+    Pstring = secprop->Add_string("showdbcsnodosv",Property::Changeable::WhenIdle,"auto");
     Pstring->Set_values(truefalseautoopt);
-	Pstring->Set_help("Enables rendering of Chinese/Japanese/Korean characters for DBCS code pages in standard VGA and EGA machine types in non-DOS/V and non-TTF mode.\n"
-                      "DOS/V fonts will be used in such cases, which can be adjusted by the above config options (such as fontxdbcs, fontxdbcs14, and fontxdbcs24).\n"
-                      "Setting to \"auto\" enables Chinese/Japanese/Korean character rendering if a language file is loaded (or with \"autodbcs\" option set) in such cases.");
+    Pstring->Set_help("Enables rendering of Chinese/Japanese/Korean characters for DBCS code pages in standard VGA and EGA machine types in non-DOS/V and non-TTF mode.\n"
+                    "DOS/V fonts will be used in such cases, which can be adjusted by the above config options (such as fontxdbcs, fontxdbcs14, and fontxdbcs24).\n"
+                    "Setting to \"auto\" enables Chinese/Japanese/Korean character rendering if a language file is loaded (or with \"autodbcs\" option set) in such cases.");
     Pstring->SetBasic(true);
 
-	Pbool = secprop->Add_bool("yen",Property::Changeable::OnlyAtStart,false);
-	Pbool->Set_help("Enables the Japanese yen symbol at 5ch if it is found at 7fh in a custom SBCS font for the Japanese DOS/V or JEGA emulation.");
+    Pbool = secprop->Add_bool("yen",Property::Changeable::OnlyAtStart,false);
+    Pbool->Set_help("Enables the Japanese yen symbol at 5ch if it is found at 7fh in a custom SBCS font for the Japanese DOS/V or JEGA emulation.");
     Pbool->SetBasic(true);
 
     Pbool = secprop->Add_bool("del",Property::Changeable::WhenIdle,true);
     Pbool->Set_help("Maps the undefined del symbol (0x7F) to the next character (0x80) for the Japanese DOS/V and other Japanese mode emulations.");
 
-	const char* fepcontrol_settings[] = { "ias", "mskanji", "both", nullptr };
-	Pstring = secprop->Add_path("fepcontrol",Property::Changeable::OnlyAtStart,"both");
-	Pstring->Set_values(fepcontrol_settings);
-	Pstring->Set_help("FEP control API for the DOS/V emulation.");
+    const char* fepcontrol_settings[] = { "ias", "mskanji", "both", nullptr };
+    Pstring = secprop->Add_path("fepcontrol",Property::Changeable::OnlyAtStart,"both");
+    Pstring->Set_values(fepcontrol_settings);
+    Pstring->Set_help("FEP control API for the DOS/V emulation.");
     Pstring->SetBasic(true);
 
-	const char* vtext_settings[] = { "xga", "xga24", "sxga", "sxga24", "svga", nullptr };
-	Pstring = secprop->Add_path("vtext1",Property::Changeable::WhenIdle,"svga");
-	Pstring->Set_values(vtext_settings);
-	Pstring->Set_help("V-text screen mode 1 for the DOS/V emulation. Enter command \"VTEXT 1\" for this mode. Note that XGA/SXGA mode is only supported by the svga_s3trio and svga_et4000 machine types.");
+    const char* vtext_settings[] = { "xga", "xga24", "sxga", "sxga24", "svga", nullptr };
+    Pstring = secprop->Add_path("vtext1",Property::Changeable::WhenIdle,"svga");
+    Pstring->Set_values(vtext_settings);
+    Pstring->Set_help("V-text screen mode 1 for the DOS/V emulation. Enter command \"VTEXT 1\" for this mode. Note that XGA/SXGA mode is only supported by the svga_s3trio and svga_et4000 machine types.");
     Pstring->SetBasic(true);
 
-	Pstring = secprop->Add_path("vtext2",Property::Changeable::WhenIdle,"xga");
-	Pstring->Set_values(vtext_settings);
-	Pstring->Set_help("V-text screen mode 2 for the DOS/V emulation. Enter command \"VTEXT 2\" for this mode. Note that XGA/SXGA mode is only supported by the svga_s3trio and svga_et4000 machine types.");
+    Pstring = secprop->Add_path("vtext2",Property::Changeable::WhenIdle,"xga");
+    Pstring->Set_values(vtext_settings);
+    Pstring->Set_help("V-text screen mode 2 for the DOS/V emulation. Enter command \"VTEXT 2\" for this mode. Note that XGA/SXGA mode is only supported by the svga_s3trio and svga_et4000 machine types.");
     Pstring->SetBasic(true);
 
-	Pbool = secprop->Add_bool("use20pixelfont",Property::Changeable::OnlyAtStart,false);
-	Pbool->Set_help("Enables the 20 pixel font to be used instead of the 24 pixel system font for the Japanese DOS/V emulation (with V-text enabled).");
+    Pbool = secprop->Add_bool("use20pixelfont",Property::Changeable::OnlyAtStart,false);
+    Pbool->Set_help("Enables the 20 pixel font to be used instead of the 24 pixel system font for the Japanese DOS/V emulation (with V-text enabled).");
     Pbool->SetBasic(true);
 
-	Pstring = secprop->Add_string("j3100",Property::Changeable::OnlyAtStart,"off");
-	Pstring->Set_values(j3100_settings);
-	Pstring->Set_help("With the setting dosv=jp and a non-off value of this option, the Toshiba J-3100 machine will be emulated with DCGA support.\n"
-                    "Setting to \"on\" or \"auto\" starts J-3100 automatically, and with the setting \"manual\" you can enter J-3100 mode with DCGA command.");
+    Pstring = secprop->Add_string("j3100",Property::Changeable::OnlyAtStart,"off");
+    Pstring->Set_values(j3100_settings);
+    Pstring->Set_help("With the setting dosv=jp and a non-off value of this option, the Toshiba J-3100 machine will be emulated with DCGA support.\n"
+                      "Setting to \"on\" or \"auto\" starts J-3100 automatically, and with the setting \"manual\" you can enter J-3100 mode with DCGA command.");
     Pstring->SetBasic(true);
 
-	Pstring = secprop->Add_string("j3100type",Property::Changeable::OnlyAtStart,"default");
-	Pstring->Set_values(j3100_types);
-	Pstring->Set_help("Specifies the Toshiba J-3100 machine type if J-3100 mode is enabled. The color palette will be changed with different machine types.");
+    Pstring = secprop->Add_string("j3100type",Property::Changeable::OnlyAtStart,"default");
+    Pstring->Set_values(j3100_types);
+    Pstring->Set_help("Specifies the Toshiba J-3100 machine type if J-3100 mode is enabled. The color palette will be changed with different machine types.");
     Pstring->SetBasic(true);
 
-	Pbool = secprop->Add_bool("j3100colorscroll",Property::Changeable::WhenIdle,false);
-	Pbool->Set_help("Specifies that the color display can be used for scrolling, which is currently incompatible with for example the J-3100 version of the SimCity game.\n"
+    Pbool = secprop->Add_bool("j3100colorscroll",Property::Changeable::WhenIdle,false);
+    Pbool->Set_help("Specifies that the color display can be used for scrolling, which is currently incompatible with for example the J-3100 version of the SimCity game.\n"
                     "The VGA version of the Toshiba Windows 3.1 works fine with the \"false\" value of this setting, whereas its CGA/EGA version requires a \"true\" value for this.");
     Pbool->SetBasic(true);
 
@@ -2529,6 +2632,11 @@ void DOSBOX_SetupConfigSections(void) {
             "will do nothing but cause a significant drop in frame rate which is probably not\n"
             "what you want. Recommended values -1, 0 to 2000.");
 
+    Pbool = secprop->Add_bool("lfb vmemdelay",Property::Changeable::OnlyAtStart,false);
+    Pbool->Set_help("Set this option to true if you need vmemdelay to apply to SVGA and linear framebuffer video modes as well.\n"
+                    "This affects anything in which DOSBox-X emulates as a linear framebuffer including MDA/Hercules and PC-98 LFB.\n"
+                    "Note that this option may slightly reduce emulator performance with such modes.");
+
     // NOTE: This will be revised as I test the DOSLIB code against more VGA/SVGA hardware!
     Pstring = secprop->Add_string("prevent capture",Property::Changeable::WhenIdle,"");
     Pstring->Set_values(prevent_capture_opts);
@@ -2540,8 +2648,24 @@ void DOSBOX_SetupConfigSections(void) {
 	    "\n"
 	    "This option may be useful if you would like to prevent your DOS gaming from appearing in the Windows 11 Recall feature");
 
+    Pint = secprop->Add_int("vbememsize", Property::Changeable::WhenIdle,0);
+    Pint->SetMinMax(0,128);
+    Pint->Set_help(
+        "Amount of video memory in kilobytes to report through the VESA BIOS extensions.\n"
+        "Set this value to an amount lower than vmemsize to handle DOS programs that cannot handle\n"
+        "more than the small amount of video memory they were designed for. This option also affects\n"
+        "what video modes are reported through the VBE."
+        );
+    Pint->SetBasic(true);
+
+    Pint = secprop->Add_int("vbememsizekb", Property::Changeable::WhenIdle,0);
+    Pint->SetMinMax(0,1024);
+    Pint->Set_help(
+        "Amount of video memory to report in kilobytes, in addition to vbememsize.");
+    Pint->SetBasic(true);
+
     Pint = secprop->Add_int("vmemsize", Property::Changeable::WhenIdle,-1);
-    Pint->SetMinMax(-1,16);
+    Pint->SetMinMax(-1,128);
     Pint->Set_help(
         "Amount of video memory in megabytes.\n"
         "  The maximum resolution and color depth the svga_s3 will be able to display\n"
@@ -2552,6 +2676,7 @@ void DOSBOX_SetupConfigSections(void) {
         "  2: 1600x1200 at 256 colors or 1024x768 at 64k colors or 640x480 at 16M colors\n"
         "  4: 1600x1200 at 64k colors or 1024x768 at 16M colors\n"
         "  8: up to 1600x1200 at 16M colors\n"
+	"Larger values are available depending on machine type.\n"
         "For build engine games, use more memory than in the list above so it can\n"
         "use triple buffering and thus won't flicker.\n"
         );
@@ -2570,6 +2695,9 @@ void DOSBOX_SetupConfigSections(void) {
     Pint = secprop->Add_int("vbe window size", Property::Changeable::WhenIdle,0);
     Pint->SetMinMax(0,128);
     Pint->Set_help("Controls VESA BIOS non-linear framebuffer window size in KB. This affects ONLY the VESA BIOS extensions. Set 0 to functional normally.");
+
+    Pbool = secprop->Add_bool("vbe protected mode interface",Property::Changeable::OnlyAtStart,true);
+    Pbool->Set_help("If set, enable the VBE protected mode interface");
 
     Pbool = secprop->Add_bool("enable 8-bit dac",Property::Changeable::OnlyAtStart,true);
     Pbool->Set_help("If set, allow VESA BIOS calls in IBM PC mode to set DAC width. Has no effect in PC-98 mode.");
@@ -2890,12 +3018,26 @@ void DOSBOX_SetupConfigSections(void) {
 		    "If graphical artifacts or errors occur, try turning this off first. May provide a performance benefit.");
     Pbool->SetBasic(true);
 
+    Pstring = secprop->Add_string("skip render if nothing changed",Property::Changeable::Always,"auto");
+    Pstring->Set_values(truefalseautoopt);
+    Pstring->Set_help("If set, DOSBox-X will skip rendering entirely unless any change is made to the guest display.\n"
+                      "This may provide a performance benefit, especially in SVGA modes. This option has no effect unless render on demand is true or auto.\n"
+                      "Normally in DOSBox and DOSBox-X, video is rendered constantly, whether or not anything changed,\n"
+                      "and then compared with the previous frame to determine where to update the host display.\n"
+                      "In addition to the render on demand option, this option may further break timing dependent effects and/or cause problems with some games.");
+    Pstring->SetBasic(true);
+
     Pstring = secprop->Add_string("scanline render on demand",Property::Changeable::Always,"auto");
     Pstring->Set_values(truefalseautoopt);
     Pstring->Set_help("Render video output at vsync or when something is changed mid frame, instead of stopping to render every scanline.\n"
-		    "May provide a performance benefit to most DOS games. However this may also break timing-dependent game or Demoscene effects.\n"
-		    "Default auto, which will turn if off for VGA modes and turn it on for SVGA modes.");
+                      "This may provide a performance benefit to most DOS games. However this may also break timing-dependent game or Demoscene effects.\n"
+                      "Default is auto, which will turn it off for VGA modes and turn it on for SVGA modes.");
     Pstring->SetBasic(true);
+
+    secprop=control->AddSection_prop("script",&Null_Init,true);//done
+
+    Pstring = secprop->Add_string("startup.js",Property::Changeable::WhenIdle,"");
+    Pstring->Set_help("script to run at startup");
 
     secprop=control->AddSection_prop("vsync",&Null_Init,true);//done
 
@@ -2943,6 +3085,10 @@ void DOSBOX_SetupConfigSections(void) {
     Pbool->Set_help("Enforce checks for segment limits on 80286 and higher CPU types.");
     Pbool->SetBasic(true);
 
+    Pbool = secprop->Add_bool("lds wraparound",Property::Changeable::Always,true);
+    Pbool->Set_help("For LDS/LES instructions, in 16-bit code, check for 64KB wraparound case.");
+    Pbool->SetBasic(true);
+
     Pbool = secprop->Add_bool("double fault",Property::Changeable::Always,true);
     Pbool->Set_help("Emulate double fault exception");
 
@@ -2980,7 +3126,7 @@ void DOSBOX_SetupConfigSections(void) {
 
     Pstring = secprop->Add_string("enable pse",Property::Changeable::Always,"auto");
     Pstring->Set_values(pseopts);
-    Pbool->Set_help("Allow PSE (Page Size Extensions) to paging.\n"
+    Pstring->Set_help("Allow PSE (Page Size Extensions) to paging.\n"
                     "none=Do not enable PSE\n"
                     "auto=Controlled by cpu type\n"
                     "pse=Basic PSE\n"
@@ -2992,7 +3138,7 @@ void DOSBOX_SetupConfigSections(void) {
             "You must enable this option to run Windows ME because portions of the kernel rely on this instruction.");
 
     Pbool = secprop->Add_bool("enable syscall",Property::Changeable::Always,true);
-    Pbool->Set_help("Allow SYSENTER/SYSEXIT instructions. This option is only meaningful when cputype=pentium_ii.\n");
+    Pbool->Set_help("Allow SYSENTER/SYSEXIT instructions. This option is only meaningful when is cputype=pentium_ii or higher.\n");
 
     Pbool = secprop->Add_bool("ignore undefined msr",Property::Changeable::Always,false);
     Pbool->Set_help("Ignore RDMSR/WRMSR on undefined registers. Normally the CPU will fire an Invalid Opcode exception in that case.\n"
@@ -3204,6 +3350,11 @@ void DOSBOX_SetupConfigSections(void) {
     Pint->Set_help("Specifies the window percentage for the TTF output (100 = full screen). Ignored if the ptsize setting is specified.");
     Pint->SetBasic(true);
 
+    Pbool = secprop->Add_bool("enableWinPercLimit", Property::Changeable::Always, true);
+    Pbool->Set_help("If set, a TrueType window size will be limited to 60 percent of the screen.\n"
+        "Enabled by default; optionally disable the limit when using more than 25 lines in a TTF window.");
+    Pbool->SetBasic(true);
+
 	Pint = secprop->Add_int("ptsize", Property::Changeable::Always, 0);
     Pint->Set_help("Specifies the font point size for the TTF output. If specified (minimum: 9), it will override the winperc setting.");
     Pint->SetBasic(true);
@@ -3331,6 +3482,13 @@ void DOSBOX_SetupConfigSections(void) {
     Pbool->Set_help("Enable silent mode, sound is still emulated though.");
     Pbool->SetBasic(true);
 
+    Pbool = secprop->Add_bool("dc bias correction",Property::Changeable::OnlyAtStart,true);
+    Pbool->Set_help("If set, apply DC bias correction to the overall audio mix to prevent distortion when certain DOS games"
+		    "play digitized audio where the digitized audio has an overall DC bias that is way off from zero, for example,"
+		    "In Extremis. This is enabled by default. The bias correction is applied slowly so that normal audio output"
+		    "remains unaffected");
+    Pbool->SetBasic(true);
+
     Pbool = secprop->Add_bool("sample accurate",Property::Changeable::OnlyAtStart,false);
     Pbool->Set_help("Enable sample accurate mixing, at the expense of some emulation performance. Enable this option for DOS games and demos\n"
             "that require such accuracy for correct Tandy/OPL output including digitized speech. This option can also help eliminate\n"
@@ -3357,6 +3515,12 @@ void DOSBOX_SetupConfigSections(void) {
     Pint->SetBasic(true);
 
     secprop=control->AddSection_prop("midi",&Null_Init,true);//done
+
+    Pbool = secprop->Add_bool("roland gs sysex",Property::Changeable::OnlyAtStart,true);
+    Pbool->Set_help("Listen for and handle some Roland GS System Exclusive messages, such as GS Reset and Master Volume.\n"
+                    "This is needed for PC-98 games that have hanging/stuck MIDI note problems because they rely on these\n"
+                    "messages to reset the synth rather than using standard MIDI commands.");
+    Pbool->SetBasic(false);
 
     Pstring = secprop->Add_string("mpu401",Property::Changeable::WhenIdle,"intelligent");
     Pstring->Set_values(mputypes);
@@ -3598,259 +3762,283 @@ void DOSBOX_SetupConfigSections(void) {
 	Pint->Set_help("Fluidsynth chorus type. 0 is sine wave, 1 is triangle wave.");
 #endif
 
-    secprop=control->AddSection_prop("sblaster",&Null_Init,true);
+	{
+		const char *secname;
+		const unsigned short int def_sbbase[2] = {0x220,0x260}; /* 0x240 by default is occupied by the GUS */
+		const unsigned char def_irq[2] = {7,3}; /* 5 by default occupied by the GUS */
+		const unsigned char def_dma[2] = {1,0}; /* 3 by default occupied by the GUS */
+		const unsigned char def_hdma[2] = {5,7};
+		const char *def_sbtype[2] = {"sb16","none"}; /* second card off by default */
+		for (size_t ci=0;(secname=sbGetSectionName(ci))!=NULL;ci++) {
+			secprop=control->AddSection_prop(secname,&Null_Init,true);
 
-    Pstring = secprop->Add_string("sbtype",Property::Changeable::WhenIdle,"sb16");
-    Pstring->Set_values(sbtypes);
-    Pstring->Set_help("Type of Sound Blaster to emulate. 'gb' is Game Blaster.");
-    Pstring->SetBasic(true);
+			Pstring = secprop->Add_string("sbtype",Property::Changeable::WhenIdle,def_sbtype[ci]);//"sb16"
+			Pstring->Set_values(sbtypes);
+			Pstring->Set_help("Type of Sound Blaster to emulate. 'gb' is Game Blaster.");
+			Pstring->SetBasic(true);
 
-    Phex = secprop->Add_hex("sbbase",Property::Changeable::WhenIdle,0x220);
-    Phex->Set_values(ios);
-    Phex->Set_help("The IO address of the Sound Blaster.\n"
-                   "220h to 2E0h are for use with IBM PC Sound Blaster emulation.\n"
-                   "D2h to DEh are for use with NEC PC-98 Sound Blaster 16 emulation.");
-    Phex->SetBasic(true);
+			Phex = secprop->Add_hex("sbbase",Property::Changeable::WhenIdle,def_sbbase[ci]);//0x220
+			Phex->Set_values(ios);
+			Phex->Set_help("The IO address of the Sound Blaster.\n"
+					"220h to 2E0h are for use with IBM PC Sound Blaster emulation.\n"
+					"D2h to DEh are for use with NEC PC-98 Sound Blaster 16 emulation.");
+			Phex->SetBasic(true);
 
-    Pint = secprop->Add_int("irq",Property::Changeable::WhenIdle,7);
-    Pint->Set_values(irqssb);
-    Pint->Set_help("The IRQ number of the Sound Blaster (usually 5 or 7, depending on the sound card type and the game).\n"
-            "Set to 0 for the default setting of the sound card, or set to -1 to start DOSBox-X with the IRQ unassigned.");
-    Pint->SetBasic(true);
+			Pint = secprop->Add_int("irq",Property::Changeable::WhenIdle,def_irq[ci]);//7
+			Pint->Set_values(irqssb);
+			Pint->Set_help("The IRQ number of the Sound Blaster (usually 5 or 7, depending on the sound card type and the game).\n"
+					"Set to 0 for the default setting of the sound card, or set to -1 to start DOSBox-X with the IRQ unassigned.");
+			Pint->SetBasic(true);
 
-    Pint = secprop->Add_int("mindma",Property::Changeable::OnlyAtStart,-1);
-    Pint->Set_help( "Minimum DMA transfer left to increase attention across DSP blocks, in milliseconds. Set to -1 for default.\n"
-            "There are some DOS games/demos that use single-cycle DSP playback in their music tracker and they micromanage\n"
-            "the DMA transfer per block poorly in a way that causes popping and artifacts. Setting this option to 0 for\n"
-            "such DOS applications may reduce audible popping and artifacts.");
+			Pint = secprop->Add_int("mindma",Property::Changeable::OnlyAtStart,-1);
+			Pint->Set_help( "Minimum DMA transfer left to increase attention across DSP blocks, in milliseconds. Set to -1 for default.\n"
+					"There are some DOS games/demos that use single-cycle DSP playback in their music tracker and they micromanage\n"
+					"the DMA transfer per block poorly in a way that causes popping and artifacts. Setting this option to 0 for\n"
+					"such DOS applications may reduce audible popping and artifacts.");
 
-    Pbool = secprop->Add_bool("listen to recording source",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("When the guest records audio from the Sound Blaster card, send the input source to the speakers as well so it can be heard.");
-    Pbool->SetBasic(true);
+			Pbool = secprop->Add_bool("listen to recording source",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("When the guest records audio from the Sound Blaster card, send the input source to the speakers as well so it can be heard.");
+			Pbool->SetBasic(true);
 
-    Pstring = secprop->Add_string("recording source",Property::Changeable::WhenIdle,"silence");
-    Pstring->Set_values(sb_recording_sources);
-    Pstring->Set_help("Audio source to use when guest is recording audio. At this time only generated audio sources are available.");
-    Pstring->SetBasic(true);
+			Pstring = secprop->Add_string("recording source",Property::Changeable::WhenIdle,"silence");
+			Pstring->Set_values(sb_recording_sources);
+			Pstring->Set_help("Audio source to use when guest is recording audio. Options: silence, hiss, 1khz tone, or microphone (Windows WASAPI input).");
+			Pstring->SetBasic(true);
 
-    /* Sound Blaster IRQ hacks.
-     *
-     * These hacks reduce emulation accuracy but can be set to work around bugs or mistakes in some old
-     * games and demos related to handling the Sound Blaster IRQ.
-     *
-     * - Saga by Dust (1993):
-     *     Sound Blaster support has a fatal flaw in that the Sound Blaster interrupt handler it installs assumes
-     *     DS == CS. It uses the DS register to read local variables needed to manage the Sound Blaster card but
-     *     it makes no attempt to push DS and then load the DS segment value it needs. While the demo may seem to
-     *     run normally at first, eventually the interrupt is fired at just the right time to catch the demo in
-     *     the middle of its graphics routines (DS=A000). Since the ISR uses DS to load the Sound Blaster DSP
-     *     I/O port, it reads some random value from *video RAM* and then hangs in a loop waiting for that I/O
-     *     port to clear bit 7! Setting 'cs_equ_ds' works around that bug by instructing PIC emulation not to
-     *     fire the interrupt unless segment registers CS and DS match. */
-    Pstring = secprop->Add_string("irq hack",Property::Changeable::WhenIdle,"none");
-    Pstring->Set_help("Specify a hack related to the Sound Blaster IRQ to avoid crashes in a handful of games and demos.\n"
-            "    none                   Emulate IRQs normally\n"
-            "    cs_equ_ds              Do not fire IRQ unless two CPU segment registers match: CS == DS. Read DOSBox-X Wiki or source code for details.");
+            Pbool = secprop->Add_bool("prefer hfp", Property::Changeable::WhenIdle, false);
+            Pbool->Set_help(
+                "Prefer Bluetooth HFP (Hands-Free Profile) microphone mode.\n"
+                "This allows using the microphone of a BT headset but reduces\n"
+                "audio quality (typically 8kHz–16kHz telephone quality).\n"
+                "When disabled, higher-quality microphones are preferred."
+            );
+            Pbool->SetBasic(true);
 
-    Pint = secprop->Add_int("dma",Property::Changeable::WhenIdle,1);
-    Pint->Set_values(dmassb);
-    Pint->Set_help("The DMA number of the Sound Blaster. Set to -1 to start DOSBox-X with the DMA unassigned.");
-    Pint->SetBasic(true);
+			/* Sound Blaster IRQ hacks.
+			 *
+			 * These hacks reduce emulation accuracy but can be set to work around bugs or mistakes in some old
+			 * games and demos related to handling the Sound Blaster IRQ.
+			 *
+			 * - Saga by Dust (1993):
+			 *     Sound Blaster support has a fatal flaw in that the Sound Blaster interrupt handler it installs assumes
+			 *     DS == CS. It uses the DS register to read local variables needed to manage the Sound Blaster card but
+			 *     it makes no attempt to push DS and then load the DS segment value it needs. While the demo may seem to
+			 *     run normally at first, eventually the interrupt is fired at just the right time to catch the demo in
+			 *     the middle of its graphics routines (DS=A000). Since the ISR uses DS to load the Sound Blaster DSP
+			 *     I/O port, it reads some random value from *video RAM* and then hangs in a loop waiting for that I/O
+			 *     port to clear bit 7! Setting 'cs_equ_ds' works around that bug by instructing PIC emulation not to
+			 *     fire the interrupt unless segment registers CS and DS match. */
+			Pstring = secprop->Add_string("irq hack",Property::Changeable::WhenIdle,"none");
+			Pstring->Set_help("Specify a hack related to the Sound Blaster IRQ to avoid crashes in a handful of games and demos.\n"
+					"    none                   Emulate IRQs normally\n"
+					"    cs_equ_ds              Do not fire IRQ unless two CPU segment registers match: CS == DS. Read DOSBox-X Wiki or source code for details.");
 
-    Pint = secprop->Add_int("hdma",Property::Changeable::WhenIdle,5);
-    Pint->Set_values(dmassb);
-    Pint->Set_help("The High DMA number of the Sound Blaster. Set to -1 to start DOSBox-X with the High DMA unassigned.");
-    Pint->SetBasic(true);
+			Pint = secprop->Add_int("dma",Property::Changeable::WhenIdle,def_dma[ci]);//1
+			Pint->Set_values(dmassb);
+			Pint->Set_help("The DMA number of the Sound Blaster. Set to -1 to start DOSBox-X with the DMA unassigned.");
+			Pint->SetBasic(true);
 
-    Pbool = secprop->Add_bool("dsp command aliases",Property::Changeable::WhenIdle,true);
-    Pbool->Set_help("If set (on by default), emulation will support known undocumented aliases\n"
-                    "of common Sound Blaster DSP commands. Some broken DOS games and demos rely on these aliases.\n"
-                    "For more information: https://www.vogons.org/viewtopic.php?f=62&t=61098&start=280");
+			Pint = secprop->Add_int("hdma",Property::Changeable::WhenIdle,def_hdma[ci]);//5
+			Pint->Set_values(dmassb);
+			Pint->Set_help("The High DMA number of the Sound Blaster. Set to -1 to start DOSBox-X with the High DMA unassigned.");
+			Pint->SetBasic(true);
 
-    Pbool = secprop->Add_bool("pic unmask irq",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("Start the DOS virtual machine with the Sound Blaster IRQ already unmasked at the PIC.\n"
-            "Some early DOS games/demos that support Sound Blaster expect the IRQ to fire but make\n"
-            "no attempt to unmask the IRQ. If audio cuts out no matter what IRQ you try, then try\n"
-            "setting this option.\n"
-            "Option is needed for:\n"
-            "   Public NMI \"jump\" demo (1992)");
+			Pbool = secprop->Add_bool("dsp command aliases",Property::Changeable::WhenIdle,true);
+			Pbool->Set_help("If set (on by default), emulation will support known undocumented aliases\n"
+					"of common Sound Blaster DSP commands. Some broken DOS games and demos rely on these aliases.\n"
+					"For more information: https://www.vogons.org/viewtopic.php?f=62&t=61098&start=280");
 
-    Pbool = secprop->Add_bool("enable speaker",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("Start the DOS virtual machine with the Sound Blaster speaker enabled.\n"
-                    "Sound Blaster Pro and older cards have a speaker disable/enable command.\n"
-                    "Normally the card boots up with the speaker disabled. If a DOS game or demo\n"
-                    "attempts to play without enabling the speaker, set this option to true to\n"
-                    "compensate. This setting has no meaning if emulating a Sound Blaster 16 card.");
-    Pbool->SetBasic(true);
+			Pbool = secprop->Add_bool("pic unmask irq",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("Start the DOS virtual machine with the Sound Blaster IRQ already unmasked at the PIC.\n"
+					"Some early DOS games/demos that support Sound Blaster expect the IRQ to fire but make\n"
+					"no attempt to unmask the IRQ. If audio cuts out no matter what IRQ you try, then try\n"
+					"setting this option.\n"
+					"Option is needed for:\n"
+					"   Public NMI \"jump\" demo (1992)");
 
-    Pbool = secprop->Add_bool("enable asp",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("If set, emulate the presence of the Sound Blaster 16 Advanced Sound Processor/Creative Sound Processor chip.\n"
-            "NOTE: This only emulates its presence and the basic DSP commands to communicate with it. Actual ASP/CSP functions are not yet implemented.");
+			Pbool = secprop->Add_bool("enable speaker",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("Start the DOS virtual machine with the Sound Blaster speaker enabled.\n"
+					"Sound Blaster Pro and older cards have a speaker disable/enable command.\n"
+					"Normally the card boots up with the speaker disabled. If a DOS game or demo\n"
+					"attempts to play without enabling the speaker, set this option to true to\n"
+					"compensate. This setting has no meaning if emulating a Sound Blaster 16 card.");
+			Pbool->SetBasic(true);
 
-    Pbool = secprop->Add_bool("disable filtering",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("By default DOSBox-X filters Sound Blaster output to emulate lowpass filters and analog output limitations.\n"
-            "Set this option to true to disable filtering. Note that doing so disables emulation of the Sound Blaster Pro\n"
-            "output filter and ESS AudioDrive lowpass filter.");
+			Pbool = secprop->Add_bool("enable asp",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("If set, emulate the presence of the Sound Blaster 16 Advanced Sound Processor/Creative Sound Processor chip.\n"
+					"NOTE: This only emulates its presence and the basic DSP commands to communicate with it. Actual ASP/CSP functions are not yet implemented.");
 
-    Pbool = secprop->Add_bool("dsp write buffer status must return 0x7f or 0xff",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("If set, force port 22Ch (DSP write buffer status) to return 0x7F or 0xFF. If not set, the port\n"
-            "may return 0x7F or 0xFF depending on what type of Sound Blaster is being emulated.\n"
-            "Set this option for some early DOS demos that make that assumption about port 22Ch.\n"
-            "Option is needed for:\n"
-            "   Overload by Hysteria (1992) - Audio will crackle/saturate (8-bit overflow) except when sbtype=sb16");
+			Pbool = secprop->Add_bool("disable filtering",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("By default DOSBox-X filters Sound Blaster output to emulate lowpass filters and analog output limitations.\n"
+					"Set this option to true to disable filtering. Note that doing so disables emulation of the Sound Blaster Pro\n"
+					"output filter and ESS AudioDrive lowpass filter.");
 
-    Pbool = secprop->Add_bool("pre-set sbpro stereo",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("Start the DOS virtual machine with the Sound Blaster Pro stereo bit set (in the mixer).\n"
-            "A few demos support Sound Blaster Pro but forget to set this bit.\n"
-            "Option is needed for:\n"
-            "   Inconexia by Iguana (1993)");
+			Pbool = secprop->Add_bool("dsp write buffer status must return 0x7f or 0xff",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("If set, force port 22Ch (DSP write buffer status) to return 0x7F or 0xFF. If not set, the port\n"
+					"may return 0x7F or 0xFF depending on what type of Sound Blaster is being emulated.\n"
+					"Set this option for some early DOS demos that make that assumption about port 22Ch.\n"
+					"Option is needed for:\n"
+					"   Overload by Hysteria (1992) - Audio will crackle/saturate (8-bit overflow) except when sbtype=sb16");
 
-    Pbool = secprop->Add_bool("sbmixer",Property::Changeable::WhenIdle,true);
-    Pbool->Set_help("Allow the Sound Blaster mixer to modify the DOSBox-X mixer.");
-    Pbool->SetBasic(true);
+			Pbool = secprop->Add_bool("pre-set sbpro stereo",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("Start the DOS virtual machine with the Sound Blaster Pro stereo bit set (in the mixer).\n"
+					"A few demos support Sound Blaster Pro but forget to set this bit.\n"
+					"Option is needed for:\n"
+					"   Inconexia by Iguana (1993)");
 
-    Pstring = secprop->Add_string("cms", Property::Changeable::WhenIdle, "auto");
-    Pstring->Set_values(cms_settings);
-    Pstring->Set_help(
-        "Enable CMS emulation ('auto' by default).\n"
-        "  off:   Disable CMS emulation (except when the Game Blaster is selected).\n"
-        "  on:    Enable CMS emulation on Sound Blaster 1 and 2.\n"
-        "  auto:  Auto-enable CMS emulation for Sound Blaster 1 and Game Blaster.");
+			Pbool = secprop->Add_bool("sbmixer",Property::Changeable::WhenIdle,true);
+			Pbool->Set_help("Allow the Sound Blaster mixer to modify the DOSBox-X mixer.");
+			Pbool->SetBasic(true);
 
-    Pstring = secprop->Add_string("oplmode",Property::Changeable::WhenIdle,"auto");
-    Pstring->Set_values(oplmodes);
-    Pstring->Set_help("Type of OPL emulation. On 'auto' the mode is determined by the 'sbtype' setting.\n"
-            "All OPL modes are AdLib-compatible.");
-    Pstring->SetBasic(true);
+			Pstring = secprop->Add_string("cms", Property::Changeable::WhenIdle, ci==0?"auto":"off");
+			Pstring->Set_values(cms_settings);
+			Pstring->Set_help(
+					"Enable CMS emulation ('auto' by default).\n"
+					"  off:   Disable CMS emulation (except when the Game Blaster is selected).\n"
+					"  on:    Enable CMS emulation on Sound Blaster 1 and 2.\n"
+					"  auto:  Auto-enable CMS emulation for Sound Blaster 1 and Game Blaster.");
 
-    Pbool = secprop->Add_bool("adlib force timer overflow on detect",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("If set, Adlib/OPL emulation will signal 'overflow' on timers after 50 I/O reads.\n"
-            "This is a temporary hack to work around timing bugs noted in DOSBox-X. Certain\n"
-            "games (Wolfenstein 3D) poll the Adlib status port a fixed number of times assuming\n"
-            "that the poll loop takes long enough for the Adlib timer to run out. If the game\n"
-            "cannot reliably detect Adlib at higher cycles counts, but can reliably detect at\n"
-            "lower cycles counts, set this option.");
-    /* NTS: The reason I mention Wolfenstein 3D is that it seems coded not to probe for Sound Blaster unless it
-     *      first detects the Adlib at port 0x388. No Adlib, no Sound Blaster. */
-    /* ^ NTS: To see what I mean, download Wolf3d source code, look at ID_SD.C line 1585 (Adlib detection routine).
-     *        Note it sets Timer 1, then reads port 388h 100 times before reading status to detect whether the
-     *        timer "overflowed" (fairly typical Adlib detection code).
-     *        Some quick math: 8333333Hz ISA BCLK / 6 cycles per read (3 wait states) = 1388888 reads/second possible
-     *                         100 I/O reads * (1 / 1388888) = 72us */
+			Pstring = secprop->Add_string("oplmode",Property::Changeable::WhenIdle, ci==0?"auto":"none");
+			Pstring->Set_values(oplmodes);
+			Pstring->Set_help("Type of OPL emulation. On 'auto' the mode is determined by the 'sbtype' setting.\n"
+					"All OPL modes are AdLib-compatible.");
+			Pstring->SetBasic(true);
 
-    Pstring = secprop->Add_string("oplemu",Property::Changeable::WhenIdle,"default");
-    Pstring->Set_values(oplemus);
-    Pstring->Set_help("Provider for the OPL emulation. 'compat' might provide better quality.\n"
-		"'nuked' is the most accurate (but the most CPU-intensive). See oplrate as well.");
-    Pstring->SetBasic(true);
+			Pbool = secprop->Add_bool("adlib pcm boost",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("If set, and Adlib emulation detects that the guest application is playing digitized speech\n"
+					"or music through the FM chip, the FM audio will be amplified to make the audio more audible.\n"
+					"Audio levels will be reset for any other use including FM music synthesis.");
 
-    Pint = secprop->Add_int("oplrate",Property::Changeable::WhenIdle,48000);
-    Pint->Set_values(rates);
-    Pint->Set_help("Sample rate of OPL music emulation. Use 49716 for highest quality (set the mixer rate accordingly).");
-    Pint->SetBasic(true);
+			Pbool = secprop->Add_bool("adlib force timer overflow on detect",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("If set, Adlib/OPL emulation will signal 'overflow' on timers after 50 I/O reads.\n"
+					"This is a temporary hack to work around timing bugs noted in DOSBox-X. Certain\n"
+					"games (Wolfenstein 3D) poll the Adlib status port a fixed number of times assuming\n"
+					"that the poll loop takes long enough for the Adlib timer to run out. If the game\n"
+					"cannot reliably detect Adlib at higher cycles counts, but can reliably detect at\n"
+					"lower cycles counts, set this option.");
+			/* NTS: The reason I mention Wolfenstein 3D is that it seems coded not to probe for Sound Blaster unless it
+			 *      first detects the Adlib at port 0x388. No Adlib, no Sound Blaster. */
+			/* ^ NTS: To see what I mean, download Wolf3d source code, look at ID_SD.C line 1585 (Adlib detection routine).
+			 *        Note it sets Timer 1, then reads port 388h 100 times before reading status to detect whether the
+			 *        timer "overflowed" (fairly typical Adlib detection code).
+			 *        Some quick math: 8333333Hz ISA BCLK / 6 cycles per read (3 wait states) = 1388888 reads/second possible
+			 *                         100 I/O reads * (1 / 1388888) = 72us */
 
-    Pstring = secprop->Add_string("oplport", Property::Changeable::WhenIdle, "");
-    Pstring->Set_help("Serial port of the OPL2 Audio Board when oplemu=opl2board, opl2mode will become 'opl2' automatically.");
-    Pstring->SetBasic(true);
+			Pstring = secprop->Add_string("oplemu",Property::Changeable::WhenIdle,"default");
+			Pstring->Set_values(oplemus);
+			Pstring->Set_help("Provider for the OPL emulation. 'compat' might provide better quality.\n"
+					"'nuked' is the most accurate (but the most CPU-intensive). See oplrate as well.");
+			Pstring->SetBasic(true);
 
-    Pstring = secprop->Add_string("retrowave_bus", Property::Changeable::WhenIdle, "serial");
-    Pstring->Set_help("Bus of the Retrowave series board (serial/spi). SPI is only supported on Linux.");
-    Pstring->SetBasic(true);
+			Pint = secprop->Add_int("oplrate",Property::Changeable::WhenIdle,49716);
+			Pint->Set_values(rates);
+			Pint->Set_help("Sample rate of OPL music emulation. Use 49716 for highest quality (set the mixer rate accordingly).");
+			Pint->SetBasic(true);
 
-    Pstring = secprop->Add_string("retrowave_spi_cs", Property::Changeable::WhenIdle, "0,6");
-    Pstring->Set_help("SPI chip select pin of the Retrowave series board. Only supported on Linux.");
+			Pstring = secprop->Add_string("oplport", Property::Changeable::WhenIdle, "");
+			Pstring->Set_help("Serial port of the OPL2 Audio Board when oplemu=opl2board, opl2mode will become 'opl2' automatically.");
+			Pstring->SetBasic(true);
 
-    Pstring = secprop->Add_string("retrowave_port", Property::Changeable::WhenIdle, "");
-    Pstring->Set_help("Serial port of the Retrowave series board.");
-    Pstring->SetBasic(true);
+			Pstring = secprop->Add_string("retrowave_bus", Property::Changeable::WhenIdle, "serial");
+			Pstring->Set_help("Bus of the Retrowave series board (serial/spi). SPI is only supported on Linux.");
+			Pstring->SetBasic(true);
 
-    Phex = secprop->Add_hex("hardwarebase",Property::Changeable::WhenIdle,0x220);
-    Phex->Set_help("base address of the real hardware Sound Blaster:\n"\
-        "210,220,230,240,250,260,280");
-    Phex->SetBasic(true);
+			Pstring = secprop->Add_string("retrowave_spi_cs", Property::Changeable::WhenIdle, "0,6");
+			Pstring->Set_help("SPI chip select pin of the Retrowave series board. Only supported on Linux.");
 
-    Pbool = secprop->Add_bool("force dsp auto-init",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("Treat all single-cycle DSP commands as auto-init to keep playback going.\n"
-            "This option is a workaround for DOS games or demos that use single-cycle DSP playback commands and\n"
-            "have problems with missing the Sound Blaster IRQ under load. Do not enable unless you need this workaround.\n"
-            "Needed for:\n"
-            "  - Extreme \"lunatic\" demo (1993)");
+			Pstring = secprop->Add_string("retrowave_port", Property::Changeable::WhenIdle, "");
+			Pstring->Set_help("Serial port of the Retrowave series board.");
+			Pstring->SetBasic(true);
 
-    Pbool = secprop->Add_bool("force goldplay",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("Always render Sound Blaster output sample-at-a-time. Testing option. You probably don't want to enable this.");
+			Phex = secprop->Add_hex("hardwarebase",Property::Changeable::WhenIdle,0x220);
+			Phex->Set_help("base address of the real hardware Sound Blaster:\n"\
+					"210,220,230,240,250,260,280");
+			Phex->SetBasic(true);
 
-    Pbool = secprop->Add_bool("goldplay",Property::Changeable::WhenIdle,true);
-    Pbool->Set_help("Enable goldplay emulation.");
-    Pbool->SetBasic(true);
+			Pbool = secprop->Add_bool("force dsp auto-init",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("Treat all single-cycle DSP commands as auto-init to keep playback going.\n"
+					"This option is a workaround for DOS games or demos that use single-cycle DSP playback commands and\n"
+					"have problems with missing the Sound Blaster IRQ under load. Do not enable unless you need this workaround.\n"
+					"Needed for:\n"
+					"  - Extreme \"lunatic\" demo (1993)");
 
-    Pbool = secprop->Add_bool("goldplay stereo",Property::Changeable::WhenIdle,true);
-    Pbool->Set_help("Enable workaround for goldplay stereo playback. Many DOS demos using this technique\n"
-            "don't seem to know they need to double the frequency when programming the DSP time constant for Pro stereo output.\n"
-            "If stereo playback seems to have artifacts consider enabling this option. For accurate emulation of Sound Blaster\n"
-            "hardware, disable this option.");
+			Pbool = secprop->Add_bool("force goldplay",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("Always render Sound Blaster output sample-at-a-time. Testing option. You probably don't want to enable this.");
 
-    Pstring = secprop->Add_string("dsp require interrupt acknowledge",Property::Changeable::WhenIdle,"auto");
-    Pstring->Set_help("If set, the DSP will halt DMA playback until IRQ acknowledgement occurs even in auto-init mode (SB16 behavior).\n"
-            "If clear, IRQ acknowledgement will have no effect on auto-init playback (SB Pro and earlier & clone behavior)\n"
-            "If set to 'auto' then behavior is determined by sbtype= setting.\n"
-            "This is a setting for hardware accuracy in emulation. If audio briefly plays then stops then your DOS game\n"
-            "and it's not using IRQ (but using DMA), try setting this option to 'false'");
+			Pbool = secprop->Add_bool("goldplay",Property::Changeable::WhenIdle,true);
+			Pbool->Set_help("Enable goldplay emulation.");
+			Pbool->SetBasic(true);
 
-    Pint = secprop->Add_int("dsp write busy delay",Property::Changeable::WhenIdle,-1);
-    Pint->Set_help("Amount of time in nanoseconds the DSP chip signals 'busy' after writing to the DSP (port 2xCh). Set to -1 to use card-specific defaults.\n"
-            "WARNING: Setting the value too high (above 20000ns) may have detrimental effects to DOS games that use IRQ 0 and DSP command 0x10 to play audio.\n"
-            "         Setting the value way too high (above 1000000ns) can cause significant lag in DOS games.");
+			Pbool = secprop->Add_bool("goldplay stereo",Property::Changeable::WhenIdle,true);
+			Pbool->Set_help("Enable workaround for goldplay stereo playback. Many DOS demos using this technique\n"
+					"don't seem to know they need to double the frequency when programming the DSP time constant for Pro stereo output.\n"
+					"If stereo playback seems to have artifacts consider enabling this option. For accurate emulation of Sound Blaster\n"
+					"hardware, disable this option.");
 
-    Pbool = secprop->Add_bool("blaster environment variable",Property::Changeable::WhenIdle,true);
-    Pbool->Set_help("Whether or not to set the BLASTER environment variable automatically at startup");
-    Pbool->SetBasic(true);
+			Pstring = secprop->Add_string("dsp require interrupt acknowledge",Property::Changeable::WhenIdle,"auto");
+			Pstring->Set_help("If set, the DSP will halt DMA playback until IRQ acknowledgement occurs even in auto-init mode (SB16 behavior).\n"
+					"If clear, IRQ acknowledgement will have no effect on auto-init playback (SB Pro and earlier & clone behavior)\n"
+					"If set to 'auto' then behavior is determined by sbtype= setting.\n"
+					"This is a setting for hardware accuracy in emulation. If audio briefly plays then stops then your DOS game\n"
+					"and it's not using IRQ (but using DMA), try setting this option to 'false'");
 
-    Pbool = secprop->Add_bool("sample rate limits",Property::Changeable::WhenIdle,true);
-    Pbool->Set_help("If set (default), limit DSP sample rate to what real hardware is limited to");
+			Pint = secprop->Add_int("dsp write busy delay",Property::Changeable::WhenIdle,-1);
+			Pint->Set_help("Amount of time in nanoseconds the DSP chip signals 'busy' after writing to the DSP (port 2xCh). Set to -1 to use card-specific defaults.\n"
+					"WARNING: Setting the value too high (above 20000ns) may have detrimental effects to DOS games that use IRQ 0 and DSP command 0x10 to play audio.\n"
+					"         Setting the value way too high (above 1000000ns) can cause significant lag in DOS games.");
 
-    /* recommended for:
-     *   1992 demo "overload" (if set, Sound Blaster support can run at 24KHz without causing demo to hang in the IRQ 0 timer)
-     *   1993 demo "xmas 93" (superiority complex) because the demo's Sound Blaster mode writes at the timer interrupt rate without polling the DSP to check busy state */
-    Pbool = secprop->Add_bool("instant direct dac",Property::Changeable::WhenIdle,false);
-    Pbool->Set_help("If set, direct DAC output commands are instantaneous. This option is intended as a quick fix for\n"
-            "games or demos that play direct DAC music/sound from the IRQ 0 timer who a) write the DSP command\n"
-            "and data without polling the DSP to ensure it's ready or b) can get locked into the IRQ 0 handler\n"
-            "waiting for DSP status when instructed to play at or beyond the DSP's maximum direct DAC sample rate.\n"
-            "This fix allows broken Sound Blaster code to work and should not be enabled unless necessary.");
+			Pbool = secprop->Add_bool("blaster environment variable",Property::Changeable::WhenIdle,ci == 0 ? true : false);
+			Pbool->Set_help("Whether or not to set the BLASTER environment variable automatically at startup");
+			Pbool->SetBasic(true);
 
-    /* accuracy emulation: SB16 does not honor SBPro stereo bit in the mixer */
-    Pbool = secprop->Add_bool("stereo control with sbpro only",Property::Changeable::WhenIdle,true);
-    Pbool->Set_help("Default on. If set, Sound Blaster Pro stereo is not available when emulating sb16 or sb16vibra.\n"
-            "If clear, sb16 emulation will honor the sbpro stereo bit. Note that Creative SB16 cards do not\n"
-            "honor the stereo bit, and this option allows DOSBox-X emulate that fact. Accuracy setting.");
+			Pbool = secprop->Add_bool("sample rate limits",Property::Changeable::WhenIdle,true);
+			Pbool->Set_help("If set (default), limit DSP sample rate to what real hardware is limited to");
 
-    /* NTS: It turns out (SB16 at least) the DSP will periodically set bit 7 (busy) by itself at some
-     *      clock rate even if it's idle. Casual testing on an old Pentium system with a ViBRA shows
-     *      it's possible to see both 0x7F and 0xFF come back if you repeatedly type "i 22c" in DOS
-     *      DEBUG.EXE.  FIXME: At what clock rate and duty cycle does this happen? */
-    Pint = secprop->Add_int("dsp busy cycle rate",Property::Changeable::WhenIdle,-1/*default*/);
-    Pint->Set_help("Sound Blaster 16 DSP chips appear to go busy periodically at some high clock rate\n"
-            "whether the DSP is actually doing anything for the system or not. This is an accuracy\n"
-            "option for Sound Blaster emulation. If this option is nonzero, it will be interpreted\n"
-            "as the busy cycle rate in Hz. If zero, busy cycle will not be emulated. If -1, sound\n"
-            "blaster emulation will automatically choose a setting based on the sbtype= setting");
+			/* recommended for:
+			 *   1992 demo "overload" (if set, Sound Blaster support can run at 24KHz without causing demo to hang in the IRQ 0 timer)
+			 *   1993 demo "xmas 93" (superiority complex) because the demo's Sound Blaster mode writes at the timer interrupt rate without polling the DSP to check busy state */
+			Pbool = secprop->Add_bool("instant direct dac",Property::Changeable::WhenIdle,false);
+			Pbool->Set_help("If set, direct DAC output commands are instantaneous. This option is intended as a quick fix for\n"
+					"games or demos that play direct DAC music/sound from the IRQ 0 timer who a) write the DSP command\n"
+					"and data without polling the DSP to ensure it's ready or b) can get locked into the IRQ 0 handler\n"
+					"waiting for DSP status when instructed to play at or beyond the DSP's maximum direct DAC sample rate.\n"
+					"This fix allows broken Sound Blaster code to work and should not be enabled unless necessary.");
 
-    Pint = secprop->Add_int("dsp busy cycle always",Property::Changeable::WhenIdle,-1/*default*/);
-    Pint->Set_help("If set, the DSP busy cycle always happens. If clear, DSP busy cycle only happens when\n"
-            "audio playback is running. Default setting is to pick according to the sound card.");
+			/* accuracy emulation: SB16 does not honor SBPro stereo bit in the mixer */
+			Pbool = secprop->Add_bool("stereo control with sbpro only",Property::Changeable::WhenIdle,true);
+			Pbool->Set_help("Default on. If set, Sound Blaster Pro stereo is not available when emulating sb16 or sb16vibra.\n"
+					"If clear, sb16 emulation will honor the sbpro stereo bit. Note that Creative SB16 cards do not\n"
+					"honor the stereo bit, and this option allows DOSBox-X emulate that fact. Accuracy setting.");
 
-    Pint = secprop->Add_int("dsp busy cycle duty",Property::Changeable::WhenIdle,-1/*default*/);
-    Pint->Set_help("If emulating SB16 busy cycle, this value (0 to 100) controls the duty cycle of the busy cycle.\n"
-            "If this option is set to -1, Sound Blaster emulation will choose a value automatically according\n"
-            "to sbtype=. If 0, busy cycle emulation is disabled.");
+			/* NTS: It turns out (SB16 at least) the DSP will periodically set bit 7 (busy) by itself at some
+			 *      clock rate even if it's idle. Casual testing on an old Pentium system with a ViBRA shows
+			 *      it's possible to see both 0x7F and 0xFF come back if you repeatedly type "i 22c" in DOS
+			 *      DEBUG.EXE.  FIXME: At what clock rate and duty cycle does this happen? */
+			Pint = secprop->Add_int("dsp busy cycle rate",Property::Changeable::WhenIdle,-1/*default*/);
+			Pint->Set_help("Sound Blaster 16 DSP chips appear to go busy periodically at some high clock rate\n"
+					"whether the DSP is actually doing anything for the system or not. This is an accuracy\n"
+					"option for Sound Blaster emulation. If this option is nonzero, it will be interpreted\n"
+					"as the busy cycle rate in Hz. If zero, busy cycle will not be emulated. If -1, sound\n"
+					"blaster emulation will automatically choose a setting based on the sbtype= setting");
 
-    /* NTS: Confirmed: My Sound Blaster 2.0 (at least) mirrors the DSP on port 22Ch and 22Dh. This option
-     *      will only take effect with sbtype sb1 and sb2, so make it enabled by default. Accuracy setting. */
-    Pbool = secprop->Add_bool("io port aliasing",Property::Changeable::WhenIdle,true);
-    Pbool->Set_help("If set, Sound Blaster ports alias by not decoding the LSB of the I/O port.\n"
-            "This option only applies when sbtype is set to sb1 or sb2 (not SBPro or SB16).\n"
-            "This is a hack for the Electromotive Force 'Internal Damage' demo which apparently\n"
-            "relies on this behavior for Sound Blaster output and should be enabled for accuracy in emulation.");
+			Pint = secprop->Add_int("dsp busy cycle always",Property::Changeable::WhenIdle,-1/*default*/);
+			Pint->Set_help("If set, the DSP busy cycle always happens. If clear, DSP busy cycle only happens when\n"
+					"audio playback is running. Default setting is to pick according to the sound card.");
+
+			Pint = secprop->Add_int("dsp busy cycle duty",Property::Changeable::WhenIdle,-1/*default*/);
+			Pint->Set_help("If emulating SB16 busy cycle, this value (0 to 100) controls the duty cycle of the busy cycle.\n"
+					"If this option is set to -1, Sound Blaster emulation will choose a value automatically according\n"
+					"to sbtype=. If 0, busy cycle emulation is disabled.");
+
+			/* NTS: Confirmed: My Sound Blaster 2.0 (at least) mirrors the DSP on port 22Ch and 22Dh. This option
+			 *      will only take effect with sbtype sb1 and sb2, so make it enabled by default. Accuracy setting. */
+			Pbool = secprop->Add_bool("io port aliasing",Property::Changeable::WhenIdle,true);
+			Pbool->Set_help("If set, Sound Blaster ports alias by not decoding the LSB of the I/O port.\n"
+					"This option only applies when sbtype is set to sb1 or sb2 (not SBPro or SB16).\n"
+					"This is a hack for the Electromotive Force 'Internal Damage' demo which apparently\n"
+					"relies on this behavior for Sound Blaster output and should be enabled for accuracy in emulation.");
+		}
+	}
 
     secprop=control->AddSection_prop("gus",&Null_Init,true); //done
     Pbool = secprop->Add_bool("gus",Property::Changeable::WhenIdle,false);
@@ -3864,6 +4052,9 @@ void DOSBOX_SetupConfigSections(void) {
                       "If auto, automatically choose based on other settings such as GUS type.\n"
                       "This setting may be needed for DOS demoscene entries that assume aliasing behavior such as Out of Control by Contract.");
     Pstring->SetBasic(true);
+
+    Pbool = secprop->Add_bool("warn on out of bounds dram access",Property::Changeable::WhenIdle,false);
+    Pbool->Set_help("Controls whether attempts to access GUS DRAM beyond the 1MB maximum supported by the card are logged to the log file as a warning.");
 
     Pbool = secprop->Add_bool("autoamp",Property::Changeable::WhenIdle,false);
     Pbool->Set_help("If set, GF1 output will reduce in volume automatically if the sum of all channels exceeds full volume.\n"
@@ -3927,7 +4118,7 @@ void DOSBOX_SetupConfigSections(void) {
             "Note: DOSBox-X defaults to 'false', while mainline DOSBox SVN is currently hardcoded to render as if this setting is 'true'.");
 
     Pint = secprop->Add_int("gusmemsize",Property::Changeable::WhenIdle,-1);
-    Pint->SetMinMax(-1,1024);
+    Pint->SetMinMax(-1,8192);
     Pint->Set_help("Amount of RAM on the Gravis Ultrasound in KB. Set to -1 for default.");
     Pint->SetBasic(true);
 
@@ -4429,6 +4620,19 @@ void DOSBOX_SetupConfigSections(void) {
     Pbool->Set_help("Enable XMS support.");
     Pbool->SetBasic(true);
 
+    /* maybe this will stop the endless "it's broken and it only works once you point out LOADFIX -a" bug reports */
+    Pbool = secprop->Add_bool("turn off a20 gate on load if loadfix needed",Property::Changeable::WhenIdle,false);
+    Pbool->Set_help("If enabled, and loading a program below the 64kb boundary, turn off the A20 gate.\n"
+                    "This can help with any program with startup code that assumes the segment wraparound of the 8086.\n"
+                    "Depending on DOS configuration the A20 gate may be re-enabled later such as calling INT 21h.");
+
+    Pbool = secprop->Add_bool("break on int3",Property::Changeable::WhenIdle,false);
+    Pbool->Set_help("If set, a breakpoint on INT 3 is automatically set up at startup");
+    Pbool->SetBasic(true);
+
+    Pbool = secprop->Add_bool("xms log memmove",Property::Changeable::WhenIdle,false);
+    Pbool->Set_help("If set, XMS move/copy operations are logged for debugging purposes.");
+
     Pbool = secprop->Add_bool("xms memmove causes flat real mode",Property::Changeable::WhenIdle,true);
     Pbool->Set_help("If set, any call to XMS to move/copy memory sets up flat real mode for segment registers DS and ES.");
 
@@ -4449,6 +4653,14 @@ void DOSBOX_SetupConfigSections(void) {
                     "It is recommended to get and set dosbox-x.conf settings using the CONFIG command instead.\n"
                     "Compatibility with DOSBox SVN can be improved by enabling this option.");
     Pbool->SetBasic(true);
+
+    Pstring = secprop->Add_string("exepack",Property::Changeable::WhenIdle,"unpack");
+    Pstring->Set_values(exepackopts);
+    Pstring->Set_help("If loading an EXE file compressed using ExEPACK, what to do.\n"
+		      "This setting can help avoid Packed File is Corrupt errors when running such executables.\n"
+		      "none = don't do anything\n"
+		      "a20off = switch off the A20 gate before running the executable\n"
+		      "unpack = decompress the EXE and then run it, rather than run the EXEPACK code (default).");
 
     Pstring = secprop->Add_string("badcommandhandler",Property::Changeable::WhenIdle,"");
     Pstring->Set_help("Allow to specify a custom error handler command for the internal DOS shell before the \"Bad command or file name\" message shows up.");
@@ -4555,6 +4767,13 @@ void DOSBOX_SetupConfigSections(void) {
     Pbool->Set_help("Report DOS network redirector as resident. This will allow the host name to be returned unless the secure mode is enabled.\n"
             "You can also directly access UNC network paths in the form \\\\MACHINE\\SHARE even if they are not mounted as drives on Windows systems.\n"
             "Set either \"ipx=true\" in [ipx] section or \"ne2000=true\" in [ne2000] section for a full network redirector environment.");
+    Pbool->SetBasic(true);
+
+    Pbool = secprop->Add_bool("mcb corruption becomes application free memory",Property::Changeable::WhenIdle,false);
+    Pbool->Set_help("If MCB chain corruption occurs following the DOS program PSP segment and the DOS program does anything to cause memory allocation,"
+                    "make a new free memory block in it's place instead of halting emulation with an MCB chain error. Some DOS programs are sloppy"
+                    "with memory to corrupt the MCB chain after itself in memory. This is apparently real MS-DOS behavior, set to true to enable."
+                    "If set to false, all MCB chain corruption will halt emulation as DOSBox forks typically do already.");
     Pbool->SetBasic(true);
 
     Phex = secprop->Add_hex("minimum dos initial private segment", Property::Changeable::WhenIdle,0);
@@ -4683,6 +4902,11 @@ void DOSBOX_SetupConfigSections(void) {
     Pbool = secprop->Add_bool("private area in umb",Property::Changeable::WhenIdle,true);
     Pbool->Set_help("If set, keep private DOS segment in upper memory block, usually segment 0xC800 (Mainline DOSBox behavior)\n"
             "If clear, place private DOS segment at the base of system memory (just below the MCB)");
+
+    Pbool = secprop->Add_bool("private area write protect",Property::Changeable::WhenIdle,false);
+    Pbool->Set_help("If set, prevent the guest from writing to the DOSBox private area. The emulator itself can still write to it, of course.\n"
+                    "Some DOS games have sloppy video routines that can spill over and corrupt the private area and cause problems.\n"
+                    "This option when set can prevent that errant game from causing crashes.");
 
     Pbool = secprop->Add_bool("quick reboot",Property::Changeable::WhenIdle,false);
     Pbool->Set_help("If set, the DOS restart call will reboot the emulated DOS (integrated DOS or guest DOS) instead of the virtual machine.\n");
@@ -4833,6 +5057,9 @@ void DOSBOX_SetupConfigSections(void) {
 
     Pbool = secprop->Add_bool("int 13 extensions",Property::Changeable::WhenIdle,true);
     Pbool->Set_help("Enable INT 13h extensions (functions 0x40-0x48). You will need this enabled if the virtual hard drive image is 8.4GB or larger.");
+
+    Pbool = secprop->Add_bool("int 13 enable 48-bit LBA", Property::Changeable::WhenIdle, true);
+    Pbool->Set_help("Enable 48-bit LBA support for INT 13h extensions. Needed for drives larger than 28-bit LBA limit (128GiB).");
 
     Pbool = secprop->Add_bool("biosps2",Property::Changeable::OnlyAtStart,true);
     Pbool->Set_help("Emulate BIOS INT 15h PS/2 mouse services\n"
@@ -5214,38 +5441,13 @@ void DOSBOX_SetupConfigSections(void) {
 	Pstring->Set_help("The maximum drive letter (A-Z) that can be accessed by programs.");
     Pstring->Set_values(driveletters);
     Pstring->SetBasic(true);
+    Pbool = secprop->Add_bool("device driver mcb",Property::Changeable::OnlyAtStart,false);
+    Pbool->Set_help("If set, allocate a memory block per device driver. If not set, then where possible, the device driver chain is packed together within the DOS kernel without any MCB blocks to cover them, which is normal MS-DOS behavior");
+    Pbool->SetBasic(false);
 
-    //TODO ?
     control->AddSection_line("autoexec",&Null_Init);
-#if C_LUA
-    secprop = control->AddSection_prop("lua", &Null_Init, true);
-    
-    Pbool = secprop->Add_bool("enabled", Property::Changeable::Always, true);
-    Pbool->Set_help("Enable LuaEngine for scripting and automation.");
-    Pbool->SetBasic(true);
-    
-    Pbool = secprop->Add_bool("hooks", Property::Changeable::Always, true);
-    Pbool->Set_help("Enable Lua hooks for CPU and memory events.");
-    Pbool->SetBasic(true);
-    
-    Pbool = secprop->Add_bool("console", Property::Changeable::Always, false);
-    Pbool->Set_help("Enable graphical Lua console window.");
-    Pbool->SetBasic(true);
-    
-    Pstring = secprop->Add_string("autostart", Property::Changeable::Always, "");
-    Pstring->Set_help("Lua script to automatically load and run at startup.");
-    Pstring->SetBasic(true);
-    
-    Pbool = secprop->Add_bool("lrdb_enable", Property::Changeable::Always, false);
-    Pbool->Set_help("Enable LRDB remote Lua debugger server.");
-    Pbool->SetBasic(true);
 
-    Pint = secprop->Add_int("lrdb_port", Property::Changeable::Always, 21110);
-    Pint->Set_help("TCP port for the LRDB remote Lua debugger.");
-    Pint->SetBasic(true);
-#else
-    control->AddSection_line("lua", &Null_Init);
-#endif
+    control->AddSection_line("devices",&Null_Init);
 
     AddMessages();
 }

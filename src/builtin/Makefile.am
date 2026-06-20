@@ -4,6 +4,7 @@ noinst_LIBRARIES = libbuiltin.a
 libbuiltin_a_SOURCES = \
 	dsxmenu_exe_pc98.cpp \
 	dsxmenu_exe_pc.cpp \
+	cwsdpmi_exe_pc98.cpp \
 	cwsdpmi_exe.cpp	\
 	dos32a_exe.cpp \
 	dos4gw_exe.cpp \
@@ -32,9 +33,11 @@ libbuiltin_a_SOURCES = \
 	format_exe.cpp \
 	chkdsk_exe.cpp \
 	ne2000bin.cpp \
+	ipspatch.cpp \
 	textutil.cpp \
 	emsmagic.cpp \
 	shutdown.cpp \
+	ipsmake.cpp \
 	glide2x.cpp \
 	mpxplay.cpp \
 	sys_com.cpp \

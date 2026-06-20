@@ -32,6 +32,7 @@
 
 #include <iomanip>
 #include <sstream>
+using namespace std;
 
 #include "SDL.h"
 #include "SDL_syswm.h"
@@ -39,7 +40,6 @@
 #if defined (WIN32)
 #include <windows.h>
 #include <Shlwapi.h>
-using namespace std;
 
 #ifdef _MSC_VER
 #pragma comment( lib, "Shlwapi" )
@@ -291,7 +291,7 @@ public:
 	*(uint32_t *)(LFB_getAddr(addr))=(uint32_t)val;
     }
 
-    HostPt GetHostReadPt(Bitu phys_page) override {
+    HostPt GetHostReadPt(PageNum phys_page) override {
 	Bitu buffer = (((phys_page<<12) - base_addr[0])>>12)>>GLIDE_PAGE_BITS;
 #if LOG_GLIDE
 	// This only makes sense if full lfb access is used...
@@ -301,7 +301,7 @@ public:
 	return lfb_addr[buffer]+(phys_page<<12);
     }
 
-    HostPt GetHostWritePt(Bitu phys_page) override {
+    HostPt GetHostWritePt(PageNum phys_page) override {
 	Bitu buffer = (((phys_page<<12) - base_addr[0])>>12)>>GLIDE_PAGE_BITS;
 #if LOG_GLIDE
 	// This only makes sense if full lfb access is used...

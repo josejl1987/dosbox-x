@@ -26,6 +26,8 @@
 #include "pic.h"
 #include "fpu.h"
 
+extern bool do_lds_wraparound;
+
 using namespace std;
 
 #define PRE_EXCEPTION { }
@@ -33,6 +35,8 @@ using namespace std;
 #define CPU_CORE CPU_ARCHTYPE_386
 
 #define DoString DoString_Prefetch
+
+static uint16_t last_ea86_offset;
 
 extern bool ignore_opcode_63;
 
@@ -180,15 +184,15 @@ void CPU_Core_Prefetch_reset(void) {
 Bits CPU_Core_Prefetch_Run(void) {
 	bool invalidate_pq=false;
 
-    if (CPU_Cycles <= 0)
-	    return CBRET_NONE;
+	if (CPU_Cycles <= 0)
+		return CBRET_NONE;
 
-    // FIXME: This makes 8086 4-byte prefetch queue impossible to emulate.
-    //        The best way to accomplish this is to have an alternate version
-    //        of this prefetch queue for 286 or lower that fetches in 16-bit
-    //        WORDs instead of 32-bit WORDs.
-    pq_limit = (max(CPU_PrefetchQueueSize,(unsigned int)(4ul + prefetch_unit)) + prefetch_unit - 1ul) & (~(prefetch_unit-1ul));
-    pq_reload = min(pq_limit,(Bitu)8u);
+	// FIXME: This makes 8086 4-byte prefetch queue impossible to emulate.
+	//        The best way to accomplish this is to have an alternate version
+	//        of this prefetch queue for 286 or lower that fetches in 16-bit
+	//        WORDs instead of 32-bit WORDs.
+	pq_limit = (max(CPU_PrefetchQueueSize,(unsigned int)(4ul + prefetch_unit)) + prefetch_unit - 1ul) & (~(prefetch_unit-1ul));
+	pq_reload = min(pq_limit,(Bitu)8u);
 
 	while (CPU_Cycles-->0) {
 		if (invalidate_pq) {
@@ -199,6 +203,7 @@ Bits CPU_Core_Prefetch_Run(void) {
 		last_prefix=MP_NONE;
 		core.opcode_index=cpu.code.big*(Bitu)0x200u;
 		core.prefixes=cpu.code.big;
+		last_ea86_offset=0;
 		core.ea_table=&EATable[cpu.code.big*256u];
 		BaseDS=SegBase(ds);
 		BaseSS=SegBase(ss);
@@ -283,8 +288,8 @@ restart_opcode:
     }
 #endif
 
-	FillFlags();
-	return CBRET_NONE;
+    FillFlags();
+    return CBRET_NONE;
 decode_end:
 	SAVEIP;
 	FillFlags();

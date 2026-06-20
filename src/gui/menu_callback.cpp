@@ -17,8 +17,6 @@
  */
 
 #include <assert.h>
-#include <string>
-#include <functional>
 
 #include "dosbox.h"
 #include "menu.h"
@@ -35,32 +33,20 @@
 #include "inout.h"
 #include "regs.h"
 #include "cpu.h"
+#include "ide.h"
 #include "../dos/drives.h"
 #include "../ints/int10.h"
 #include "../libs/tinyfiledialogs/tinyfiledialogs.h"
-
-#ifdef C_LUA
-#include "../luaengine/luaengine.h"
-#include "../luaengine/gui_windows.h"
-extern LuaEngine luaEngine;
-#endif
-#ifdef C_DEBUG
-#include "../luaengine/symbol_manager.h"
-
-// External declaration for symbol manager
-namespace LuaEngineSymbols {
-    extern SymbolManager* g_symbol_manager;
-}
-using namespace LuaEngineSymbols;
-
-// Forward declarations for symbol-related menu callbacks
-bool load_symbol_file_menu_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * const menuitem);
-bool symbol_management_menu_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * const menuitem);
-#endif
 #ifdef WIN32
 # include "Commdlg.h"
 # include "windows.h"
 # include "Shellapi.h"
+#endif
+#if defined(OS2)
+#define INCL_DOSPROCESS
+#define INCL_DOSERRORS
+#define INCL_WIN
+#include <os2.h>
 #endif
 #ifdef MACOSX
 #include <CoreGraphics/CoreGraphics.h>
@@ -88,7 +74,9 @@ void SendKey(std::string key);
 void MAPPER_ReleaseAllKeys(void);
 void RENDER_Reset(void);
 void resetFontSize(void);
+#if !defined(OSFREE)
 void EMS_DoShutDown(void);
+#endif
 void DOSV_FillScreen(void);
 void CopyClipboard(int all);
 void res_init(void), change_output(int output);
@@ -99,7 +87,6 @@ void DOSBox_ShowConsole(void);
 void Load_Language(std::string name);
 void RebootLanguage(std::string filename, bool confirm=false);
 void MenuBrowseFolder(char drive, std::string const& drive_type);
-void MenuBrowseImageFile(char drive, bool arc, bool boot, bool multiple);
 void MenuBootDrive(char drive);
 void MenuUnmountDrive(char drive);
 void DOSBox_SetSysMenu(void);
@@ -118,6 +105,7 @@ size_t GetGameState_Run(void);
 void DBCSSBCS_mapper_shortcut(bool pressed);
 void AutoBoxDraw_mapper_shortcut(bool pressed);
 extern std::string langname, GetDOSBoxXPath(bool withexe=false);
+std::string formatString(const char* format, ...);
 
 void* GetSetSDLValue(int isget, std::string& target, void* setval) {
     if (target == "wait_on_error") {
@@ -244,6 +232,7 @@ bool drive_mountauto_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * co
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
 
+#if !defined(OSFREE)
     /* menu item has name "drive_A_" ... */
     int drive;
     const char *mname = menuitem->get_name().c_str();
@@ -260,6 +249,7 @@ bool drive_mountauto_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * co
 	char root[4]="A:\\";
 	root[0]=drive+'A';
     MenuMountDrive(drive+'A', root);
+#endif
 
     return true;
 }
@@ -396,11 +386,23 @@ bool drive_mountimg_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * con
         drive = mname[6] - 'A';
         if (drive < 0 || drive >= DOS_DRIVES) return false;
     }
+    else if (!strncmp(mname,"IDEDrive",8)) { /* IDEDrive1m for example */
+        const char *s = mname + 8;
+        const char *e = s; while (isdigit(*e)) e++; if (*e == 'm' || *e == 's') e++;
+        const std::string opts = std::string(s,(size_t)(e-s));
+
+        MAPPER_ReleaseAllKeys();
+        GFX_LosingFocus();
+        GFX_ReleaseMouse();
+        MenuBrowseImageFile(-1, false, false, false, "ide", opts);
+        MAPPER_ReleaseAllKeys();
+        GFX_LosingFocus();
+
+        return true;
+    }
     else {
         return false;
     }
-
-    if (dos_kernel_disabled) return true;
 
     MAPPER_ReleaseAllKeys();
     GFX_LosingFocus();
@@ -423,11 +425,23 @@ bool drive_mountimgs_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * co
         drive = mname[6] - 'A';
         if (drive < 0 || drive >= DOS_DRIVES) return false;
     }
+    else if (!strncmp(mname,"IDEDrive",8)) { /* IDEDrive1m for example */
+        const char *s = mname + 8;
+        const char *e = s; while (isdigit(*e)) e++; if (*e == 'm' || *e == 's') e++;
+        const std::string opts = std::string(s,(size_t)(e-s));
+
+        MAPPER_ReleaseAllKeys();
+        GFX_LosingFocus();
+        GFX_ReleaseMouse();
+        MenuBrowseImageFile(-1, false, false, true, "ide", opts);
+        MAPPER_ReleaseAllKeys();
+        GFX_LosingFocus();
+
+        return true;
+    }
     else {
         return false;
     }
-
-    if (dos_kernel_disabled) return true;
 
     MAPPER_ReleaseAllKeys();
     GFX_LosingFocus();
@@ -488,7 +502,7 @@ bool drive_saveimg_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * cons
         return false;
     if (drive < 0 || drive>=DOS_DRIVES) return false;
     if (!Drives[drive] || dynamic_cast<fatDrive*>(Drives[drive])) {
-        systemmessagebox("Error", "Drive does not exist or is mounted from disk image.", "ok","error", 1);
+        systemmessagebox(MSG_Get("ERROR"), MSG_Get("MENU_DRIVE_NOTEXIST"), "ok","error", 1);
         return false;
     }
 
@@ -507,7 +521,7 @@ bool drive_saveimg_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * cons
 
     for (int i=0; i<MAX_DISK_IMAGES; i++)
         if (imageDiskList[i] && imageDiskList[i]->ffdd && imageDiskList[i]->drvnum == drive) {
-            if (!saveDiskImage(imageDiskList[i], lTheSaveFileName)) systemmessagebox("Error", "Failed to save disk image.", "ok","error", 1);
+            if (!saveDiskImage(imageDiskList[i], lTheSaveFileName)) systemmessagebox(MSG_Get("ERROR"), MSG_Get("MENU_SAVE_IMAGE_FAILED"), "ok","error", 1);
             chdir(Temp_CurrentDir);
             return true;
         }
@@ -515,7 +529,7 @@ bool drive_saveimg_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * cons
     Section_prop *sec = static_cast<Section_prop *>(control->GetSection("dosbox"));
     uint32_t freeMB = sec->Get_int("convert fat free space"), timeout = sec->Get_int("convert fat timeout");
     imageDisk *imagedrv = new imageDisk(Drives[drive], drive, freeMB, timeout);
-    if (!saveDiskImage(imagedrv, lTheSaveFileName)) systemmessagebox("Error", "Failed to save disk image.", "ok","error", 1);
+    if (!saveDiskImage(imagedrv, lTheSaveFileName)) systemmessagebox(MSG_Get("ERROR"), MSG_Get("MENU_SAVE_IMAGE_FAILED"), "ok","error", 1);
     if (imagedrv) delete imagedrv;
 
     if(chdir(Temp_CurrentDir) == -1) {
@@ -526,6 +540,8 @@ bool drive_saveimg_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * cons
 
     return true;
 }
+
+bool IDE_CDROM_Eject(int index,bool slave);
 
 bool drive_unmount_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
     (void)menu;//UNUSED
@@ -538,11 +554,26 @@ bool drive_unmount_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * cons
         drive = mname[6] - 'A';
         if (drive < 0 || drive >= DOS_DRIVES) return false;
     }
+    else if (!strncmp(mname,"IDEDrive",8)) { /* IDEDrive1m for example */
+        const char *s = mname + 8;
+        int idx = (int)strtoul(s,(char**)(&s),10) - 1;
+        bool ms = false;
+
+        if (*s == 'm') {
+                ms = false;
+                s++;
+        }
+        else if (*s == 's') {
+                ms = true;
+                s++;
+        }
+
+        IDE_CDROM_Eject(idx,ms);
+        return true;
+    }
     else {
         return false;
     }
-
-    if (dos_kernel_disabled) return true;
 
     MenuUnmountDrive(drive+'A');
 
@@ -550,6 +581,7 @@ bool drive_unmount_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * cons
 }
 
 void swapInDrive(int drive, unsigned int position=0);
+void IDE_ATAPI_MediaChangeNotify(signed char index, bool slave, bool immediate);
 bool drive_swap_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
@@ -561,11 +593,26 @@ bool drive_swap_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const m
         drive = mname[6] - 'A';
         if (drive < 0 || drive >= DOS_DRIVES) return false;
     }
+    else if (!strncmp(mname,"IDEDrive",8)) { /* IDEDrive1m for example */
+        const char *s = mname + 8;
+        int idx = (int)strtoul(s,(char**)(&s),10) - 1;
+        bool ms = false;
+
+        if (*s == 'm') {
+                ms = false;
+                s++;
+        }
+        else if (*s == 's') {
+                ms = true;
+                s++;
+        }
+
+        IDE_ATAPI_MediaChangeNotify(idx,ms,!dos_kernel_disabled);
+        return true;
+    }
     else {
         return false;
     }
-
-    if (dos_kernel_disabled) return true;
 
     if (drive < DOS_DRIVES && Drives[drive]) {
         LOG(LOG_DOSMISC,LOG_DEBUG)("Triggering swap on drive %c",drive+'A');
@@ -710,6 +757,7 @@ bool change_currentcd_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * c
 }
 
 bool change_currentfd_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
+#if !defined(OSFREE)
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
     int num=0;
@@ -724,11 +772,12 @@ bool change_currentfd_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * c
         } else if (imageDiskList[idrive])
             MenuBrowseFDImage('A'+idrive, ++num, -1);
     }
-#if !defined(HX_DOS)
+# if !defined(HX_DOS)
     if (!num) tinyfd_messageBox("Error","No floppy drive is currently available.","ok","error", 1);
-#endif
+# endif
     MAPPER_ReleaseAllKeys();
     GFX_LosingFocus();
+#endif
     return true;
 }
 
@@ -854,9 +903,11 @@ bool dos_ems_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menu
     if (tmp.size()) {
         Section_prop * dos_section = static_cast<Section_prop *>(control->GetSection("dos"));
         dos_section->HandleInputline(tmp.c_str());
+#if !defined(OSFREE)
         EMS_DoShutDown();
         void EMS_Startup(Section* sec);
         EMS_Startup(NULL);
+#endif
         update_dos_ems_menu();
     }
     return true;
@@ -978,23 +1029,23 @@ bool cpu_speed_emulate_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * 
     else if (!strcmp(mname, "cpu486-133"))
         cyclemu = 47810;
     else if (!strcmp(mname, "cpu586-60"))
-        cyclemu = 31545;
+        cyclemu = 32090;
     else if (!strcmp(mname, "cpu586-66"))
         cyclemu = 35620;
     else if (!strcmp(mname, "cpu586-75"))
-        cyclemu = 43500;
+        cyclemu = 40072;
     else if (!strcmp(mname, "cpu586-90"))
-        cyclemu = 52000;
+        cyclemu = 48087;
     else if (!strcmp(mname, "cpu586-100"))
-        cyclemu = 60000;
+        cyclemu = 53430;
     else if (!strcmp(mname, "cpu586-120"))
-        cyclemu = 74000;
+        cyclemu = 64180;
     else if (!strcmp(mname, "cpu586-133"))
-        cyclemu = 80000;
+        cyclemu = 71240;
     else if (!strcmp(mname, "cpu586-166"))
-        cyclemu = 97240;
-    else if (!strcmp(mname, "cpuak6-166"))
-        cyclemu = 110000;
+        cyclemu = 95548;
+    else if (!strcmp(mname, "cpu586-200"))
+        cyclemu = 114657;
     else if (!strcmp(mname, "cpuak6-200"))
         cyclemu = 130000;
     else if (!strcmp(mname, "cpuak6-300"))
@@ -1269,7 +1320,7 @@ bool vid_pc98_enable_188user_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::i
 
         mainMenu.get_item("pc98_enable_188user").check(enable_pc98_188usermod).refresh_item(mainMenu);
     }
-    
+
     return true;
 }
 
@@ -1292,7 +1343,7 @@ bool vid_pc98_enable_egc_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item 
 
             if(!enable_pc98_grcg) { //Also enable GRCG if GRCG is disabled when enabling EGC
                 enable_pc98_grcg = !enable_pc98_grcg;
-                mem_writeb(0x54C,(enable_pc98_grcg ? 0x02 : 0x00) | (enable_pc98_16color ? 0x04 : 0x00));   
+                mem_writeb(0x54C,(enable_pc98_grcg ? 0x02 : 0x00) | (enable_pc98_16color ? 0x04 : 0x00));
                 pc98_section->HandleInputline("pc-98 enable grcg=1");
             }
         }
@@ -1302,7 +1353,7 @@ bool vid_pc98_enable_egc_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item 
         mainMenu.get_item("pc98_enable_egc").check(enable_pc98_egc).refresh_item(mainMenu);
         mainMenu.get_item("pc98_enable_grcg").check(enable_pc98_grcg).refresh_item(mainMenu);
     }
-    
+
     return true;
 }
 
@@ -1326,7 +1377,7 @@ bool vid_pc98_enable_grcg_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item
         if ((!enable_pc98_grcg) && enable_pc98_egc) { // Also disable EGC if switching off GRCG
             void gdc_egc_enable_update_vars(void);
             enable_pc98_egc = !enable_pc98_egc;
-            gdc_egc_enable_update_vars();   
+            gdc_egc_enable_update_vars();
             pc98_section->HandleInputline("pc-98 enable egc=0");
         }
 
@@ -1340,7 +1391,7 @@ bool vid_pc98_enable_grcg_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item
 bool vid_pc98_enable_analog_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
-    //NOTE: I thought that even later PC-9801s and some PC-9821s could use EGC features in digital 8-colors mode? 
+    //NOTE: I thought that even later PC-9801s and some PC-9821s could use EGC features in digital 8-colors mode?
     extern bool enable_pc98_16color;
     void gdc_16color_enable_update_vars(void);
 
@@ -1363,7 +1414,7 @@ bool vid_pc98_enable_analog_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::it
 bool vid_pc98_enable_analog256_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
-    //NOTE: I thought that even later PC-9801s and some PC-9821s could use EGC features in digital 8-colors mode? 
+    //NOTE: I thought that even later PC-9801s and some PC-9821s could use EGC features in digital 8-colors mode?
     extern bool enable_pc98_256color;
     void gdc_16color_enable_update_vars(void);
 
@@ -1665,7 +1716,7 @@ bool ttf_halfwidth_katakana_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * 
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
     if (!isDBCSCP()||dos.loaded_codepage!=932) {
-        systemmessagebox("Warning", "This function is only available for the Japanese code page (932).", "ok","warning", 1);
+        systemmessagebox("Warning", MSG_Get("MENU_JP_CPONLY"), "ok","warning", 1);
         return true;
     }
     halfwidthkana=!halfwidthkana;
@@ -1680,7 +1731,7 @@ bool ttf_extend_charset_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * cons
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
     if (!isDBCSCP()||(dos.loaded_codepage!=936&&dos.loaded_codepage!=950&&dos.loaded_codepage!=951)) {
-        systemmessagebox("Warning", "This function is only available for the Chinese code pages (936 or 950).", "ok","warning", 1);
+        systemmessagebox("Warning", MSG_Get("MENU_CH_CPONLY"), "ok","warning", 1);
         return true;
     }
     if (dos.loaded_codepage==936) {
@@ -1878,7 +1929,7 @@ void Load_language_file() {
     struct stat st;
     std::string res_path, exepath = GetDOSBoxXPath();
     std::string cwd = std::string(Temp_CurrentDir)+CROSS_FILESPLIT+"languages"+CROSS_FILESPLIT;
-    Cross::GetPlatformResDir(res_path);
+    res_path = Cross::GetPlatformResDir();
     if (stat(cwd.c_str(),&st) != 0 && exepath.size())
         cwd = exepath+(exepath.back()==CROSS_FILESPLIT?"":std::string(1, CROSS_FILESPLIT))+"languages"+CROSS_FILESPLIT;
     if (stat(cwd.c_str(),&st) != 0 && res_path.size())
@@ -1947,6 +1998,10 @@ bool voodoo_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menui
 }
 
 bool glide_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
+#if defined(OSFREE)
+    (void)menu;
+    (void)menuitem;
+#else
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
     Section_prop *section = static_cast<Section_prop *>(control->GetSection("voodoo"));
@@ -1959,9 +2014,10 @@ bool glide_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuit
     if (addovl) VFILE_RegisterBuiltinFileBlob(bfb_GLIDE2X_OVL, "/SYSTEM/");
     else {
         VFILE_Remove("GLIDE2X.OVL","SYSTEM");
-        if (!glideon) systemmessagebox("Warning", "Glide passthrough cannot be enabled. Check the Glide wrapper installation.", "ok","warning", 1);
+        if (!glideon) systemmessagebox("Warning", MSG_Get("MENU_GLIDE_ERROR"), "ok","warning", 1);
     }
     mainMenu.get_item("3dfx_glide").check(addovl).refresh_item(mainMenu);
+#endif
     return true;
 }
 
@@ -2180,7 +2236,7 @@ bool intensity_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const me
     const char *mname = menuitem->get_name().c_str();
     uint16_t oldax=reg_ax, oldbx=reg_bx;
     if (IS_PC98_ARCH||machine==MCH_CGA||(CurMode->mode>7&&CurMode->mode!=0x0019&&CurMode->mode!=0x0043&&CurMode->mode!=0x0054&&CurMode->mode!=0x0055&&CurMode->mode!=0x0064)) {
-        systemmessagebox("Warning", "High intensity is not supported for the current video mode.", "ok","warning", 1);
+        systemmessagebox("Warning", MSG_Get("MENU_HIGH_INTENSITY_ERROR"), "ok","warning", 1);
         return true;
     }
     if (!strcmp(mname, "text_background"))
@@ -2199,7 +2255,6 @@ bool intensity_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const me
 # include <X11/Xlib.h>
 # include <X11/Xatom.h>
 #endif
-#include <sol/sol.hpp>
 
 int GetNumScreen() {
     int numscreen = 1;
@@ -2318,6 +2373,13 @@ bool doublescan_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const m
     (void)menu;//UNUSED
     (void)menuitem;//UNUSED
     MENU_SetBool("render", "doublescan");
+    return true;
+}
+
+bool modeswitch_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+    MENU_SetBool("render", "modeswitch");
     return true;
 }
 
@@ -2447,7 +2509,8 @@ bool save_logas_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const m
     if (lTheSaveFileName==NULL) return false;
 #if C_DEBUG
     bool savetologfile(const char *name);
-    if (!savetologfile(lTheSaveFileName)) systemmessagebox("Warning", ("Cannot save to the file: "+std::string(lTheSaveFileName)).c_str(), "ok","warning", 1);
+    std::string str = formatString(MSG_Get("MENU_SAVE_FILE_ERROR"), lTheSaveFileName);
+    if (!savetologfile(lTheSaveFileName)) systemmessagebox("Warning", str.c_str(), "ok", "warning", 1);
 #endif
     if(chdir(Temp_CurrentDir) == -1) {
         LOG(LOG_GUI, LOG_ERROR)("save_logas_menu_callback failed to change directories.");
@@ -2456,220 +2519,6 @@ bool save_logas_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const m
 #endif
     return true;
 }
-
-extern sol::state lua;
-extern lua_State* LUA;
-bool load_lua_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-#if !defined(HX_DOS)
-    char CurrentDir[512];
-    char* Temp_CurrentDir = CurrentDir;
-    if(getcwd(Temp_CurrentDir, 512) == NULL) {
-        LOG(LOG_GUI, LOG_ERROR)("load_lua_menu_callback failed to get the current working directory.");
-        return false;
-    }
-    std::string cwd = std::string(Temp_CurrentDir) + CROSS_FILESPLIT;
-    const char* lFilterPatterns[] = { "*.lua","*.LUA" };
-    const char* lFilterDescription = "Lua files (*.lua)";
-    char const* luaScriptFile = tinyfd_openFileDialog("Load lua file...", "", 2, lFilterPatterns, lFilterDescription, 0);
-    if(luaScriptFile == NULL) return false;
-    lua.script_file(luaScriptFile);
-
-#endif
-    return true;
-}
-
-#ifdef C_LUA
-extern LuaEngine luaEngine;
-
-bool lua_console_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-    
-    // Toggle Lua console window
-    if (LuaEngineGUIWindows::g_window_manager) {
-        auto* wm = LuaEngineGUIWindows::g_window_manager;
-        if (wm->isConsoleVisible()) {
-            wm->hideConsole();
-        } else {
-            wm->showConsole();
-        }
-    }
-    return true;
-}
-
-bool lua_hex_editor_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-    
-    // Show/hide hex editor window
-    if (LuaEngineGUIWindows::g_window_manager) {
-        LuaEngineGUIWindows::g_window_manager->showHexEditor();
-        LOG_MSG("Lua hex editor window opened");
-    }
-    return true;
-}
-
-bool lua_memory_search_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-    
-    // Show/hide memory search window
-    if (LuaEngineGUIWindows::g_window_manager) {
-        LuaEngineGUIWindows::g_window_manager->showMemorySearch();
-        LOG_MSG("Lua memory search window opened");
-    }
-    return true;
-}
-
-bool lua_watch_list_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-    
-    // Show/hide watch list window
-    if (LuaEngineGUIWindows::g_window_manager) {
-        LuaEngineGUIWindows::g_window_manager->showWatchList();
-        LOG_MSG("Lua watch list window opened");
-    }
-    return true;
-}
-
-bool lua_disassembly_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-    
-    // Show disassembly window
-    if (LuaEngineGUIWindows::g_window_manager) {
-        LuaEngineGUIWindows::g_window_manager->showDisassembly();
-        LOG_MSG("Lua disassembly window opened");
-    }
-    return true;
-}
-
-bool lua_reload_script_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-    
-    // Reload current Lua script
-    if (luaEngine.luaRunning && luaEngine.luaScriptName) {
-        luaEngine.LoadCode(luaEngine.luaScriptName, nullptr);
-        LOG_MSG("Lua script reloaded");
-    }
-    return true;
-}
-
-bool lua_enable_overlay_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-
-    // Lua overlay system is disabled
-    LOG_MSG("Lua overlay system is disabled");
-    return true;
-}
-
-bool lua_performance_stats_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-    
-    // Show Lua performance statistics
-    if (luaEngine.luaRunning) {
-        auto& stats = luaEngine.perf_stats;
-        char stats_buffer[512];
-        snprintf(stats_buffer, sizeof(stats_buffer), 
-                "Frame calls: %llu, Lua time: %llu μs, Script executions: %llu, Memory ops: %llu",
-                (unsigned long long)stats.total_frame_calls,
-                (unsigned long long)stats.total_lua_time_us,
-                (unsigned long long)stats.script_executions,
-                (unsigned long long)stats.memory_operations);
-        LOG_MSG("Lua Performance Stats: %s", stats_buffer);
-    }
-    return true;
-}
-#endif // C_LUA
-
-bool load_symbol_file_menu_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-    
-
-    
-    return true;
-}
-
-bool symbol_management_menu_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * const menuitem) {
-    (void)menu;//UNUSED
-    (void)menuitem;//UNUSED
-    
-#ifdef C_DEBUG
-    if (!g_symbol_manager || !g_symbol_manager->hasSymbols()) {
-        DEBUG_ShowMsg("No symbols loaded. Use 'Load Symbol File' first.");
-        return true;
-    }
-    
-    // Display symbol management dashboard
-    auto symbols = g_symbol_manager->getAllSymbols();
-    auto filename = g_symbol_manager->getLoadedFileName();
-    auto format = g_symbol_manager->getLoadedFormat();
-    
-    const char* format_name = "UNKNOWN";
-    switch (format) {
-        case LuaEngineSymbols::SymbolFormat::MASM_MAP: format_name = "MASM MAP"; break;
-        case LuaEngineSymbols::SymbolFormat::MASM_LST: format_name = "MASM LST"; break;
-        case LuaEngineSymbols::SymbolFormat::WATCOM_MAP: format_name = "Watcom MAP"; break;
-        case LuaEngineSymbols::SymbolFormat::BORLAND_MAP: format_name = "Borland MAP"; break;
-        case LuaEngineSymbols::SymbolFormat::GNU_MAP: format_name = "GNU MAP"; break;
-        default: break;
-    }
-    
-    DEBUG_ShowMsg("=== Symbol Management Dashboard ===");
-    DEBUG_ShowMsg("Loaded file: %s", filename.c_str());
-    DEBUG_ShowMsg("Format: %s", format_name);
-    DEBUG_ShowMsg("Symbol count: %zu", symbols.size());
-    DEBUG_ShowMsg("");
-    
-    // Show symbol breakdown by type
-    std::map<std::string, int> type_counts;
-    for (const auto& symbol : symbols) {
-        type_counts[symbol.type]++;
-    }
-    
-    DEBUG_ShowMsg("Symbol breakdown:");
-    for (const auto& pair : type_counts) {
-        DEBUG_ShowMsg("  %s: %d", pair.first.c_str(), pair.second);
-    }
-    DEBUG_ShowMsg("");
-    
-    // Show first 10 symbols as examples
-    DEBUG_ShowMsg("Sample symbols (first 10):");
-    int count = 0;
-    for (const auto& symbol : symbols) {
-        if (count++ >= 10) break;
-        DEBUG_ShowMsg("  %s @ 0x%08X (%s)", symbol.name.c_str(), symbol.address, symbol.type.c_str());
-    }
-    
-    DEBUG_ShowMsg("");
-    DEBUG_ShowMsg("Commands:");
-    DEBUG_ShowMsg("  - Use 'b [symbol_name]' to set breakpoint at symbol");
-    DEBUG_ShowMsg("  - Use 'u [symbol_name]' to disassemble at symbol");
-    DEBUG_ShowMsg("  - Use 'd [symbol_name]' to view memory at symbol");
-    DEBUG_ShowMsg("=====================================");
-#else
-    DEBUG_ShowMsg("Symbol management not available in non-debug builds");
-#endif
-    
-    return true;
-}
-
-
-
-
-
-
-
-
-
-
 
 bool show_logtext_menu_callback(DOSBoxMenu * const menu,DOSBoxMenu::item * const menuitem) {
     (void)menu;//UNUSED
@@ -3102,9 +2951,9 @@ bool int2fhook_menu_callback(DOSBoxMenu * const xmenu, DOSBoxMenu::item * const 
     if (int2fdbg_hook_callback == 0) {
         void Int2fhook();
         Int2fhook();
-        systemmessagebox("Success", "The INT 2Fh hook has been successfully set.", "ok","info", 1);
+        systemmessagebox("Success", MSG_Get("MENU_INT2F_SUCCESS"), "ok","info", 1);
     } else
-        systemmessagebox("Warning", "The INT 2Fh hook was already set up.", "ok","warning", 1);
+        systemmessagebox("Warning", MSG_Get("MENU_INT2F_ALREADY_SET"), "ok","warning", 1);
 #endif
 
     return true;
@@ -3251,6 +3100,64 @@ bool help_open_url_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * const me
     if (url.size()) {
 #if defined(WIN32)
       ShellExecute(NULL, "open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+#elif defined(OS2)
+      char str[CCHMAXPATH];
+      APIRET rc;
+      char path[CCHMAXPATH], params[100], parambuffer[500], *paramptr;
+      char userPath[CCHMAXPATH], sysPath[CCHMAXPATH];
+      PRFPROFILE profile = { sizeof(userPath), (PSZ)userPath, sizeof(sysPath), (PSZ)sysPath };
+      HINI os2Ini;
+      HAB hAnchor = WinQueryAnchorBlock(WinQueryActiveWindow(HWND_DESKTOP));
+      RESULTCODES result = { 0 };
+      PROGDETAILS details;
+
+      // Initialize buffers
+      memset(path, 0, sizeof(path));
+      memset(parambuffer, 0, sizeof(parambuffer));
+      memset(params, 0, sizeof(params));
+      
+      // We have to look in the OS/2 configuration for the default browser.
+      // First step: Find the configuration files
+      if (!PrfQueryProfile(hAnchor, &profile)) {
+          systemmessagebox(url.c_str(), "Could not query application handle", "ok", "error", 0);
+          return false;
+      }
+      
+      // Second step: Open the configuration files and read exe path and parameters
+      os2Ini = PrfOpenProfile(hAnchor, (PCSZ)userPath);
+      if (os2Ini == NULLHANDLE) {
+          systemmessagebox(url.c_str(), "Could not open user profile", "ok", "error", 0);
+          return false;
+      }
+      if (!PrfQueryProfileString(os2Ini, (PCSZ)"WPURLDEFAULTSETTINGS", (PCSZ)"DefaultBrowserExe", NULL, path, sizeof(path))) {
+          PrfCloseProfile(os2Ini);
+          systemmessagebox(url.c_str(), "Could not find URL settings", "ok", "error", 0);
+          return false;
+      }
+
+      PrfQueryProfileString(os2Ini, (PCSZ)"WPURLDEFAULTSETTINGS", (PCSZ)"DefaultBrowserParameters", NULL, params, sizeof(params));
+      PrfCloseProfile(os2Ini);
+      
+      // concat arguments
+      if (strlen(params) > 0) 
+          strncat(params, " ", 20);
+      strncat(params, url.c_str(), url.length());
+      
+      // Build parameter buffer
+      strcpy(parambuffer, "Browser");
+      paramptr = &parambuffer[strlen(parambuffer)+1];
+      // copy params to buffer
+      strcpy(paramptr, params);
+      paramptr += strlen(params) + 1;
+      // To be sure: Terminate parameter list with NULL
+      *paramptr = '\0';
+
+      // Last step: Execute detached browser
+      rc = DosExecPgm(userPath, sizeof(userPath), EXEC_ASYNC, (PSZ)parambuffer, NULL, &result, (PSZ)path);
+      if (rc != NO_ERROR) {
+          systemmessagebox(url.c_str(), "Could not open browser", "ok", "error", 0);
+          return false;
+      }
 #elif defined(LINUX)
       int ret = system(("xdg-open "+url).c_str());
       return WIFEXITED(ret) && WEXITSTATUS(ret);
@@ -3365,15 +3272,15 @@ void AllocCallback1() {
             mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu486-66").set_text("486DX2 66MHz (~23880 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
             mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu486-100").set_text("486DX4 100MHz (~33445 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
             mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu486-133").set_text("486DX5 133MHz (~47810 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
-            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-60").set_text("Pentium 60MHz (~31545 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
+            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-60").set_text("Pentium 60MHz (~32090 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
             mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-66").set_text("Pentium 66MHz (~35620 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
-            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-75").set_text("Pentium 75MHz (~43500 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
-            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-90").set_text("Pentium 90MHz (~52000 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
-            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-100").set_text("Pentium 100MHz (~60000 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
-            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-120").set_text("Pentium 120MHz (~74000 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
-            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-133").set_text("Pentium 133MHz (~80000 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
-            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-166").set_text("Pentium 166MHz MMX (~97240 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
-            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpuak6-166").set_text("AMD K6 166MHz (~110000 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
+            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-75").set_text("Pentium 75MHz (~40072 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
+            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-90").set_text("Pentium 90MHz (~48087 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
+            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-100").set_text("Pentium 100MHz (~53430 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
+            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-120").set_text("Pentium 120MHz (~64180 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
+            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-133").set_text("Pentium 133MHz (~71240 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
+            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-166").set_text("Pentium 166MHz MMX (~95548 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
+            mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpu586-200").set_text("Pentium 200MHz MMX (~114657 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
             mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpuak6-200").set_text("AMD K6 200MHz (~130000 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
             mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpuak6-300").set_text("AMD K6-2 300MHz (~193000 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
             mainMenu.alloc_item(DOSBoxMenu::item_type_id,"cpuath-600").set_text("AMD Athlon 600MHz (~306000 cycles)").set_callback_function(cpu_speed_emulate_menu_callback);
@@ -3385,7 +3292,7 @@ void AllocCallback1() {
             {
                 DOSBoxMenu::item &item = mainMenu.alloc_item(DOSBoxMenu::submenu_type_id,"VideoFrameskipMenu");
                 item.set_text("Frameskip");
-        
+
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"frameskip_0").set_text("Off").
                     set_callback_function(video_frameskip_common_menu_callback);
 
@@ -3462,10 +3369,16 @@ void AllocCallback1() {
                 DOSBoxMenu::item &item = mainMenu.alloc_item(DOSBoxMenu::submenu_type_id,"VideoOutputMenu");
                 item.set_text("Output");
 
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"output_surface").set_text("Surface").
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"output_surface").set_text("Software (Surface)").
                     set_callback_function(output_menu_callback);
+#if C_DIRECT3D
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"output_direct3d").set_text("Direct3D").
                     set_callback_function(output_menu_callback);
+#if defined(C_SDL2)
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id, "output_direct3d11").set_text("Direct3D11(Experimental)").
+                    set_callback_function(output_menu_callback);
+#endif
+#endif
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"output_opengl").set_text("OpenGL").
                     set_callback_function(output_menu_callback);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"output_openglnb").set_text("OpenGL nearest").
@@ -3480,8 +3393,16 @@ void AllocCallback1() {
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"output_gamelink").set_text("Game Link").
                     set_callback_function(output_menu_callback);
 #endif
+#if defined(MACOSX) && defined(C_SDL2) && C_METAL
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id, "output_metal").set_text("Metal(Experimental)").
+                    set_callback_function(output_menu_callback);
+#endif
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"doublescan").set_text("Doublescan").
                     set_callback_function(doublescan_menu_callback);
+#if C_SDL2
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"modeswitch").set_text("Modeswitch").
+                    set_callback_function(modeswitch_menu_callback);
+#endif
             }
             {
                 DOSBoxMenu::item &item = mainMenu.alloc_item(DOSBoxMenu::submenu_type_id,"VideoVsyncMenu");
@@ -3646,7 +3567,7 @@ void AllocCallback1() {
                     set_callback_function(mixer_info_menu_callback);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"sb_info").set_text("Show Sound Blaster configuration").
                     set_callback_function(sb_device_menu_callback);
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"midi_info").set_text("Show MIDI device configuration").
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"midi_info").set_text("Show MIDI/OPL device configuration").
                     set_callback_function(midi_device_menu_callback);
             }
         }
@@ -3861,6 +3782,30 @@ void AllocCallback1() {
                         mainMenu.alloc_item(DOSBoxMenu::item_type_id,name).set_text(drive_opts[i][1]).set_callback_function(drive_callbacks[i]);
                 }
             }
+
+	    {
+                char name[128],tmp[128];
+
+                /* Additional menus for IDE-only device mounts */
+                for (unsigned int ide=0;ide < MAX_IDE_CONTROLLERS;ide++) {
+                    for (unsigned int ms=0;ms < 2;ms++) {
+                        sprintf(name,"IDEDrive%u%c",ide+1,ms?'s':'m');
+                        sprintf(tmp,"IDE %u%c",ide+1,ms?'s':'m');
+
+                        DOSBoxMenu::item &ditem = mainMenu.alloc_item(DOSBoxMenu::submenu_type_id,name);
+                        ditem.set_text(tmp);
+
+                        for (size_t i=0;drive_opts[i][0] != NULL;i++) {
+	                    const std::string sname = std::string(name) + "_" + drive_opts[i][0];
+                            if (!strcmp(drive_opts[i][1], "--"))
+                                mainMenu.alloc_item(DOSBoxMenu::separator_type_id,sname);
+                            else
+                                mainMenu.alloc_item(DOSBoxMenu::item_type_id,sname).set_text(drive_opts[i][1]).set_callback_function(drive_callbacks[i]);
+	                }
+	            }
+	        }
+	    }
+
         }
 
         {
@@ -3889,8 +3834,6 @@ void AllocCallback1() {
 #if !defined(C_EMSCRIPTEN)
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"show_console").set_text("Show logging console").set_callback_function(show_console_menu_callback);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"clear_console").set_text("Clear logging console").set_callback_function(clear_console_menu_callback);
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"load_symbol_file").set_text("Load Symbol File...").set_callback_function(load_symbol_file_menu_callback);
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"symbol_management").set_text("Symbol Management").set_callback_function(symbol_management_menu_callback).enable(false);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"disable_logging").set_text("Disable logging output").set_callback_function(disable_log_menu_callback).check(control->opt_nolog);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"wait_on_error").set_text("Console wait on error").set_callback_function(wait_on_error_menu_callback).check(sdl.wait_on_error);
 #endif
@@ -3898,16 +3841,6 @@ void AllocCallback1() {
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"show_codetext").set_text("Show code overview").set_callback_function(show_codetext_menu_callback);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"show_logtext").set_text("Show logging text").set_callback_function(show_logtext_menu_callback);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"save_logas").set_text("Save logging as...").set_callback_function(save_logas_menu_callback);
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"load_lua").set_text("Load lua").set_callback_function(load_lua_menu_callback);
-#ifdef C_LUA
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_console").set_text("Lua Console").set_callback_function(lua_console_menu_callback);
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_hex_editor").set_text("Lua Hex Editor").set_callback_function(lua_hex_editor_menu_callback);
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_memory_search").set_text("Lua Memory Search").set_callback_function(lua_memory_search_menu_callback);
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_watch_list").set_text("Lua Watch List").set_callback_function(lua_watch_list_menu_callback);
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_reload_script").set_text("Reload Lua Script").set_callback_function(lua_reload_script_menu_callback);
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_enable_overlay").set_text("Toggle Lua Overlay").set_callback_function(lua_enable_overlay_menu_callback);
-                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_performance_stats").set_text("Lua Performance Stats").set_callback_function(lua_performance_stats_menu_callback);
-#endif
 
                 debugrunmode = debuggerrun;
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"debugger_rundebug").set_text("Debugger option: Run debugger").set_callback_function(debugger_rundebug_menu_callback).check(debugrunmode==0);
@@ -3936,13 +3869,6 @@ void AllocCallback1() {
                     }
                 }
             }
-
-#ifdef C_LUA
-            {
-                DOSBoxMenu::item &item = mainMenu.alloc_item(DOSBoxMenu::submenu_type_id,"LuaMenu");
-                item.set_text("Lua Scripting");
-            }
-#endif
 
             {
 #if C_DEBUG
@@ -3992,6 +3918,7 @@ void AllocCallback2() {
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"sendkey_winlogo").set_text("Send logo key").set_callback_function(sendkey_preset_menu_callback);
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"sendkey_winmenu").set_text("Send menu key").set_callback_function(sendkey_preset_menu_callback);
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"sendkey_alttab").set_text("Send Alt+Tab").set_callback_function(sendkey_preset_menu_callback);
+        mainMenu.alloc_item(DOSBoxMenu::item_type_id,"sendkey_altsysrq").set_text("Send Alt+SysRq/PrtScr").set_callback_function(sendkey_preset_menu_callback);
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"sendkey_ctrlesc").set_text("Send Ctrl+Esc").set_callback_function(sendkey_preset_menu_callback);
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"sendkey_ctrlbreak").set_text("Send Ctrl+Break").set_callback_function(sendkey_preset_menu_callback);
         mainMenu.alloc_item(DOSBoxMenu::item_type_id,"sendkey_cad").set_text("Send Ctrl+Alt+Del").set_callback_function(sendkey_preset_menu_callback);

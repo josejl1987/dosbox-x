@@ -16,10 +16,10 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
-#include "config.h"
-
 #include <stdarg.h>
 #include <string.h>
+
+#include "config.h"
 
 #if (C_DYNAMIC_X86)
 #if defined (WIN32)
@@ -49,6 +49,8 @@
 #define DYN_HASH_SHIFT	(4)
 #define DYN_PAGE_HASH	(4096>>DYN_HASH_SHIFT)
 #define DYN_LINKS		(16)
+
+extern bool do_lds_wraparound;
 
 //#define DYN_LOG 1 //Turn logging on
 
@@ -103,6 +105,7 @@ enum BlockReturnDynX86 {
 	BR_Cycles,
 	BR_Link1,BR_Link2,
 	BR_Opcode,
+	BR_Opcode2,
 	BR_Iret,
 	BR_CallBack,
 	BR_SMCBlock,
@@ -482,6 +485,11 @@ run_block:
 	case BR_Opcode:
 		CPU_CycleLeft+=CPU_Cycles;
 		CPU_Cycles=1;
+		if (!use_dynamic_core_with_paging) dosbox_allow_nonrecursive_page_fault = true;
+		return Safe_CPU_Core_Normal_Run();
+	case BR_Opcode2:
+		CPU_CycleLeft+=CPU_Cycles;
+		CPU_Cycles=2;
 		if (!use_dynamic_core_with_paging) dosbox_allow_nonrecursive_page_fault = true;
 		return Safe_CPU_Core_Normal_Run();
 	case BR_Link1:

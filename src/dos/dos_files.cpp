@@ -39,9 +39,6 @@
 #include "cdrom.h"
 #include "ide.h"
 #include "bios_disk.h"
-#if C_LUA_RE_HOOKS
-#include "lua_re_hooks.h"
-#endif
 
 #define DOS_FILESTART 4
 
@@ -57,6 +54,133 @@ extern bool log_fileio;
 extern bool enable_share_exe, enable_dbcs_tables;
 extern int dos_clipboard_device_access;
 extern const char *dos_clipboard_device_name;
+
+#if defined(__APPLE__) && defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && __MAC_OS_X_VERSION_MIN_REQUIRED < 101200
+
+#include <mach/mach_time.h>
+#include <mach/mach.h>
+#include <mach/thread_info.h>
+#include <sys/time.h>
+#include <errno.h>
+#include <time.h>
+
+typedef enum {
+    _CLOCK_REALTIME = 0,
+#if !defined(CLOCK_REALTIME)
+#define CLOCK_REALTIME _CLOCK_REALTIME
+#endif
+    _CLOCK_MONOTONIC = 6,
+#if !defined(CLOCK_MONOTONIC)
+#define CLOCK_MONOTONIC _CLOCK_MONOTONIC
+#endif
+#if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
+    _CLOCK_MONOTONIC_RAW = 4,
+#if !defined(CLOCK_MONOTONIC_RAW)
+#define CLOCK_MONOTONIC_RAW _CLOCK_MONOTONIC_RAW
+#endif
+    _CLOCK_MONOTONIC_RAW_APPROX = 5,
+#if !defined(CLOCK_MONOTONIC_RAW_APPROX)
+#define CLOCK_MONOTONIC_RAW_APPROX _CLOCK_MONOTONIC_RAW_APPROX
+#endif
+    _CLOCK_UPTIME_RAW = 8,
+#if !defined(CLOCK_UPTIME_RAW)
+#define CLOCK_UPTIME_RAW _CLOCK_UPTIME_RAW
+#endif
+    _CLOCK_UPTIME_RAW_APPROX = 9,
+#if !defined(CLOCK_UPTIME_RAW_APPROX)
+#define CLOCK_UPTIME_RAW_APPROX _CLOCK_UPTIME_RAW_APPROX
+#endif
+#endif
+    _CLOCK_PROCESS_CPUTIME_ID = 12,
+#if !defined(CLOCK_PROCESS_CPUTIME_ID)
+#define CLOCK_PROCESS_CPUTIME_ID _CLOCK_PROCESS_CPUTIME_ID
+#endif
+    _CLOCK_THREAD_CPUTIME_ID = 16
+#if !defined(CLOCK_THREAD_CPUTIME_ID)
+#define CLOCK_THREAD_CPUTIME_ID _CLOCK_THREAD_CPUTIME_ID
+#endif
+} clockid_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int clock_gettime(clockid_t clk_id, struct timespec* tp) {
+    if (!tp) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    switch (clk_id) {
+        case CLOCK_REALTIME: {
+            struct timeval now;
+            if (gettimeofday(&now, NULL) != 0) return -1;
+            tp->tv_sec = now.tv_sec;
+            tp->tv_nsec = now.tv_usec * 1000;
+            return 0;
+        }
+
+        case CLOCK_MONOTONIC:
+        case CLOCK_MONOTONIC_RAW:
+        case CLOCK_MONOTONIC_RAW_APPROX:
+        case CLOCK_UPTIME_RAW:
+        case CLOCK_UPTIME_RAW_APPROX: {
+            static mach_timebase_info_data_t timebase_info = {0};
+            if (timebase_info.denom == 0)
+                mach_timebase_info(&timebase_info);
+
+            uint64_t time = mach_absolute_time();
+            uint64_t nsec = time * timebase_info.numer / timebase_info.denom;
+            tp->tv_sec = nsec / 1000000000;
+            tp->tv_nsec = nsec % 1000000000;
+            return 0;
+        }
+
+        case CLOCK_PROCESS_CPUTIME_ID: {
+            task_thread_times_info_data_t info;
+            mach_msg_type_number_t count = TASK_THREAD_TIMES_INFO_COUNT;
+            if (task_info(mach_task_self(), TASK_THREAD_TIMES_INFO,
+                          (task_info_t)&info, &count) != KERN_SUCCESS) {
+                errno = EINVAL;
+                return -1;
+            }
+            uint64_t usec = info.user_time.seconds * 1000000 + info.user_time.microseconds +
+                            info.system_time.seconds * 1000000 + info.system_time.microseconds;
+            tp->tv_sec = usec / 1000000;
+            tp->tv_nsec = (usec % 1000000) * 1000;
+            return 0;
+        }
+
+        case CLOCK_THREAD_CPUTIME_ID: {
+            thread_basic_info_data_t info;
+            mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+            thread_act_t thread = mach_thread_self();
+            kern_return_t kr = thread_info(thread, THREAD_BASIC_INFO,
+                                           (thread_info_t)&info, &count);
+            mach_port_deallocate(mach_task_self(), thread);
+            if (kr != KERN_SUCCESS) {
+                errno = EINVAL;
+                return -1;
+            }
+            uint64_t usec = info.user_time.seconds * 1000000 + info.user_time.microseconds +
+                            info.system_time.seconds * 1000000 + info.system_time.microseconds;
+            tp->tv_sec = usec / 1000000;
+            tp->tv_nsec = (usec % 1000000) * 1000;
+            return 0;
+        }
+
+        default:
+            errno = EINVAL;
+            return -1;
+    }
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // __MAC_OS_X_VERSION_MIN_REQUIRED < 101200
+
 
 Bitu DOS_FILES = 127;
 DOS_File ** Files = NULL;
@@ -83,7 +207,9 @@ bool DOS_GetFileAttrEx(char const* const name, struct stat *status, uint8_t hdri
 	return Drives[usehdrive?hdrive:drive]->GetFileAttrEx(fullname, status);
 }
 
+#if !defined(OSFREE)
 #include "dos_network2.h"
+#endif
 
 uint8_t DOS_GetDefaultDrive(void) {
 //	return DOS_SDA(DOS_SDA_SEG,DOS_SDA_OFS).GetDrive();
@@ -93,11 +219,12 @@ uint8_t DOS_GetDefaultDrive(void) {
 }
 
 void DOS_SetDefaultDrive(uint8_t drive) {
+	if (dos_kernel_disabled) return;
 //	if (drive<=DOS_DRIVES && ((drive<2) || Drives[drive])) DOS_SDA(DOS_SDA_SEG,DOS_SDA_OFS).SetDrive(drive);
 	if (drive<DOS_DRIVES && ((drive<2) || Drives[drive])) {dos.current_drive = drive; DOS_SDA(DOS_SDA_SEG,DOS_SDA_OFS).SetDrive(drive);}
 }
 
-bool DOS_MakeName(char const * const name,char * const fullname,uint8_t * drive,bool isVolume) {
+bool DOS_MakeName(char const * const name,char * const fullname,uint8_t * drive) {
 	if(!name || *name == 0 || *name == ' ' || *name == '\n' || *name == ':') {
 		/* Both \0 and space are separators and
 		 * empty filenames report file not found */
@@ -107,17 +234,7 @@ bool DOS_MakeName(char const * const name,char * const fullname,uint8_t * drive,
 	char names[LFN_NAMELENGTH];
 	strcpy(names,name);
 	char * name_int = names;
-    if (isVolume)
-    {
-        if(name_int[10] == '.') // Remove extension dot
-        {
-                name_int[10] = name_int[11];
-                name_int[11] = name_int[12];
-                name_int[12] = name_int[13];
-                name_int[13] = 32;
-        }
-	}
-	else if (strlen(names)==14 && name_int[1]==':' && name_int[2]!='\\' && name_int[9]==' ' && name_int[10]=='.') {
+	if (strlen(names)==14 && name_int[1]==':' && name_int[2]!='\\' && name_int[9]==' ' && name_int[10]=='.') {
 		for (unsigned int i=0;i<strlen(names);i++)
 			if (i<10 && name_int[i]==32) {
 				name_int[i]='.';
@@ -127,7 +244,8 @@ bool DOS_MakeName(char const * const name,char * const fullname,uint8_t * drive,
 				name_int[i+4]=0;
 				break;
 			} else if (i<10) name_int[i]=toupper(name_int[i]);
-#if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
+# if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
 	} else if (Network_IsNetworkResource(name)) {
 		unsigned int j=0, k=name[0]=='"'?1:0;
 		if (strlen(name)==2+k||name[2+k]=='*'||name[2+k]=='?'||name[2+k]=='\\'||(strlen(name)==3+k&&name[2+k]=='"')) {
@@ -143,6 +261,7 @@ bool DOS_MakeName(char const * const name,char * const fullname,uint8_t * drive,
 		fullname[j]=0;
 		*drive=DOS_GetDefaultDrive();
 		return true;
+# endif
 #endif
 	}
 
@@ -163,12 +282,6 @@ bool DOS_MakeName(char const * const name,char * const fullname,uint8_t * drive,
 		DOS_SetError(DOSERR_PATH_NOT_FOUND);
 		return false; 
 	}
-
-    if(isVolume) // Don't process any further
-    {
-        strcpy(fullname, name_int);
-        return true;
-    }
 
 	r=0;w=0;
 	while (r<DOS_PATHLENGTH && name_int[r]!=0) {
@@ -304,11 +417,13 @@ bool DOS_GetSFNPath(char const * const path,char * SFNPath,bool LFN) {
     char name[DOS_NAMELENGTH_ASCII], lname[LFN_NAMELENGTH];
     uint32_t size,hsize;uint16_t date;uint16_t time;uint8_t attr;
     if (!DOS_MakeName(path,fulldir,&drive)) return false;
-#if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
+# if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
 	if (Network_IsNetworkResource(fulldir)) {
 		strcpy(SFNPath,fulldir);
 		return true;
 	}
+# endif
 #endif
     sprintf(SFNPath,"%c:\\",drive+'A');
     strcpy(LFNPath,SFNPath);
@@ -436,8 +551,10 @@ bool DOS_MakeDir(char const * const dir) {
 	}
 	if (!DOS_MakeName(dir,fulldir,&drive)) return false;
 	while (strlen(fulldir)&&(*(fulldir+strlen(fulldir)-1)=='.'||*(fulldir+strlen(fulldir)-1)==' ')) *(fulldir+strlen(fulldir)-1)=0;
-#if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
+# if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
 	if (Network_IsNetworkResource(dir)) return Network_MakeDir(dir);
+# endif
 #endif
 	if(Drives[drive]->MakeDir(fulldir)) return true;
 
@@ -457,8 +574,10 @@ bool DOS_RemoveDir(char const * const dir) {
 	uint8_t drive;char fulldir[DOS_PATHLENGTH];
 	if (!DOS_MakeName(dir,fulldir,&drive)) return false;
 	/* Check if exists */
-#if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
+# if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
 	if (Network_IsNetworkResource(dir)) return Network_RemoveDir(dir);
+# endif
 #endif
 	if(!Drives[drive]->TestDir(fulldir)) {
 		DOS_SetError(DOSERR_PATH_NOT_FOUND);
@@ -502,7 +621,9 @@ bool DOS_Rename(char const * const oldname,char const * const newname) {
 	if (!DOS_MakeName(newname,fullnew,&drivenew)) return false;
 	while (strlen(fullnew)&&(*(fullnew+strlen(fullnew)-1)=='.'||*(fullnew+strlen(fullnew)-1)==' ')) *(fullnew+strlen(fullnew)-1)=0;
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
-	if (Network_IsNetworkResource(oldname)) return Network_Rename(oldname,newname);
+ #if !defined(OSFREE)
+    if (Network_IsNetworkResource(oldname)) return Network_Rename(oldname,newname);
+ #endif
 #endif
 
 	/* No tricks with devices */
@@ -575,20 +696,43 @@ bool DOS_FindFirst(const char * search,uint16_t attr,bool fcb_findfirst) {
 		DOS_SetError(DOSERR_NO_MORE_FILES);
 		return false;
 	}
-	if (!DOS_MakeName(search,fullsearch,&drive,attr == DOS_ATTR_VOLUME)) return false;
-	//Check for devices. FindDevice checks for leading subdir as well
-    bool device = false;
-    //if (attr & DOS_ATTR_DEVICE) /* FIX_ME: This line deleted to fix launching Blocek editor (Issue #4385), revert this if this induces other errors */
-        device = DOS_FindDevice(search) != DOS_DEVICES;
 
-    /* Split the search in dir and pattern */
-    forcelfn = false;
+	if (attr == DOS_ATTR_VOLUME) {
+		const char* vol_pattern = search;
+
+		/* Optional drive specification */
+		if (search[1] == ':') {
+			drive = (search[0] | 0x20) - 'a';
+			vol_pattern = search + 2;
+		}
+		else {
+			drive = DOS_GetDefaultDrive();
+		}
+		if (drive >= DOS_DRIVES || !Drives[drive]) {
+			DOS_SetError(DOSERR_PATH_NOT_FOUND);
+			return false;
+		}
+		sdrive = drive;
+		while (*vol_pattern == '\\') vol_pattern++; /* Creative Sound Blaster Pro 2.0 INSTALL uses "A:\*.*" to read volume label */
+		dta.SetupSearch(drive, (uint8_t)attr, vol_pattern);
+
+		return Drives[drive]->FindFirst("", dta, fcb_findfirst);
+	}
+
+	if (!DOS_MakeName(search,fullsearch,&drive)) return false;
+	//Check for devices. FindDevice checks for leading subdir as well
+	bool device = (DOS_FindDevice(search) != DOS_DEVICES);
+
+	/* Split the search in dir and pattern */
+	forcelfn = false;
 	char *find_last = NULL;
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
 	bool net = Network_IsNetworkResource(search);
 	if (net) forcelfn = true;
 	char *p = net ? strchr_dbcs(fullsearch+(fullsearch[0]=='"'?3:2), '\\') : NULL;
 	find_last = strrchr_dbcs(p != NULL ? p + 1 : fullsearch, '\\');
+#endif
 #else
 	find_last = strrchr_dbcs(fullsearch,'\\');
 #endif
@@ -601,7 +745,9 @@ bool DOS_FindFirst(const char * search,uint16_t attr,bool fcb_findfirst) {
 		strcpy(dir,fullsearch);
 	}
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
 	if (!strlen(dir)&&Network_IsNetworkResource(pattern)) {forcelfn=false;return false;}
+#endif
 #endif
 
 	// Silence CHKDSK "Invalid sub-directory entry"
@@ -614,19 +760,21 @@ bool DOS_FindFirst(const char * search,uint16_t attr,bool fcb_findfirst) {
 
 	sdrive=drive;
 	dta.SetupSearch(drive,(uint8_t)attr,pattern);
-    forcelfn = false;
+	forcelfn = false;
 
 	if(device) {
 		find_last = strrchr(pattern,'.');
 		if(find_last) *find_last = 0;
 		//TODO use current date and time
-        dta.SetResult(pattern,pattern,0,0,0,0,DOS_ATTR_DEVICE);
+		dta.SetResult(pattern,pattern,0,0,0,0,DOS_ATTR_DEVICE);
 		LOG(LOG_DOSMISC,LOG_WARN)("finding device %s",pattern);
 		return true;
 	}
-   
+
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
 	if (net) return Network_FindFirst(dir,dta);
+#endif
 #endif
 	if (Drives[drive]->FindFirst(dir,dta,fcb_findfirst)) return true;
 	return false;
@@ -643,8 +791,10 @@ bool DOS_FindNext(void) {
 		return false;
 	}
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+ #if !defined(OSFREE)
     unsigned int pos = lfn_filefind_handle>=LFN_FILEFIND_MAX?dta.GetDirID():lfn_id[lfn_filefind_handle];
 	if (pos==65534) return Network_FindNext(dta);
+ #endif
 #endif
 	if (Drives[i]->FindNext(dta)) return true;
 	return false;
@@ -658,8 +808,10 @@ bool DOS_ReadFile(uint16_t entry,uint8_t * data,uint16_t * amount,bool fcb) {
 		return false;
 	}
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
-	if(Network_IsActiveResource(entry))
+ #if !defined(OSFREE)
+    if(Network_IsActiveResource(entry))
 		return Network_ReadFile(entry,data,amount);
+ #endif
 #endif
 	if (!Files[handle] || !Files[handle]->IsOpen()) {
 		DOS_SetError(DOSERR_INVALID_HANDLE);
@@ -676,27 +828,24 @@ bool DOS_ReadFile(uint16_t entry,uint8_t * data,uint16_t * amount,bool fcb) {
 	}
 */
 	uint16_t toread=*amount;
-	uint32_t file_offset = Files[handle]->GetSeekPos();
 	bool ret=Files[handle]->Read(data,&toread);
 	*amount=toread;
-#if C_LUA_RE_HOOKS
-	LuaReHooks::OnFileReadComplete(static_cast<uint16_t>(entry),
-	                               Files[handle]->name ? Files[handle]->name : "",
-	                               (file_offset != 0xffffffff) ? file_offset : 0,
-	                               *amount, toread, ret);
-#endif
 	return ret;
 }
 
 bool DOS_WriteFile(uint16_t entry,const uint8_t * data,uint16_t * amount,bool fcb) {
+	if (dos_kernel_disabled) E_Exit("Attempt to write to DOS file handle while guest OS is running");
+
 	uint32_t handle = fcb?entry:RealHandle(entry);
 	if (handle>=DOS_FILES) {
 		DOS_SetError(DOSERR_INVALID_HANDLE);
 		return false;
 	}
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
-	if(Network_IsActiveResource(entry))
+ #if !defined(OSFREE)
+    if(Network_IsActiveResource(entry))
 		return Network_WriteFile(entry,data,amount);
+ #endif
 #endif
 	if (!Files[handle] || !Files[handle]->IsOpen()) {
 		DOS_SetError(DOSERR_INVALID_HANDLE);
@@ -713,15 +862,8 @@ bool DOS_WriteFile(uint16_t entry,const uint8_t * data,uint16_t * amount,bool fc
 	}
 */
 	uint16_t towrite=*amount;
-	uint32_t file_offset = Files[handle]->GetSeekPos();
 	bool ret=Files[handle]->Write(data,&towrite);
 	*amount=towrite;
-#if C_LUA_RE_HOOKS
-	LuaReHooks::OnFileWriteComplete(static_cast<uint16_t>(entry),
-	                                Files[handle]->name ? Files[handle]->name : "",
-	                                (file_offset != 0xffffffff) ? file_offset : 0,
-	                                *amount, towrite, ret);
-#endif
 	return ret;
 }
 
@@ -732,8 +874,10 @@ bool DOS_SeekFile(uint16_t entry,uint32_t * pos,uint32_t type,bool fcb) {
 		return false;
 	}
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
-	if(Network_IsActiveResource(entry))
+# if !defined(OSFREE)
+    if(Network_IsActiveResource(entry))
 		return Network_SeekFile(entry,pos,type);
+# endif
 #endif
 	if (!Files[handle] || !Files[handle]->IsOpen()) {
 		DOS_SetError(DOSERR_INVALID_HANDLE);
@@ -744,13 +888,7 @@ bool DOS_SeekFile(uint16_t entry,uint32_t * pos,uint32_t type,bool fcb) {
 		LOG(LOG_FILES, LOG_DEBUG)("Seeking to %d bytes from position type (%d) in %s ", *pos, type, Files[handle]->name);
 	}
 
-	bool ret = Files[handle]->Seek(pos,type);
-#if C_LUA_RE_HOOKS
-	LuaReHooks::OnFileSeekComplete(static_cast<uint16_t>(entry),
-	                               Files[handle]->name ? Files[handle]->name : "",
-	                               *pos, ret);
-#endif
-	return ret;
+	return Files[handle]->Seek(pos,type);
 }
 
 /* ert, 20100711: Locking extensions */
@@ -774,8 +912,10 @@ bool DOS_CloseFile(uint16_t entry, bool fcb, uint8_t * refcnt) {
 		return false;
 	}
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
-	if(Network_IsActiveResource(entry))
+# if !defined(OSFREE)
+    if(Network_IsActiveResource(entry))
 		return Network_CloseFile(entry);
+# endif
 #endif
 	if (!Files[handle]) {
 		DOS_SetError(DOSERR_INVALID_HANDLE);
@@ -792,16 +932,11 @@ bool DOS_CloseFile(uint16_t entry, bool fcb, uint8_t * refcnt) {
 	if (!fcb) psp.SetFileHandle(entry,0xff);
 
 	Bits refs=Files[handle]->RemoveRef();
-#if C_LUA_RE_HOOKS
-	{
-		const char* name = Files[handle] && Files[handle]->name ? Files[handle]->name : "";
-		LuaReHooks::OnFileClose(static_cast<uint16_t>(entry), name,
-		                        static_cast<uint8_t>((refs <= 0) ? 0 : refs));
-	}
-#endif
 	if (refs<=0) {
-		delete Files[handle];
-		Files[handle]=nullptr;
+		if (!Files[handle]->neverclose) { // Prevent removal of CON/AUX/PRN from SFT
+			delete Files[handle];
+			Files[handle]=nullptr;
+		}
 	}
 	if (refcnt!=NULL) *refcnt=static_cast<uint8_t>(refs+1);
 	return true;
@@ -814,8 +949,10 @@ bool DOS_FlushFile(uint16_t entry) {
 		return false;
 	}
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
-	if(Network_IsActiveResource(entry))
+ #if !defined(OSFREE)
+    if(Network_IsActiveResource(entry))
 		return Network_FlushFile(entry);
+ #endif
 #endif
 	if (!Files[handle] || !Files[handle]->IsOpen()) {
 		DOS_SetError(DOSERR_INVALID_HANDLE);
@@ -828,6 +965,9 @@ bool DOS_FlushFile(uint16_t entry) {
 	return true;
 }
 
+#if defined(OSFREE)
+bool openfile_deny_non_z=true;
+#endif
 
 bool DOS_CreateFile(char const * name,uint16_t attributes,uint16_t * entry,bool fcb) {
 	// Creation of a device is the same as opening it
@@ -839,10 +979,22 @@ bool DOS_CreateFile(char const * name,uint16_t attributes,uint16_t * entry,bool 
 	char fullname[DOS_PATHLENGTH];uint8_t drive;
 	DOS_PSP psp(dos.psp());
 	if (!DOS_MakeName(name,fullname,&drive)) return false;
+
+#if defined(OSFREE)
+	/* in OSFREE mode, only drive Z: is permitted */
+	if (drive != 25 && openfile_deny_non_z) {
+		LOG(LOG_FILES,LOG_NORMAL)("OSFREE policy: access denied to drive %c -> %s",drive+'A',fullname);
+		DOS_SetError(DOSERR_ACCESS_DENIED);
+		return false;
+	}
+#endif
+
 	while (strlen(fullname)&&(*(fullname+strlen(fullname)-1)=='.'||*(fullname+strlen(fullname)-1)==' ')) *(fullname+strlen(fullname)-1)=0;
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
-	if(Network_IsNetworkResource(name))
+# if !defined(OSFREE)
+    if(Network_IsNetworkResource(name))
 		return Network_CreateFile(name,attributes,entry);
+# endif
 #endif
 
 	/* Check for a free file handle */
@@ -877,21 +1029,24 @@ bool DOS_CreateFile(char const * name,uint16_t attributes,uint16_t * entry,bool 
 		}
 		if (!fcb) psp.SetFileHandle(*entry,handle);
 		if (Files[handle]) Drives[drive]->EmptyCache();
-#if C_LUA_RE_HOOKS
-		LuaReHooks::OnFileOpenComplete(*entry,
-		                               Files[handle] && Files[handle]->name ? Files[handle]->name : name,
-		                               true);
-#endif
 		return true;
 	} else {
-#if C_LUA_RE_HOOKS
-		LuaReHooks::OnFileOpenComplete(*entry, name, false);
-#endif
 		if(dos.errorcode==DOSERR_ACCESS_DENIED||dos.errorcode==DOSERR_WRITE_PROTECTED) return false;
 		if(!PathExists(name)) DOS_SetError(DOSERR_PATH_NOT_FOUND); 
 		else DOS_SetError(DOSERR_FILE_NOT_FOUND);
 		return false;
 	}
+}
+
+bool DOS_OpenExistingSFTEntry(uint16_t jft_handle,int sft_handle) {
+	DOS_PSP psp(dos.psp());
+
+	if (sft_handle >= 0 && sft_handle < 255 && Files[sft_handle] != NULL)
+		psp.SetFileHandle(jft_handle,sft_handle);
+	else
+		psp.SetFileHandle(jft_handle,0xFF);
+
+	return true;
 }
 
 bool DOS_OpenFile(char const * name,uint8_t flags,uint16_t * entry,bool fcb) {
@@ -904,7 +1059,7 @@ bool DOS_OpenFile(char const * name,uint8_t flags,uint16_t * entry,bool fcb) {
 	uint8_t devnum = DOS_FindDevice(name);
 	bool device = (devnum != DOS_DEVICES);
 	if(!device && DOS_GetFileAttr(name,&attr)) {
-	//DON'T ALLOW directories to be opened. (skip test if file is device).
+		//DON'T ALLOW directories to be opened. (skip test if file is device).
 		if((attr & DOS_ATTR_DIRECTORY) || (attr & DOS_ATTR_VOLUME)){
 			DOS_SetError(DOSERR_ACCESS_DENIED);
 			return false;
@@ -914,9 +1069,12 @@ bool DOS_OpenFile(char const * name,uint8_t flags,uint16_t * entry,bool fcb) {
 	char fullname[DOS_PATHLENGTH];uint8_t drive;uint8_t i;
 	/* First check if the name is correct */
 	if (!DOS_MakeName(name,fullname,&drive)) return false;
+
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+# if !defined(OSFREE)
 	if(Network_IsNetworkResource(name))
 		return Network_OpenFile(name,flags,entry);
+# endif
 #endif
 	uint8_t handle=255;		
 	/* Check for a free file handle */
@@ -939,32 +1097,33 @@ bool DOS_OpenFile(char const * name,uint8_t flags,uint16_t * entry,bool fcb) {
 	}
 	bool exists=false;
 	if (device) {
-        if (Devices[devnum]->GetInformation() & EXT_DEVICE_BIT)
-            Files[handle] = new DOS_ExtDevice(*(DOS_ExtDevice*)Devices[devnum]);
-        else
-		    Files[handle]=new DOS_Device(*Devices[devnum]);
+		if (Devices[devnum]->GetInformation() & DeviceInfoFlags::ExternalDevice)
+			Files[handle] = new DOS_ExtDevice(*(DOS_ExtDevice*)Devices[devnum]);
+		else
+			Files[handle] = new DOS_Device(*Devices[devnum]);
 	} else {
+#if defined(OSFREE)
+		/* in OSFREE mode, only drive Z: is permitted */
+		if (drive != 25 && openfile_deny_non_z) {
+			LOG(LOG_FILES,LOG_NORMAL)("OSFREE policy: access denied to drive %c -> %s",drive+'A',fullname);
+			DOS_SetError(DOSERR_ACCESS_DENIED);
+			return false;
+		}
+#endif
+
 		uint16_t olderror=dos.errorcode;
 		dos.errorcode=0;
-        exists=Drives[drive]->FileOpen(&Files[handle],fullname,flags) || Drives[drive]->FileOpen(&Files[handle],upcase(fullname),flags);
+		exists=Drives[drive]->FileOpen(&Files[handle],fullname,flags) || Drives[drive]->FileOpen(&Files[handle],upcase(fullname),flags);
 		if (exists) Files[handle]->SetDrive(drive);
 		else if (dos.errorcode==DOSERR_ACCESS_CODE_INVALID) return false;
 		dos.errorcode=olderror;
 	}
-	if (exists || device ) { 
+	if (exists || device) { 
 		Files[handle]->AddRef();
 		psp.SetFileHandle(*entry,handle);
 		Files[handle]->drive = drive;
-#if C_LUA_RE_HOOKS
-		LuaReHooks::OnFileOpenComplete(*entry,
-		                                 Files[handle]->name ? Files[handle]->name : name,
-		                                 true);
-#endif
 		return true;
 	} else {
-#if C_LUA_RE_HOOKS
-		LuaReHooks::OnFileOpenComplete(*entry, name, false);
-#endif
 		//Test if file exists, but opened in read-write mode (and writeprotected)
 		if((((flags&3) != OPEN_READ) || (enable_share_exe && !strncmp(Drives[drive]->GetInfo(),"local directory ",16))) && Drives[drive]->FileExists(fullname))
 			DOS_SetError(DOSERR_ACCESS_DENIED);
@@ -977,7 +1136,9 @@ bool DOS_OpenFile(char const * name,uint8_t flags,uint16_t * entry,bool fcb) {
 }
 
 bool DOS_OpenFileExtended(char const * name, uint16_t flags, uint16_t createAttr, uint16_t action, uint16_t *entry, uint16_t* status) {
+// FIXME: Not yet supported : Bit 12 of flags (FAT32 allow files up to 4GB instead of 2GB)
 // FIXME: Not yet supported : Bit 13 of flags (int 0x24 on critical error)
+// FIXME: Not yet supported : Bit 14 of flags (auto commit on every write)
 	uint16_t result = 0;
 	if (action==0) {
 		// always fail setting
@@ -1038,8 +1199,20 @@ bool DOS_UnlinkFile(char const * const name) {
 		return false;
 	}
 	if (!DOS_MakeName(name,fullname,&drive)) return false;
+
+#if defined(OSFREE)
+	/* in OSFREE mode, only drive Z: is permitted */
+	if (drive != 25 && openfile_deny_non_z) {
+		LOG(LOG_FILES,LOG_NORMAL)("OSFREE policy: access denied to drive %c -> %s",drive+'A',fullname);
+		DOS_SetError(DOSERR_ACCESS_DENIED);
+		return false;
+	}
+#endif
+
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
-	if (Network_IsNetworkResource(name)) return Network_UnlinkFile(name);
+# if !defined(OSFREE)
+    if (Network_IsNetworkResource(name)) return Network_UnlinkFile(name);
+# endif
 #endif
 	if(Drives[drive]->FileUnlink(fullname)){
 		return true;
@@ -1121,7 +1294,8 @@ bool DOS_GetFileAttr(char const * const name,uint16_t * attr) {
 			return true;
 	}
 #if !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
-	if (Network_IsNetworkResource(name)) {
+# if !defined(OSFREE)
+    if (Network_IsNetworkResource(name)) {
 		if (Network_GetFileAttr(name, attr)) {
 			return true;
 		} else {
@@ -1129,6 +1303,7 @@ bool DOS_GetFileAttr(char const * const name,uint16_t * attr) {
 			return false;
 		}
 	}
+# endif
 #endif
 #endif
 
@@ -1156,6 +1331,15 @@ HANDLE DOS_CreateOpenFile(char const* const name)
 	uint8_t drive;
 	if (!DOS_MakeName(name, fullname, &drive))
 		return INVALID_HANDLE_VALUE;
+
+#if defined(OSFREE)
+	/* in OSFREE mode, only drive Z: is permitted */
+	if (drive != 25 && openfile_deny_non_z) {
+		LOG(LOG_FILES,LOG_NORMAL)("OSFREE policy: access denied to drive %c -> %s",drive+'A',fullname);
+		return INVALID_HANDLE_VALUE;
+	}
+#endif
+
 	return Drives[drive]->CreateOpenFile(fullname);
 }
 #endif
@@ -1165,6 +1349,16 @@ bool DOS_SetFileAttr(char const * const name,uint16_t attr)
 {
 	char fullname[DOS_PATHLENGTH];uint8_t drive;
 	if (!DOS_MakeName(name,fullname,&drive)) return false;
+
+#if defined(OSFREE)
+	/* in OSFREE mode, only drive Z: is permitted */
+	if (drive != 25 && openfile_deny_non_z) {
+		LOG(LOG_FILES,LOG_NORMAL)("OSFREE policy: access denied to drive %c -> %s",drive+'A',fullname);
+		DOS_SetError(DOSERR_ACCESS_DENIED);
+		return false;
+	}
+#endif
+
 	if (strncmp(Drives[drive]->GetInfo(),"CDRom ",6)==0 || strncmp(Drives[drive]->GetInfo(),"isoDrive ",9)==0) {
 		DOS_SetError(DOSERR_ACCESS_DENIED);
 		return false;
@@ -1174,7 +1368,9 @@ bool DOS_SetFileAttr(char const * const name,uint16_t attr)
 	 * Also Windows 95 setup likes to create WINBOOT.INI as a file and then chattr it into a directory for some stupid reason. */
 	uint16_t old_attr;
 #if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
-	if ((Network_IsNetworkResource(name)&&!Network_GetFileAttr(name,&old_attr))||(!Network_IsNetworkResource(name)&&!Drives[drive]->GetFileAttr(fullname,&old_attr)))
+# if !defined(OSFREE)
+    if ((Network_IsNetworkResource(name)&&!Network_GetFileAttr(name,&old_attr))||(!Network_IsNetworkResource(name)&&!Drives[drive]->GetFileAttr(fullname,&old_attr)))
+# endif
 #else
 	if (!Drives[drive]->GetFileAttr(fullname,&old_attr))
 #endif
@@ -1196,8 +1392,10 @@ bool DOS_SetFileAttr(char const * const name,uint16_t attr)
 
 	attr = (attr & ~attr_mask) | (old_attr & attr_mask);
 
-#if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
+# if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
     if (Network_IsNetworkResource(name)) return Network_SetFileAttr(name,attr);
+# endif
 #endif
 	return Drives[drive]->SetFileAttr(fullname,attr);
 }
@@ -1207,11 +1405,13 @@ bool DOS_Canonicalize(char const * const name,char * const big) {
 	uint8_t drive;
 	char fullname[DOS_PATHLENGTH];
 	if (!DOS_MakeName(name,fullname,&drive)) return false;
-#if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
+# if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
 	if (Network_IsNetworkResource(name)) {
         strcpy(&big[0], name);
         return true;
     }
+# endif
 #endif
 	big[0]=drive+'A';
 	big[1]=':';
@@ -2031,8 +2231,10 @@ void DOS_FCBSetRandomRecord(uint16_t seg, uint16_t offset) {
 bool DOS_FileExists(char const * const name) {
 	char fullname[DOS_PATHLENGTH];uint8_t drive;
 	if (!DOS_MakeName(name,fullname,&drive)) return false;
-#if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
+# if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
 	if (Network_IsNetworkResource(name)) return Network_FileExists(fullname);
+# endif
 #endif
 	return Drives[drive]->FileExists(fullname);
 }
@@ -2066,11 +2268,13 @@ bool DOS_GetFileDate(uint16_t entry, uint16_t* otime, uint16_t* odate) {
 		DOS_SetError(DOSERR_INVALID_HANDLE);
 		return false;
 	}
-#if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
+# if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
 	if(Network_IsActiveResource(entry))
 		return Network_GetFileDate(entry, otime, odate);
+# endif
 #endif
-	if (!Files[handle] || !Files[handle]->IsOpen()) {
+    if (!Files[handle] || !Files[handle]->IsOpen()) {
 		DOS_SetError(DOSERR_INVALID_HANDLE);
 		return false;
 	}
@@ -2090,9 +2294,11 @@ bool DOS_SetFileDate(uint16_t entry, uint16_t ntime, uint16_t ndate)
 		DOS_SetError(DOSERR_INVALID_HANDLE);
 		return false;
 	}
-#if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
+#if !defined(OSFREE)
+# if defined(WIN32) && !(defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR))
 	if(Network_IsActiveResource(entry))
 		return Network_SetFileDate(entry, ntime, ndate);
+# endif
 #endif
 	if (!Files[handle]) {
 		DOS_SetError(DOSERR_INVALID_HANDLE);
@@ -2118,21 +2324,21 @@ void DOS_SetupFiles (void) {
 		if (Drives[i]) DriveManager::UnmountDrive(i);
 		Drives[i]=nullptr;
 	}
-    for (int i=0; i<MAX_DISK_IMAGES; i++) {
-        if (imageDiskList[i]) {
-            delete imageDiskList[i];
-            imageDiskList[i] = NULL;
-        }
-    }
-    if (swapInDisksSpecificDrive != -1) {
-        for (size_t si=0;si < MAX_SWAPPABLE_DISKS;si++) {
-            if (diskSwap[si] != NULL) {
-                diskSwap[si]->Release();
-                diskSwap[si] = NULL;
-            }
-        }
-        swapInDisksSpecificDrive = -1;
-    }
+	for (int i=0; i<MAX_DISK_IMAGES; i++) {
+		if (imageDiskList[i]) {
+			delete imageDiskList[i];
+			imageDiskList[i] = NULL;
+		}
+	}
+	if (swapInDisksSpecificDrive != -1) {
+		for (size_t si=0;si < MAX_SWAPPABLE_DISKS;si++) {
+			if (diskSwap[si] != NULL) {
+				diskSwap[si]->Release();
+				diskSwap[si] = NULL;
+			}
+		}
+		swapInDisksSpecificDrive = -1;
+	}
 	Drives[25]=new Virtual_Drive();
 }
 
@@ -2234,7 +2440,7 @@ char overlaydir[CROSS_LEN];
 void MSCDEX_SetCDInterface(int intNr, int forceCD);
 void POD_Save_DOS_Files( std::ostream& stream )
 {
-    char dinfo[256];
+    char dinfo[256] = {0};
     WRITE_POD( &ZDRIVE_NUM, ZDRIVE_NUM);
 	if (!dos_kernel_disabled) {
 		// 1. Do drives first (directories -> files)
@@ -2260,8 +2466,10 @@ void POD_Save_DOS_Files( std::ostream& stream )
             *overlaydir=0;
             if (!strncmp(dinfo,"local directory ",16) || !strncmp(dinfo,"CDRom ",6) || !strncmp(dinfo,"PhysFS directory ",17) || !strncmp(dinfo,"PhysFS CDRom ",13) ) {
                 localDrive *ldp = dynamic_cast<localDrive*>(Drives[lcv]);
+#if !defined(OSFREE)
                 if (!ldp) ldp = dynamic_cast<cdromDrive*>(Drives[lcv]);
                 if (!ldp) ldp = dynamic_cast<physfsDrive*>(Drives[lcv]);
+#endif
                 if (ldp) {
                     lalloc.bytes_sector=ldp->allocation.bytes_sector;
                     lalloc.sectors_cluster=ldp->allocation.sectors_cluster;
@@ -2278,11 +2486,14 @@ void POD_Save_DOS_Files( std::ostream& stream )
                     oalloc.free_clusters=odp->allocation.free_clusters;
                     oalloc.mediaid=odp->allocation.mediaid;
                 } else {
+#if !defined(OSFREE)
                     physfsDrive *pdp = dynamic_cast<physfsDrive*>(Drives[lcv]);
                     if (pdp && pdp->getOverlaydir())
                         strcpy(overlaydir,pdp->getOverlaydir());
+#endif
                 }
             } else if (!strncmp(dinfo,"fatDrive ",9)) {
+#if !defined(OSFREE)
                 fatDrive *fdp = dynamic_cast<fatDrive*>(Drives[lcv]);
                 if (fdp) {
                     opts.bytesector=fdp->loadedDisk?fdp->loadedDisk->sector_size:fdp->opts.bytesector;
@@ -2295,6 +2506,7 @@ void POD_Save_DOS_Files( std::ostream& stream )
                     opts.cdrom_sector_offset=fdp->el.cdrom_sector_offset;
                     opts.floppy_emu_type=fdp->el.floppy_emu_type;
                 }
+#endif
             }
 
             WRITE_POD( &overlaydir, overlaydir);
@@ -2333,7 +2545,7 @@ void POD_Save_DOS_Files( std::ostream& stream )
 			//**********************************************
 			//**********************************************
 
-			file_namelen = (uint8_t)strlen( Files[lcv]->name );
+			file_namelen = (uint8_t)( strlen( Files[lcv]->name ) + 1 );
 			file_name = (char *) alloca( file_namelen );
 			strcpy( file_name, Files[lcv]->name );
 
@@ -2399,7 +2611,9 @@ void DOS_EnableDriveMenu(char drv);
 void IDE_Auto(signed char &index,bool &slave);
 bool AttachToBiosByLetter(imageDisk* image, const char drive);
 bool AttachToBiosAndIdeByLetter(imageDisk* image, const char drive, const unsigned char ide_index, const bool ide_slave);
+#if !defined(OSFREE)
 imageDiskMemory* CreateRamDrive(Bitu sizes[], const int reserved_cylinders, const bool forceFloppy, Program* obj);
+#endif
 
 void unmount(int lcv) {
     if (!Drives[lcv] || lcv>=DOS_DRIVES-1) return;
@@ -2452,10 +2666,12 @@ void POD_Load_DOS_Files( std::istream& stream )
                     if (Drives[lcv]) {
                         DOS_EnableDriveMenu('A'+lcv);
                         mem_writeb(Real2Phys(dos.tables.mediaid)+lcv*dos.tables.dpb_size,lalloc.mediaid);
+#if !defined(OSFREE)
                         if (strlen(overlaydir)) {
                             uint8_t error = 0;
                             Drives[lcv]=new Overlay_Drive(dynamic_cast<localDrive*>(Drives[lcv])->getBasedir(),overlaydir,oalloc.bytes_sector,oalloc.sectors_cluster,oalloc.total_clusters,oalloc.free_clusters,oalloc.mediaid,error,options);
                         }
+#endif
                     } else
                         LOG_MSG("Error: Cannot restore drive from directory %s\n", dinfo+16);
                 } else if (!strncmp(dinfo,"CDRom ",6) || !strncmp(dinfo,"PhysFS CDRom ",13)) {
@@ -2468,19 +2684,27 @@ void POD_Load_DOS_Files( std::istream& stream )
                     else
                         MSCDEX_SetCDInterface(CDROM_USE_IOCTL_DIO, num);
                     if (!strncmp(dinfo,"PhysFS CDRom ",13)) {
+#if !defined(OSFREE)
                         std::string str=std::string(dinfo+13);
                         std::size_t found=str.find(", ");
                         if (found!=std::string::npos)
                             str=str.substr(0,found);
                         Drives[lcv] = new physfscdromDrive('A'+lcv,(":"+str+"\\").c_str(),lalloc.bytes_sector,lalloc.sectors_cluster,lalloc.total_clusters,0,lalloc.mediaid,error,options);
-                    } else
+#else
+                        LOG_MSG("Physfs CDROM not supported");
+#endif
+                    } else {
+#if !defined(OSFREE)
                         Drives[lcv] = new cdromDrive('A'+lcv,dinfo+6,lalloc.bytes_sector,lalloc.sectors_cluster,lalloc.total_clusters,lalloc.free_clusters,lalloc.mediaid,error,options);
+#endif
+                    }
                     if (Drives[lcv]) {
                         DOS_EnableDriveMenu('A'+lcv);
                         mem_writeb(Real2Phys(dos.tables.mediaid)+lcv*dos.tables.dpb_size,lalloc.mediaid);
                     } else
                         LOG_MSG("Error: Cannot restore drive from directory %s\n", dinfo+6);
                 } else if (!strncmp(dinfo,"PhysFS directory ",17)) {
+#if !defined(OSFREE)
                     int error = 0;
                     std::string str=std::string(dinfo+17);
                     std::size_t found=str.find(", ");
@@ -2493,6 +2717,9 @@ void POD_Load_DOS_Files( std::istream& stream )
                         mem_writeb(Real2Phys(dos.tables.mediaid)+lcv*dos.tables.dpb_size,lalloc.mediaid);
                     } else
                         LOG_MSG("Error: Cannot restore drive from directory %s\n", dinfo+16);
+#else
+                    LOG_MSG("Physfs not supported");
+#endif
                 } else if (!strncmp(dinfo,"isoDrive ",9) && *(dinfo+9)) {
                     MSCDEX_SetCDInterface(CDROM_USE_SDL, -1);
                     uint8_t mediaid = 0xF8;
@@ -2507,6 +2734,7 @@ void POD_Load_DOS_Files( std::istream& stream )
                         clist.push_back(lcv);
                     }
                 } else if (!strncmp(dinfo,"fatDrive ",9)) {
+#if !defined(OSFREE)
                     fatDrive* newDrive = NULL;
                     Bitu sizes[4] = { 0,0,0,0 };
                     if (opts.mounttype==1) {
@@ -2540,6 +2768,7 @@ void POD_Load_DOS_Files( std::istream& stream )
                         mem_writeb(Real2Phys(dos.tables.mediaid) + lcv*dos.tables.dpb_size, opts.mediaid);
                     } else if ((!opts.mounttype || opts.mounttype==3) && *(dinfo+9))
                         LOG_MSG("Error: Cannot restore drive from image file %s\n", dinfo+9);
+#endif
                 }
             }
 			if( Drives[lcv] ) Drives[lcv]->LoadState(stream);
@@ -2558,14 +2787,15 @@ void POD_Load_DOS_Files( std::istream& stream )
 
 			// - reloc ptr
 			READ_POD( &file_valid, file_valid );
-
 			// ignore system files
 			if( file_valid == 0xfe ) {
 				READ_POD( &Files[lcv]->refCtr, Files[lcv]->refCtr );
 				continue;
 			}
 
-			// shutdown old file
+			// Detach any live pre-restore file object from this slot before loading
+			// the saved entry. Closing/deleting the current object here can crash
+			// during same-session restore for active protected-mode titles.
 			if( Files[lcv] && Files[lcv]->GetName() != NULL ) {
 				// invalid file state - abort
 				if( strcmp( Files[lcv]->GetName(), "NUL" ) == 0 ) break;
@@ -2574,12 +2804,6 @@ void POD_Load_DOS_Files( std::istream& stream )
 				if( strcmp( Files[lcv]->GetName(), "PRN" ) == 0 ) break;
 				if( strcmp( Files[lcv]->GetName(), "AUX" ) == 0 ) break;
 				if( strcmp( Files[lcv]->GetName(), "EMMXXXX0" ) == 0 ) break;//raiden needs this
-
-
-				if( Files[lcv]->IsOpen() ) Files[lcv]->Close();
-				if (Files[lcv]->RemoveRef()<=0) {
-					delete Files[lcv];
-				}
 				Files[lcv]=nullptr;
 			}
 
@@ -2601,7 +2825,16 @@ void POD_Load_DOS_Files( std::istream& stream )
 
 
 			// NOTE: Must open regardless to get 'new' DOS_File class
-			Drives[file_drive]->FileOpen( &Files[lcv], file_name, file_flags );
+			if (file_drive >= DOS_DRIVES || Drives[file_drive] == nullptr) {
+				LOG_MSG("WARNING: Save-state restore skipped file handle %u for drive %u ('%s'): drive entry missing during DOS file restore",
+					(unsigned int)lcv,
+					(unsigned int)file_drive,
+					file_name);
+				Files[lcv] = nullptr;
+			}
+			else {
+				Drives[file_drive]->FileOpen( &Files[lcv], file_name, file_flags );
+			}
 
 			if( Files[lcv] ) {
 				Files[lcv]->LoadState(stream, false);
@@ -2689,8 +2922,10 @@ void POD_Load_DOS_Files( std::istream& stream )
             if (image) AttachToBiosByLetter(image, 'A'+d);
             else LOG_MSG("Warning: Cannot restore drive number from El Torito floppy image.\n");
         } else if (opts.mounttype==2) {
+#if !defined(OSFREE)
             imageDiskMemory* image = CreateRamDrive(sizes, 0, d < 2 && sizes[0] == 0, NULL);
             if (image != NULL && image->Format() == 0x00) AttachToBiosAndIdeByLetter(image, d, (unsigned char)ide_index, ide_slave);
+#endif
         } else if (opts.mounttype==3 && *diskname) {
             imageDisk* image = NULL;
             if (imageDiskVHD::Open(diskname, false, &image)==imageDiskVHD::OPEN_SUCCESS)
@@ -2699,6 +2934,7 @@ void POD_Load_DOS_Files( std::istream& stream )
                 LOG_MSG("Warning: Cannot restore drive number from image file %s\n", diskname);
             image = NULL;
         } else if (!opts.mounttype && *diskname) {
+#if !defined(OSFREE)
             std::vector<std::string> options;
             fatDrive* newDrive = new fatDrive(diskname, opts.bytesector, opts.cylsector, opts.headscyl, opts.cylinders, options);
             if (newDrive->created_successfully) {
@@ -2707,6 +2943,7 @@ void POD_Load_DOS_Files( std::istream& stream )
             } else
                 LOG_MSG("Warning: Cannot restore drive number from image file %s\n", diskname);
             if (newDrive) delete newDrive;
+#endif
         }
         if (i==MAX_DISK_IMAGES-1)
             for (auto &it : clist) {

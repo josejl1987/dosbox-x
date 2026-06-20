@@ -25,6 +25,8 @@
 #include "pic.h"
 #include "fpu.h"
 
+extern bool do_lds_wraparound;
+
 bool CPU_RDMSR();
 bool CPU_WRMSR();
 bool CPU_SYSENTER();
@@ -44,6 +46,8 @@ static inline bool _seg_limit_check(void) {
 #define CPU_Core_Normal_Trap_Run CPU_Core286_Normal_Trap_Run
 
 #define DoString DoString_Normal286
+
+static uint16_t last_ea86_offset;
 
 extern bool ignore_opcode_63;
 
@@ -172,13 +176,14 @@ static INLINE uint32_t Fetchd() {
 #define EALookupTable (core.ea_table)
 
 Bits CPU_Core286_Normal_Run(void) {
-    if (CPU_Cycles <= 0)
-	    return CBRET_NONE;
+	if (CPU_Cycles <= 0)
+		return CBRET_NONE;
 
 	while (CPU_Cycles-->0) {
 		LOADIP;
 		core.prefixes=0;
 		core.opcode_index=0;
+		last_ea86_offset=0;
 		core.ea_table=&EATable[0];
 		BaseDS=SegBase(ds);
 		BaseSS=SegBase(ss);
@@ -223,8 +228,8 @@ restart_opcode:
 		}
 		SAVEIP;
 	}
-	FillFlags();
-	return CBRET_NONE;
+    FillFlags();
+    return CBRET_NONE;
 /* 8086/286 multiple prefix interrupt bug emulation.
  * If an instruction is interrupted, only the last prefix is restarted.
  * See also [https://www.pcjs.org/pubs/pc/reference/intel/8086/] and [https://www.youtube.com/watch?v=6FC-tcwMBnU] */ 

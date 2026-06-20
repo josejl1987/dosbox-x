@@ -40,6 +40,7 @@
 #include "midi.h"
 #include "bios_disk.h"
 #include "../dos/drives.h"
+#include "../ints/int10.h"
 
 #if C_OPENGL
 #include "voodoo.h"
@@ -52,6 +53,13 @@
 #include "shellapi.h"
 #endif
 
+#if defined(OS2)
+#define INCL_DOSPROCESS
+#define INCL_DOSERRORS
+#define INCL_WIN
+#include <os2.h>
+#endif
+
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -59,6 +67,7 @@
 #include <cctype>
 #include <functional>
 #include <assert.h>
+#include <string.h>
 #include <sys/stat.h>
 
 #include "SDL_syswm.h"
@@ -85,8 +94,6 @@ protected:
     std::istringstream      lines;
 };
 
-extern uint8_t              int10_font_14[256 * 14], int10_font_14_init[256 * 14];
-
 extern uint32_t             GFX_Rmask;
 extern unsigned char        GFX_Rshift;
 extern uint32_t             GFX_Gmask;
@@ -108,6 +115,11 @@ extern void                 PasteClipboard(bool bPressed);
 extern bool                 MSG_Write(const char *, const char *);
 extern void                 LoadMessageFile(const char * fname);
 extern void                 GFX_SetTitle(int32_t cycles, int frameskip, Bits timing, bool paused);
+
+#if defined(MACOSX) && defined(C_SDL2) && C_METAL
+void OUTPUT_Metal_Shutdown();
+void change_output(int);
+#endif
 
 static int                  cursor;
 static bool                 running;
@@ -151,15 +163,66 @@ void getlogtext(std::string &str), getcodetext(std::string &text), ApplySetting(
 void ttf_switch_on(bool ss=true), ttf_switch_off(bool ss=true), setAspectRatio(Section_prop * section), GFX_ForceRedrawScreen(void), SetWindowTransparency(int trans);
 bool CheckQuit(void), OpenGL_using(void);
 char tmp1[CROSS_LEN*2], tmp2[CROSS_LEN];
-const char *aboutmsg = "DOSBox-X ver." VERSION " (" OS_PLATFORM " " SDL_STRING " " OS_BIT "-bit)\n" \
-                       "Build date/time: " UPDATED_STR "\nCopyright 2011-" COPYRIGHT_END_YEAR \
-                       " The DOSBox-X Team\nProject maintainer: joncampbell123\nDOSBox-X homepage: https://dosbox-x.com";
+
+std::string GetAboutMsg(uint8_t* len) {
+    std::string retv;
+    char tmp[1024];
+    int written = 0;
+    size_t max_len = 0;
+
+    written = snprintf(tmp,sizeof(tmp),MSG_Get("HELP_ABOUT_VERSION"),
+        VERSION,OS_PLATFORM,SDL_STRING,OS_BIT,
+#if defined(OSFREE)
+        " OSFREE"
+#else
+        ""
+#endif
+    );
+    if(written > 0) {
+        size_t actual_len = std::min<size_t>(written, sizeof(tmp) - 1);
+        max_len = std::max(max_len, actual_len);
+        retv += tmp; retv += "\n";
+    }
+    written = snprintf(tmp,sizeof(tmp),MSG_Get("HELP_ABOUT_UPDATED"),UPDATED_STR);
+    if(written > 0) {
+        size_t actual_len = std::min<size_t>(written, sizeof(tmp) - 1);
+        max_len = std::max(max_len, actual_len);
+        retv += tmp; retv += "\n";
+    }
+    written = snprintf(tmp,sizeof(tmp),MSG_Get("HELP_ABOUT_COPYRIGHT"),"2011",COPYRIGHT_END_YEAR,"The DOSBox-X Team");
+    if(written > 0) {
+        size_t actual_len = std::min<size_t>(written, sizeof(tmp) - 1);
+        max_len = std::max(max_len, actual_len);
+        retv += tmp; retv += "\n";
+    }
+    snprintf(tmp,sizeof(tmp),MSG_Get("HELP_ABOUT_MAINTAINER"),"joncampbell123");
+    if(written > 0) {
+        size_t actual_len = std::min<size_t>(written, sizeof(tmp) - 1);
+        max_len = std::max(max_len, actual_len);
+        retv += tmp; retv += "\n";
+    }
+    written = snprintf(tmp,sizeof(tmp),MSG_Get("HELP_ABOUT_HOMEPAGE"),"https://dosbox-x.com");
+    //written = snprintf(tmp,sizeof(tmp),"TEST1234567890123456789012345678901234567890123456789012345678901234567890"); /* A string to test long messages */
+    if(written > 0) {
+        size_t actual_len = std::min<size_t>(written, sizeof(tmp) - 1);
+        max_len = std::max(max_len, actual_len);
+        retv += tmp; retv += "\n";
+    }
+    if(len) {
+        *len = static_cast<uint8_t>(std::min<size_t>(max_len, 0xFF));
+    }
+    return retv;
+}
 
 void RebootConfig(std::string filename, bool confirm=false) {
     std::string exepath=GetDOSBoxXPath(true), para="-conf \""+filename+"\"";
     if ((!confirm||CheckQuit())&&exepath.size()) {
 #if defined(WIN32)
         ShellExecute(NULL, "open", exepath.c_str(), para.c_str(), NULL, SW_NORMAL);
+#elif defined(OS2)
+        char LoadError[CCHMAXPATH] = {0};
+        RESULTCODES result;
+        DosExecPgm(LoadError, sizeof(LoadError), EXEC_ASYNC, (PSZ)para.c_str(), NULL, &result, (PSZ)exepath.c_str());
 #else
         system((exepath+" "+para+ " &").c_str());
 #endif
@@ -178,6 +241,10 @@ void RebootLanguage(std::string filename, bool confirm=false) {
         if (control->PrintConfig(tmpconfig.c_str(),false,true)&&!stat(tmpconfig.c_str(), &st)) para="-conf "+tmpconfig+" -eraseconf "+para;
 #if defined(WIN32)
         ShellExecute(NULL, "open", exepath.c_str(), para.c_str(), NULL, SW_NORMAL);
+#elif defined(OS2)
+        char LoadError[CCHMAXPATH] = {0};
+        RESULTCODES result;
+        DosExecPgm(LoadError, sizeof(LoadError), EXEC_ASYNC, (PSZ)para.c_str(), NULL, &result, (PSZ)exepath.c_str());
 #else
         system((exepath+" "+para+ " &").c_str());
 #endif
@@ -197,8 +264,11 @@ static void getPixel(Bits x, Bits y, int &r, int &g, int &b, int shift)
     if (x < 0) x = 0;
     if (y < 0) y = 0;
 
-    uint8_t* src = (uint8_t *)&scalerSourceCache;
     uint32_t pixel;
+    uint8_t* src = (uint8_t *)scalerSourceCacheBuffer;
+
+    if (!src) return;
+
     switch (render.scale.inMode) {
         case scalerMode8:
             pixel = *((unsigned int)x+(uint8_t*)(src+(unsigned int)y*(unsigned int)render.scale.cachePitch));
@@ -460,15 +530,15 @@ static GUI::ScreenSDL *UI_Startup(GUI::ScreenSDL *screen) {
             item.set_text(MSG_Get("CONFIG_TOOL_EXIT"));
         }
 
-        guiMenu.displaylist_clear(guiMenu.display_list);
+        guiMenu.displaylist_clear(guiMenu.unassigned_item_handle);
 
         guiMenu.displaylist_append(
-                guiMenu.display_list,
-                guiMenu.get_item_id_by_name("ConfigGuiMenu"));
+            guiMenu.unassigned_item_handle,
+            guiMenu.get_item_id_by_name("ConfigGuiMenu"));
 
         {
             guiMenu.displaylist_append(
-                    guiMenu.get_item("ConfigGuiMenu").display_list, guiMenu.get_item_id_by_name("ExitGUI"));
+                guiMenu.get_item_id_by_name("ConfigGuiMenu"), guiMenu.get_item_id_by_name("ExitGUI"));
         }
     } else if (!shortcut || shortcutid<16) {
         {
@@ -492,10 +562,10 @@ static GUI::ScreenSDL *UI_Startup(GUI::ScreenSDL *screen) {
             item.set_text("");
         }
 
-        nullMenu.displaylist_clear(nullMenu.display_list);
+        nullMenu.displaylist_clear(nullMenu.unassigned_item_handle);
 
         nullMenu.displaylist_append(
-                nullMenu.display_list,
+                nullMenu.unassigned_item_handle,
                 nullMenu.get_item_id_by_name("ConfigGuiMenu"));
     }
 
@@ -1122,6 +1192,8 @@ std::string CapName(std::string name) {
         dispname="AUTOEXEC.BAT";
     else if (name=="sblaster")
         dispname="SB";
+    else if (name=="sblaster2")
+        dispname="SB #2";
     else if (name=="speaker")
         dispname="PC Speaker";
     else if (name=="imfc")
@@ -1179,6 +1251,8 @@ std::string RestoreName(std::string name) {
         dispname="autoexec";
     else if (name=="SB")
         dispname="sblaster";
+    else if (name=="SB #2")
+        dispname="sblaster2";
     else if (name=="PC Speaker")
         dispname="speaker";
     else if (name=="IMFC")
@@ -1215,7 +1289,7 @@ std::string RestoreName(std::string name) {
 }
 
 #if C_DEBUG
-bool ParseCommand(const char* str);
+bool ParseCommand(char* str);
 int logwin = true;
 GUI::MessageBox3 *npwin = NULL;
 class EnterDebuggerCommand : public GUI::ToplevelWindow {
@@ -1237,7 +1311,7 @@ public:
         cmd->raise();
     }
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("OK")) {
             ParseCommand(cmd->getText());
@@ -1252,7 +1326,7 @@ public:
             close();
     }
 
-    bool keyUp(const GUI::Key &key) {
+    bool keyUp(const GUI::Key &key) override {
         if (GUI::ToplevelWindow::keyUp(key)) return true;
 
         if (key.special == GUI::Key::Enter) {
@@ -1282,7 +1356,7 @@ public:
         move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     };
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("DEBUGCMD")) {
             logwin = true;
@@ -1315,7 +1389,7 @@ public:
         move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     };
 
-    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) {
+    void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         (void)b;//UNUSED
         if (arg == MSG_Get("DEBUGCMD")) {
             logwin = false;
@@ -1997,9 +2071,9 @@ public:
         }
         if (arg == MSG_Get("USE_USERCONFIG")) {
             std::string config_path;
-            Cross::GetPlatformConfigDir(config_path);
+            config_path = Cross::GetPlatformConfigDir();
             std::string fullpath,file;
-            Cross::GetPlatformConfigName(file);
+            file = Cross::GetPlatformConfigName();
             const size_t last_slash_idx = config_path.find_last_of("\\/");
             if (std::string::npos != last_slash_idx) {
                 fullpath = config_path.substr(0, last_slash_idx);
@@ -2570,13 +2644,22 @@ public:
     ShowMidiDevice(GUI::Screen *parent, int x, int y, const char *title) :
         ToplevelWindow(parent, x, y, 320, 260, title) {
             std::string name=!midi.handler||!midi.handler->GetName()?"-":midi.handler->GetName();
+            std::string sf_rom{};
             if (name.size()) {
-                if (name=="mt32") name="MT32";
-                else if (name=="fluidsynth") name="FluidSynth";
+                if(name == "mt32") {
+                    name = "MT32";
+                    sf_rom = "\nMT32 ROM path:\n" + sffile;
+                }
+                else if(name == "fluidsynth") {
+                    name = "FluidSynth";
+                    sf_rom = "\nSoundFont file:\n" + sffile;
+                }
                 else name[0]=toupper(name[0]);
             }
             extern std::string getoplmode(), getoplemu();
-            std::string midiinfo = "MIDI available: "+std::string(midi.available?"Yes":"No")+"\nMIDI device: "+name+"\nMIDI soundfont file / ROM path:\n"+sffile+"\nOPL mode: "+getoplmode()+"\nOPL emulation: "+getoplemu();
+            std::string midiinfo = "MIDI available: "+std::string(midi.available?"Yes":"No")+"\nMIDI device: "+name+sf_rom
+                +"\nOPL mode: "+getoplmode()+"\nOPL emulation: "+getoplemu()
+                + (sf_rom.size()?"":"\n\n\n");
             std::istringstream in(midiinfo.c_str());
             int r=0;
             if (in)	for (std::string line; std::getline(in, line); ) {
@@ -2632,6 +2715,7 @@ public:
                         readonly=true;
                     else {
                         readonly=Drives[statusdrive]->readonly;
+#if !defined(OSFREE)
                         if (!path.size()) {
                             fatDrive *fdp = dynamic_cast<fatDrive*>(Drives[statusdrive]);
                             if (fdp!=NULL&&fdp->opts.mounttype==1)
@@ -2639,9 +2723,11 @@ public:
                             else if (fdp!=NULL&&fdp->opts.mounttype==2)
                                 path="RAM drive";
                         }
+#endif
                     }
                     swappos=DriveManager::GetDrivePosition(statusdrive);
                 } else if (!strncmp(info, "PhysFS directory ", 17)) {
+#if !defined(OSFREE)
                     type="PhysFS directory";
                     path=info+17;
                     readonly=true;
@@ -2653,10 +2739,17 @@ public:
                             overlay=std::string(wdir)+(wdir[strlen(wdir)-1]!=CROSS_FILESPLIT?std::string(1, CROSS_FILESPLIT):"")+std::string(1, 'A'+statusdrive)+"_DRIVE";
                         }
                     }
+#else
+                    E_Exit("Physfs directory not supported");
+#endif
                 } else if (!strncmp(info, "PhysFS CDRom ", 13)) {
+#if !defined(OSFREE)
                     type="PhysFS CDRom";
                     path=info+13;
                     readonly=true;
+#else
+                    E_Exit("Physfs CDROM not supported");
+#endif
                 } else if (!strncmp(info, "local directory ", 16)) {
                     type="local directory";
                     path=info+16;
@@ -2766,11 +2859,21 @@ class ShowLoadWarning : public GUI::ToplevelWindow {
 protected:
     GUI::Input *name;
 public:
-    ShowLoadWarning(GUI::Screen *parent, int x, int y, const char *title) :
-        ToplevelWindow(parent, x, y, 430, 120, MSG_Get("WARNING")) {
+    ShowLoadWarning(GUI::Screen *parent, int x, int y, const char *title, const char *detail_what = nullptr, const char *detail_saved = nullptr, const char *detail_current = nullptr) :
+        ToplevelWindow(parent, x, y, (detail_what && detail_saved && strlen(detail_saved)>30)?560:430, detail_what?180:120, MSG_Get("WARNING")) {
             new GUI::Label(this, strncmp(title, "DOSBox-X ", 9)?30:10, 20, title);
-            (new GUI::Button(this, 140, 50, MSG_Get("YES"), 70))->addActionHandler(this);
-            (new GUI::Button(this, 230, 50, MSG_Get("NO"), 70))->addActionHandler(this);
+            int buttons_y = 50;
+            if (detail_what) {
+                int dy = 50;
+                std::string what = detail_what;
+                new GUI::Label(this, 30, dy, (std::string("Saved ") + what + ": " + (detail_saved?detail_saved:"")).c_str());
+                dy += 22;
+                new GUI::Label(this, 30, dy, (std::string("Current ") + what + ": " + (detail_current?detail_current:"")).c_str());
+                dy += 22;
+                buttons_y = dy + 10;
+            }
+            (new GUI::Button(this, (this->getWidth()-160)/2, buttons_y, MSG_Get("YES"), 70))->addActionHandler(this);
+            (new GUI::Button(this, (this->getWidth()-160)/2+90, buttons_y, MSG_Get("NO"), 70))->addActionHandler(this);
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
@@ -3109,14 +3212,30 @@ protected:
     GUI::Input *name;
 public:
     ShowHelpAbout(GUI::Screen *parent, int x, int y, const char *title) :
-        ToplevelWindow(parent, x, y, 420, 230, title) {
-            std::istringstream in(aboutmsg);
+        ToplevelWindow(parent, x, y,
+            [&]() {
+                uint8_t len = 0;
+                std::string msg = GetAboutMsg(&len);
+
+                const int char_w = 8;
+                const int padding = 100;
+
+                return padding + len * char_w;
+            }(),
+                230,
+                title) {
+            uint8_t amsg_len = 0;
+            std::string amsg = GetAboutMsg(&amsg_len);
+            std::istringstream in(amsg);
+            const int char_w = 8;
+            const int padding = 100;
+
             int r=0;
             if (in)	for (std::string line; std::getline(in, line); ) {
                 r+=25;
                 new GUI::Label(this, 40, r, line.c_str());
             }
-            (new GUI::Button(this, 180, 155, MSG_Get("CLOSE"), 70))->addActionHandler(this);
+            (new GUI::Button(this, (padding + amsg_len * char_w - 70) / 2, 155, MSG_Get("CLOSE"), 70))->addActionHandler(this);
             move(parent->getWidth()>this->getWidth()?(parent->getWidth()-this->getWidth())/2:0,parent->getHeight()>this->getHeight()?(parent->getHeight()-this->getHeight())/2:0);
     }
 
@@ -3162,6 +3281,45 @@ public:
     }
 };
 
+struct ThemePresetEntry {
+	ThemePresetEntry(const std::string &_name,const GUI::ThemeWindows31 &&_theme,const unsigned int _special=0) : name(_name), theme(_theme), special(_special) {}
+
+	std::string			name;
+	GUI::ThemeWindows31		theme;
+	unsigned int			special;
+
+	static constexpr unsigned int	PREPEND_HLINE = 1u << 0u;
+	static constexpr unsigned int	PREPEND_VLINE = 1u << 1u;
+};
+
+#define ENTRY(x) ThemePresetEntry( GUI::x::GetName(), GUI::x() )
+#define ENTRYS(x,s) ThemePresetEntry( GUI::x::GetName(), GUI::x(), s )
+static const ThemePresetEntry theme_presets[] = {
+	ENTRY(  ThemeWindows31WindowsDefault),
+	ENTRYS( ThemeWindows31Arizona, ThemePresetEntry::PREPEND_HLINE),
+	ENTRY(  ThemeWindows31Bordeaux),
+	ENTRY(  ThemeWindows31Cinnamon),
+	ENTRY(  ThemeWindows31Designer),
+	ENTRY(  ThemeWindows31EmeraldCity),
+	ENTRY(  ThemeWindows31Fluorescent),
+	ENTRY(  ThemeWindows31HotDogStand),
+	ENTRY(  ThemeWindows31LCDDefaultScreenSettings),
+	ENTRY(  ThemeWindows31LCDReversedDark),
+	ENTRY(  ThemeWindows31LCDReversedLight),
+	ENTRY(  ThemeWindows31BlackLeatherJacket),
+	ENTRYS( ThemeWindows31Mahogany, ThemePresetEntry::PREPEND_VLINE),
+	ENTRY(  ThemeWindows31Monochrome),
+	ENTRY(  ThemeWindows31Ocean),
+	ENTRY(  ThemeWindows31Pastel),
+	ENTRY(  ThemeWindows31Patchwork),
+	ENTRY(  ThemeWindows31PlasmaPowerSaver),
+	ENTRY(  ThemeWindows31Rugby),
+	ENTRY(  ThemeWindows31TheBlues),
+	ENTRY(  ThemeWindows31Tweed),
+	ENTRY(  ThemeWindows31Valentine),
+	ENTRY(  ThemeWindows31Wingtips)
+};
+
 class ConfigurationWindow : public GUI::ToplevelWindow {
 public:
     GUI::Button *saveButton, *closeButton;
@@ -3180,33 +3338,14 @@ public:
         bar->addMenu(MSG_Get("SETTINGS"));
         
         // theme menu
-        {
-            bar->addMenu("Theme"); // TODO MSG_Get("THEME")
-            bar->addItem(2, GUI::ThemeWindows31WindowsDefault::GetName());
-            bar->addItem(2, "");
-            bar->addItem(2, GUI::ThemeWindows31Arizona::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Bordeaux::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Cinnamon::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Designer::GetName());
-            bar->addItem(2, GUI::ThemeWindows31EmeraldCity::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Fluorescent::GetName());
-            bar->addItem(2, GUI::ThemeWindows31HotDogStand::GetName());
-            bar->addItem(2, GUI::ThemeWindows31LCDDefaultScreenSettings::GetName());
-            bar->addItem(2, GUI::ThemeWindows31LCDReversedDark::GetName());
-            bar->addItem(2, GUI::ThemeWindows31LCDReversedLight::GetName());
-            bar->addItem(2, GUI::ThemeWindows31BlackLeatherJacket::GetName());
-            bar->addItem(2, "|");
-            bar->addItem(2, GUI::ThemeWindows31Mahogany::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Monochrome::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Ocean::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Pastel::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Patchwork::GetName());
-            bar->addItem(2, GUI::ThemeWindows31PlasmaPowerSaver::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Rugby::GetName());
-            bar->addItem(2, GUI::ThemeWindows31TheBlues::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Tweed::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Valentine::GetName());
-            bar->addItem(2, GUI::ThemeWindows31Wingtips::GetName());
+        bar->addMenu(MSG_Get("THEME"));
+        for (size_t ti=0;ti < (sizeof(theme_presets)/sizeof(theme_presets[0]));ti++) {
+            if (theme_presets[ti].special & ThemePresetEntry::PREPEND_HLINE)
+                bar->addItem(2, "");
+            if (theme_presets[ti].special & ThemePresetEntry::PREPEND_VLINE)
+                bar->addItem(2, "|");
+
+            bar->addItem(2, theme_presets[ti].name);
         }
         
         bar->addMenu(mainMenu.get_item("HelpMenu").get_text().c_str());
@@ -3247,13 +3386,13 @@ public:
                 "video", "voodoo", "vsync", "ttf",
                 "dos", "dosv", "pc98", "4dos",
                 "autoexec", "config", "cpu", "speaker",
-                "sblaster", "gus", "midi", "mixer",
+                "sblaster", "sblaster2", "gus", "midi", "mixer",
                 "innova", "imfc", "joystick", "mapper",
                 "keyboard", "serial", "parallel", "printer",
                 "ipx", "ne2000", "ethernet, pcap", "ethernet, slirp",
                 "ide, primary", "ide, secondary", "ide, tertiary", "ide, quaternary",
                 "ide, quinternary", "ide, sexternary", "ide, septernary", "ide, octernary",
-                "fdc, primary", "lua",
+                "fdc, primary",
             };
 
             Section* section;
@@ -3330,7 +3469,7 @@ public:
                 TryApplyTheme(
                               dark
                                   ? GUI::ThemeWindows31LCDReversedDark::GetName()
-                                  : GUI::ThemeWindows31LCDReversedLight::GetName());
+                                  : GUI::ThemeWindows31WindowsDefault::GetName());
             }
             else
             {
@@ -3371,59 +3510,24 @@ public:
         return false;
     }
 
-    static void TryApplyTheme(const GUI::String& name)
+    static bool TryApplyTheme(const GUI::String& name)
     {
-        if(name == GUI::ThemeWindows31WindowsDefault::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31WindowsDefault();
-        if(name == GUI::ThemeWindows31Arizona::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Arizona();
-        if(name == GUI::ThemeWindows31Bordeaux::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Bordeaux();
-        if(name == GUI::ThemeWindows31Cinnamon::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Cinnamon();
-        if(name == GUI::ThemeWindows31Designer::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Designer();
-        if(name == GUI::ThemeWindows31EmeraldCity::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31EmeraldCity();
-        if(name == GUI::ThemeWindows31Fluorescent::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Fluorescent();
-        if(name == GUI::ThemeWindows31HotDogStand::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31HotDogStand();
-        if(name == GUI::ThemeWindows31LCDDefaultScreenSettings::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31LCDDefaultScreenSettings();
-        if(name == GUI::ThemeWindows31LCDReversedDark::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31LCDReversedDark();
-        if(name == GUI::ThemeWindows31LCDReversedLight::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31LCDReversedLight();
-        if(name == GUI::ThemeWindows31BlackLeatherJacket::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31BlackLeatherJacket();
-        if(name == GUI::ThemeWindows31Mahogany::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Mahogany();
-        if(name == GUI::ThemeWindows31Monochrome::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Monochrome();
-        if(name == GUI::ThemeWindows31Ocean::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Ocean();
-        if(name == GUI::ThemeWindows31Pastel::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Pastel();
-        if(name == GUI::ThemeWindows31Patchwork::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Patchwork();
-        if(name == GUI::ThemeWindows31PlasmaPowerSaver::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31PlasmaPowerSaver();
-        if(name == GUI::ThemeWindows31Rugby::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Rugby();
-        if(name == GUI::ThemeWindows31TheBlues::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31TheBlues();
-        if(name == GUI::ThemeWindows31Tweed::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Tweed();
-        if(name == GUI::ThemeWindows31Valentine::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Valentine();
-        if(name == GUI::ThemeWindows31Wingtips::GetName())
-            GUI::DefaultTheme = GUI::ThemeWindows31Wingtips();
+        for (size_t ti=0;ti < (sizeof(theme_presets)/sizeof(theme_presets[0]));ti++) {
+            if (name == theme_presets[ti].name) {
+                GUI::DefaultTheme = theme_presets[ti].theme;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     void actionExecuted(GUI::ActionEventSource *b, const GUI::String &arg) override {
         advOptUser = advopt->isChecked();
-        TryApplyTheme(arg); // TODO MSG_Get("THEME"), save to config
+        if (TryApplyTheme(arg)) { // TODO MSG_Get("THEME"), save to config
+            Section_prop * section=static_cast<Section_prop *>(control->GetSection("dosbox"));
+            section->Get_prop("configuration tool theme")->SetValue(arg);
+        }
         GUI::String sname = RestoreName(arg);
         sname.at(0) = (unsigned int)std::tolower((int)sname.at(0));
         Section *sec;
@@ -3471,6 +3575,64 @@ public:
             std::string url = "https://dosbox-x.com/";
 #if defined(WIN32)
             ShellExecute(NULL, "open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+#elif defined(OS2)
+            char str[CCHMAXPATH];
+            APIRET rc;
+            char path[CCHMAXPATH], params[100], parambuffer[500], *paramptr;
+            char userPath[CCHMAXPATH], sysPath[CCHMAXPATH];
+            PRFPROFILE profile = { sizeof(userPath), (PSZ)userPath, sizeof(sysPath), (PSZ)sysPath };
+            HINI os2Ini;
+            HAB hAnchor = WinQueryAnchorBlock(WinQueryActiveWindow(HWND_DESKTOP));
+            RESULTCODES result = { 0 };
+            PROGDETAILS details;
+
+            // Initialize buffers
+            memset(path, 0, sizeof(path));
+            memset(parambuffer, 0, sizeof(parambuffer));
+            memset(params, 0, sizeof(params));
+            
+            // We have to look in the OS/2 configuration for the default browser.
+            // First step: Find the configuration files
+            if (!PrfQueryProfile(hAnchor, &profile)) {
+                systemmessagebox(url.c_str(), "Could not query application handle", "ok", "error", 0);
+                return;
+            }
+            
+            // Second step: Open the configuration files and read exe path and parameters
+            os2Ini = PrfOpenProfile(hAnchor, (PCSZ)userPath);
+            if (os2Ini == NULLHANDLE) {
+                systemmessagebox(url.c_str(), "Could not open user profile", "ok", "error", 0);
+                return;
+            }
+            if (!PrfQueryProfileString(os2Ini, (PCSZ)"WPURLDEFAULTSETTINGS", (PCSZ)"DefaultBrowserExe", NULL, path, sizeof(path))) {
+                PrfCloseProfile(os2Ini);
+                systemmessagebox(url.c_str(), "Could not find URL settings", "ok", "error", 0);
+                return;
+            }
+
+            PrfQueryProfileString(os2Ini, (PCSZ)"WPURLDEFAULTSETTINGS", (PCSZ)"DefaultBrowserParameters", NULL, params, sizeof(params));
+            PrfCloseProfile(os2Ini);
+            
+            // concat arguments
+            if (strlen(params) > 0) 
+                strncat(params, " ", 20);
+            strncat(params, url.c_str(), url.length());
+            
+            // Build parameter buffer
+            strcpy(parambuffer, "Browser");
+            paramptr = &parambuffer[strlen(parambuffer)+1];
+            // copy params to buffer
+            strcpy(paramptr, params);
+            paramptr += strlen(params) + 1;
+            // To be sure: Terminate parameter list with NULL
+            *paramptr = '\0';
+
+            // Last step: Execute detached browser
+            rc = DosExecPgm(userPath, sizeof(userPath), EXEC_ASYNC, (PSZ)parambuffer, NULL, &result, (PSZ)path);
+            if (rc != NO_ERROR) {
+                systemmessagebox(url.c_str(), "Could not open browser", "ok", "error", 0);
+                return;
+            }
 #elif defined(LINUX)
             system(("xdg-open "+url).c_str());
 #elif defined(MACOSX)
@@ -3478,7 +3640,15 @@ public:
 #endif
         } else if (arg == tmp1) {
             //new GUI::MessageBox2(getScreen(), 100, 150, 330, "About DOSBox-X", aboutmsg);
-            new GUI::MessageBox2(getScreen(), getScreen()->getWidth()>350?(parent->getWidth()-350)/2:0, 150, 350, mainMenu.get_item("help_about").get_text().c_str(), aboutmsg);
+            uint8_t amsg_len = 0;
+            std::string amsg = GetAboutMsg(&amsg_len);
+            const int char_w = 8;
+            const int padding = 30;
+            const int min_w = 360;
+            int msg_w = std::max(min_w, padding + amsg_len * char_w);
+            int screen_w = getScreen()->getWidth();
+            int x = screen_w > msg_w ? (screen_w - msg_w) / 2 : 0;
+            new GUI::MessageBox2(getScreen(), x, 150, msg_w, mainMenu.get_item("help_about").get_text().c_str(), amsg.c_str());
         } else if (arg == MSG_Get("INTRODUCTION")) {
             //new GUI::MessageBox2(getScreen(), 20, 50, 540, "Introduction", intromsg);
             new GUI::MessageBox2(getScreen(), getScreen()->getWidth()>540?(parent->getWidth()-540)/2:0, 150, 540, mainMenu.get_item("help_intro").get_text().c_str(), MSG_Get("INTRO_MESSAGE"));
@@ -3697,19 +3867,27 @@ static void UI_Select(GUI::ScreenSDL *screen, int select) {
             np6->raise();
             } break;
         case 23: {
-            auto *np7 = new ShowLoadWarning(screen, 150, 120, "DOSBox-X version mismatch. Load the state anyway?");
+            extern std::string loadstate_detail_saved, loadstate_detail_current;
+            auto *np7 = new ShowLoadWarning(screen, 150, 120, "DOSBox-X version mismatch. Load the state anyway?",
+                                            "version", loadstate_detail_saved.c_str(), loadstate_detail_current.c_str());
             np7->raise();
             } break;
         case 24: {
-            auto *np7 = new ShowLoadWarning(screen, 150, 120, "Program name mismatch. Load the state anyway?");
+            extern std::string loadstate_detail_saved, loadstate_detail_current;
+            auto *np7 = new ShowLoadWarning(screen, 150, 120, "Program name mismatch. Load the state anyway?",
+                                            "program", loadstate_detail_saved.c_str(), loadstate_detail_current.c_str());
             np7->raise();
             } break;
         case 25: {
-            auto *np7 = new ShowLoadWarning(screen, 150, 120, "Memory size mismatch. Load the state anyway?");
+            extern std::string loadstate_detail_saved, loadstate_detail_current;
+            auto *np7 = new ShowLoadWarning(screen, 150, 120, "Memory size mismatch. Load the state anyway?",
+                                            "memory size", loadstate_detail_saved.c_str(), loadstate_detail_current.c_str());
             np7->raise();
             } break;
         case 26: {
-            auto *np7 = new ShowLoadWarning(screen, 150, 120, "Machine type mismatch. Load the state anyway?");
+            extern std::string loadstate_detail_saved, loadstate_detail_current;
+            auto *np7 = new ShowLoadWarning(screen, 150, 120, "Machine type mismatch. Load the state anyway?",
+                                            "machine type", loadstate_detail_saved.c_str(), loadstate_detail_current.c_str());
             np7->raise();
             } break;
         case 27: {
@@ -3876,7 +4054,16 @@ void RunCfgTool(Bitu val) {
 #if C_OPENGL
         voodoo_ogl_update_dimensions();
 #endif
-    }
+    }    
+#if defined(MACOSX) && defined(C_SDL2) && C_METAL
+    if(sdl.desktop.want_type == SCREEN_METAL){
+        OUTPUT_Metal_Shutdown();
+#if defined(C_OPENGL)
+        change_output(3);
+#endif
+        change_output(14);
+    }  
+#endif
 }
 
 void GUI_Shortcut(int select) {

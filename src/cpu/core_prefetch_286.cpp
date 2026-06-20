@@ -26,6 +26,8 @@
 #include "pic.h"
 #include "fpu.h"
 
+extern bool do_lds_wraparound;
+
 using namespace std;
 
 #include <algorithm>
@@ -49,6 +51,8 @@ static inline bool _seg_limit_check(void) {
 #define CPU_Core_Prefetch_Trap_Run CPU_Core286_Prefetch_Trap_Run
 
 #define DoString DoString_Prefetch286
+
+static uint16_t last_ea86_offset;
 
 extern bool ignore_opcode_63;
 
@@ -197,11 +201,11 @@ void CPU_Core286_Prefetch_reset(void) {
 Bits CPU_Core286_Prefetch_Run(void) {
 	bool invalidate_pq=false;
 
-    if (CPU_Cycles <= 0)
-	    return CBRET_NONE;
+	if (CPU_Cycles <= 0)
+		return CBRET_NONE;
 
-    pq_limit = (max(CPU_PrefetchQueueSize,(unsigned int)(4ul + prefetch_unit)) + prefetch_unit - 1ul) & (~(prefetch_unit-1ul));
-    pq_reload = min(pq_limit,(Bitu)8u);
+	pq_limit = (max(CPU_PrefetchQueueSize,(unsigned int)(4ul + prefetch_unit)) + prefetch_unit - 1ul) & (~(prefetch_unit-1ul));
+	pq_reload = min(pq_limit,(Bitu)8u);
 
 	while (CPU_Cycles-->0) {
 		if (invalidate_pq) {
@@ -211,6 +215,7 @@ Bits CPU_Core286_Prefetch_Run(void) {
 		LOADIP;
 		core.prefixes=0;
 		core.opcode_index=0;
+		last_ea86_offset=0;
 		core.ea_table=&EATable[0];
 		BaseDS=SegBase(ds);
 		BaseSS=SegBase(ss);

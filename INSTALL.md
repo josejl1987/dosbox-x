@@ -38,10 +38,15 @@ Apart from the Windows installers, you can also find portable zip files starting
 
 Regarding Joystick support, the *SDL1 builds requires XInput compatible devices*. If your joystick is not Xinput compatible, you may want to try the SDL2 builds or DirectInput to XInput wrappers such as [Xoutput](https://github.com/csutorasa/XOutput) or [Xbox 360 controller emulator](https://www.x360ce.com/).
 
-* Windows 9x/NT4/2000 users should use the MinGW lowend 9x builds (32-bit SDL1 only). 
-* Windows XP users must use the XP compatible installer with "XP" in the file name, which includes Visual Studio XP builds and the 32-bit MinGW low-end builds. Note that not all features are available in the MinGW low-end builds, currently Slirp support is known to be missing. You also need to install the [DirectX runtime](https://www.microsoft.com/en-us/download/details.aspx?id=8109) or DOSBox-X will complain you're missing `XInput9_1_0.dll`. XP compatible builds works in ReactOS as well, but support is considered experimental.
-* Windows Vista users can use the XP installer or standard (non-XP) Visual Studio builds, because standard (non-XP) installer doesn't work in Vista. MinGW dropped support for XP/Vista, so install the 32-bit low-end builds from the XP compatible installer if you prefer MinGW builds.
 * Modern Windows users (7 and after) should use the standard (non-XP, non-lowend) builds but may try the non-standard builds if you prefer, although officially not supported.
+* Windows 9x/NT4/2000 users should use the MinGW lowend 9x builds (32-bit SDL1 only).
+* Windows XP users must use the XP compatible installer with "XP" in the file name, which includes Visual Studio XP builds and the 32-bit MinGW low-end builds. Note that not all features are available in the MinGW low-end builds, currently Slirp support is known to be missing. You also need to install the [DirectX runtime](https://www.microsoft.com/en-us/download/details.aspx?id=8109) or DOSBox-X will complain you're missing `XInput9_1_0.dll`. XP compatible builds works in ReactOS as well, but support is considered experimental.
+* Windows Vista users can use the XP installer or standard (non-XP) Visual Studio portable builds, because standard (non-XP) installer doesn't work in Vista. MinGW dropped support for XP/Vista, so install the 32-bit low-end builds from the XP compatible installer if you prefer MinGW builds.
+
+### winget (Windows Package Manager)
+You can install DOSBox-X through winget, which checks for the latest version and download the Windows installer.
+However, the package is NOT officially updated by the DOSBox-X team.
+If you find the latest version missing, you may want to contribute by updating the winget manifest (https://github.com/microsoft/winget-pkgs).
 
 ## Linux Packages (Flatpak and more)
 DOSBox-X is available packaged in the below formats. 
@@ -105,11 +110,11 @@ Where ``<filename>`` is the main file name of the RPM package you wish to instal
 
 ### SnapCraft
 You can find DOSBox-X on SnapCraft (https://snapcraft.io/dosbox-x), which maintains universal Linux packages for software including DOSBox-X.
-But please note the DOSBox-X Linux packages on this website are built and updated by SnapCraft instead of the DOSBox-X Team.
+But please note that these packages are NOT built or updated by the DOSBox-X team.
 
 ### AUR Package
-DOSBox-X is packaged for archlinux, and available in the user contributed AUR Package Repository.
-But please note that this package is not built or updated by the DOSBox-X Team.
+DOSBox-X is packaged for Arch Linux, and available in the user contributed AUR Package Repository.
+But please note that these packages are NOT built or updated by the DOSBox-X Team.
 
 - SDL1 build: https://aur.archlinux.org/packages/dosbox-x/
 - SDL2 build: https://aur.archlinux.org/packages/dosbox-x-sdl2/
@@ -119,15 +124,15 @@ DOSBox-X is packaged for Debian, and available in the
 [trixie](https://packages.debian.org/trixie/dosbox-x) and
 [unstable](https://packages.debian.org/unstable/dosbox-x)
 repositories.
-But please note that this package is not built or updated by the
-DOSBox-X Team, and that it only contains a small subset of the DOS
-programs provided in the Z: drive.
+But please note that these packages are NOT built or updated by the DOSBox-X Team,
+and that it only contains a small subset of the DOS programs provided in the Z: drive.
 
 ## macOS Packages (Portable)
 
 Portable packages for the macOS (64-bit) platform are also available from the [DOSBox-X homepage](https://dosbox-x.com/).
 
-The macOS package requires recent 64-bit Intel or ARM-based macOS (Catalina (10.15) and later). 
+The official macOS package requires recent 64-bit Intel or ARM-based macOS 10.15 (Catalina) and later.
+For SDL2 builds, there are a known issue that it cannot run on macOS 11 (Big Sur) and before, you can still try the [MacPorts](https://ports.macports.org/port/dosbox-x/details/) package or build the app on your own.
 Using the Finder app, go to the folder where the macOS zip package is downloaded, and click the zip package. Then the package will be unzipped and you will see a folder with the same name as the package. 
 Both SDL1 and SDL2 binaries (in .app format) are provided in the folders named ```dosbox-x``` and ```dosbox-x-sdl2``` respectively inside the zip file.
 
@@ -162,8 +167,26 @@ You should be able to solve the problem by running the following command once in
 1. Using the Terminal app, go to the unzipped folder of the macOS zip package. (You should find two folders ```dosbox-x``` and ```dosbox-x-sdl2```)
 2. Run ``xattr -cr .``
 
+### macOS Packages (Homebrew)
+Homebrew provides [packages](https://formulae.brew.sh/formula/dosbox-x) for macOS Ventura and after.
+You can install the package by the following steps.
+1. Install [Homebrew](https://brew.sh)
+2. In macOS Terminal (Applications -> Utilities -> Terminal) run `brew install dosbox-x`
+3. Launch DOSBox-X by running `dosbox-x` in macOS Terminal.
+
+Please note that these packages are NOT built or updated by the DOSBox-X team.
+
+### macOS Packages (MacPorts)
+[MacPorts](https://www.macports.org/) provides [packages](https://ports.macports.org/port/dosbox-x/details/) for High Sierra (10.13) and after. 
+You can install the package by the following steps.
+1. [Install MacPorts](https://www.macports.org/install.php)
+2. In macOS terminal (Applications -> Utilities -> Terminal) run `sudo port install dosbox-x`
+3. Launch DOSBox-X by running `dosbox-x` in macOS Terminal.
+
+Please note that these packages are NOT built or updated by the DOSBox-X team.
+
 ### DOSBox-X for older macOS versions
-Packages for macOS versions 10.14 (Mojave) and earlier are no longer provided. Low-end builds named `DOSBox-X-macos-(version)-high-sierra.zip` were available up to [2022.09.0 (0.84.3)](https://github.com/joncampbell123/dosbox-x/releases/tag/dosbox-x-v0.84.3) for 10.12 (Sierra) and after.
+Official portable packages for macOS versions 10.14 (Mojave) and earlier are no longer provided. Low-end builds named `DOSBox-X-macos-(version)-high-sierra.zip` were available up to [2022.09.0 (0.84.3)](https://github.com/joncampbell123/dosbox-x/releases/tag/dosbox-x-v0.84.3) for 10.12 (Sierra) and after.
 Binaries for macOS versions earlier than 10.12 (Sierra) have not been provided. You may try to build yourself with the help of [MacPorts](https://www.macports.org/). 
 
 ## DOS Packages (Portable)
@@ -187,3 +210,4 @@ You could use either the released source code package or the latest source code 
 ## Development nightly builds
 
 The development (preview) builds intended for testing purposes for the supported platforms can be found [here](https://dosbox-x.com/devel-build.html).
+

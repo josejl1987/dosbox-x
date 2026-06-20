@@ -108,8 +108,6 @@ extern "C" void                                     (*SDL1_hax_INITMENU_cb)();
 
 extern bool showdbcs, loadlang;
 extern bool isDBCSCP(), InitCodePage();
-extern uint8_t int10_font_14[256 * 14];
-extern uint8_t int10_font_16[256 * 16];
 extern bool font_14_init, font_16_init;
 uint8_t *GetDbcsFont(Bitu code);
 bool Direct3D_using(void);
@@ -124,12 +122,11 @@ static const char *def_menu__toplevel[] =
     "VideoMenu",
     "SoundMenu",
     "DOSMenu",
+#if !defined(OSFREE)
     "DriveMenu",
+#endif
 #if !defined(C_EMSCRIPTEN)
     "CaptureMenu",
-#endif
-#ifdef C_LUA
-    "LuaMenu",
 #endif
 #if C_DEBUG
     "DebugMenu",
@@ -145,7 +142,9 @@ static const char *def_menu_main[] =
     "mapper_mapper",
 #if !defined(HX_DOS)
     "--",
+# if !defined(OSFREE)
     "mapper_quickrun",
+# endif
     "loadlang",
     "mapper_loadmap",
 #endif
@@ -154,6 +153,9 @@ static const char *def_menu_main[] =
     "MainHostKey",
     "SharedClipboard",
     "--",
+#if defined(C_SDL2)
+    "mapper_capkeyboard",
+#endif
     "mapper_capmouse",
     "auto_lock_mouse",
     "WheelToArrow",
@@ -183,6 +185,7 @@ static const char *def_menu_main_sendkey[] =
     "sendkey_winlogo",
     "sendkey_winmenu",
     "sendkey_alttab",
+    "sendkey_altsysrq",
     "sendkey_ctrlesc",
     "sendkey_ctrlbreak",
     "sendkey_cad",
@@ -266,7 +269,7 @@ static const char *def_menu_cpu_speed[] =
     "cpu586-120",
     "cpu586-133",
     "cpu586-166",
-    "cpuak6-166",
+    "cpu586-200",
     "cpuak6-200",
     "cpuak6-300",
     "cpuath-600",
@@ -388,6 +391,9 @@ static const char *def_menu_video_output[] =
     "output_surface",
 #if (HAVE_D3D9_H) && defined(WIN32) && !defined(HX_DOS)
     "output_direct3d",
+#if defined(C_SDL2)
+    "output_direct3d11",
+#endif
 #endif
 #if defined(C_OPENGL) && !defined(HX_DOS)
     "output_opengl",
@@ -400,10 +406,15 @@ static const char *def_menu_video_output[] =
 #if C_GAMELINK
     "output_gamelink",
 #endif
+#if defined(MACOSX) && defined(C_SDL2) && C_METAL
+    "output_metal",
+#endif    
     "--",
     "doublescan",
 #if !defined(C_SDL2)
     "doublebuf",
+#else
+    "modeswitch",
 #endif
     NULL
 };
@@ -579,20 +590,26 @@ static const char *def_menu_video[] =
 /* DOS menu ("DOSMenu") */
 static const char *def_menu_dos[] =
 {
+#if !defined(OSFREE)
     "DOSVerMenu",
     "DOSLFNMenu",
-#if defined(WIN32) && !defined(HX_DOS) || defined(LINUX) || defined(MACOSX)
+# if defined(WIN32) && !defined(HX_DOS) || defined(LINUX) || defined(MACOSX)
     "DOSWinMenu",
-#endif
+# endif
     "--",
+#endif
     "DOSMouseMenu",
+#if !defined(OSFREE)
     "DOSEMSMenu",
+#endif
     "DOSDiskRateMenu",
     "--",
     "enable_a20gate",
     "quick_reboot",
     "sync_host_datetime",
+#if !defined(OSFREE)
     "shell_config_commands",
+#endif
     "--",
     "mapper_swapimg",
     "mapper_swapcd",
@@ -809,6 +826,11 @@ static const char *def_menu_drive[] =
     "DriveX",
     "DriveY",
     "DriveZ",
+
+#if DOSBOXMENU_TYPE == DOSBOXMENU_SDLDRAW
+    "||",
+#endif
+
     NULL
 };
 
@@ -816,25 +838,6 @@ static const char *def_menu_drive[] =
 #define MENU_HELP_COMMAND_MAX 512
 static const char *def_menu_help_command[MENU_HELP_COMMAND_MAX];
 char help_command_temp[MENU_HELP_COMMAND_MAX][30];
-
-/* lua scripting menu ("LuaMenu") */
-#ifdef C_LUA
-static const char* def_menu_lua[] =
-{
-    "load_lua",
-    "--",
-    "lua_console",
-    "lua_hex_editor",
-    "lua_memory_search", 
-    "lua_watch_list",
-    "lua_disassembly",
-    "--",
-    "lua_reload_script",
-    "lua_enable_overlay",
-    "lua_performance_stats",
-    NULL
-};
-#endif
 
 /* help debug ("DebugMenu" or "HelpDebugMenu") */
 #if C_DEBUG
@@ -848,7 +851,9 @@ static const char* def_menu_debug[] =
     "--",
     "debug_blankrefreshtest",
     "debug_generatenmi",
+#if !defined(OSFREE)
     "debug_int2fhook",
+#endif
     "debug_pageflip",
     "debug_retracepoll",
     "--",
@@ -856,28 +861,17 @@ static const char* def_menu_debug[] =
     "show_logtext",
     "save_logas",
     "--",
-    "load_lua",
-#ifdef C_LUA
-    "lua_console",
-    "lua_hex_editor", 
-    "lua_memory_search",
-    "lua_watch_list",
-    "lua_disassembly",
-    "--",
-    "lua_reload_script",
-    "lua_enable_overlay",
-    "lua_performance_stats",
-#endif
-    "--",
     "show_console",
     "clear_console",
     "disable_logging",
     "wait_on_error",
     "--",
     "video_debug_overlay",
+#if !defined(OSFREE)
     "--",
     "debug_logint21",
     "debug_logfileio",
+#endif
     NULL
 };
 #elif !defined(MACOSX) && !defined(LINUX) && !defined(HX_DOS) && !defined(C_EMSCRIPTEN)
@@ -885,9 +879,6 @@ static const char* def_menu_help_debug[] =
 {
     "show_console",
     "wait_on_error",
-    "--",
-    "load_symbol_file",
-    "symbol_management", 
     "--",
     "video_debug_overlay",
     NULL
@@ -905,7 +896,9 @@ static const char *def_menu_help[] =
     "help_wiki",
     "help_issue",
 #endif
+#if !defined(OSFREE)
     "--",
+#endif
 #if C_PCAP
     "help_nic",
 #endif
@@ -915,10 +908,12 @@ static const char *def_menu_help[] =
 #if !C_DEBUG && !defined(MACOSX) && !defined(LINUX) && !defined(HX_DOS) && !defined(C_EMSCRIPTEN)
     "HelpDebugMenu",
 #endif
-#if C_PCAP || C_PRINTER && defined(WIN32) || !C_DEBUG && !defined(MACOSX) && !defined(LINUX) && !defined(HX_DOS) && !defined(C_EMSCRIPTEN)
+#if !defined(OSFREE)
+# if C_PCAP || C_PRINTER && defined(WIN32) || !C_DEBUG && !defined(MACOSX) && !defined(LINUX) && !defined(HX_DOS) && !defined(C_EMSCRIPTEN)
     "--",
-#endif
+# endif
     "HelpCommandMenu",
+#endif
     NULL
 };
 
@@ -944,7 +939,7 @@ DOSBoxMenu::displaylist::displaylist() {
 
 DOSBoxMenu::displaylist::~displaylist() {
 }
-        
+
 bool DOSBoxMenu::item_exists(const std::string &name) {
     const auto i = name_map.find(name);
 
@@ -1014,7 +1009,7 @@ DOSBoxMenu::item& DOSBoxMenu::alloc_item(const enum item_type_t type,const std::
     while (master_list_alloc < master_list.size()) {
         if (!master_list[master_list_alloc].status.allocated) {
             name_map[name] = master_list_alloc;
-            return master_list[master_list_alloc].allocate(master_list_alloc,type,name);
+            return master_list[master_list_alloc].allocate(master_list_alloc,type,name,this);
         }
 
         master_list_alloc++;
@@ -1031,7 +1026,7 @@ DOSBoxMenu::item& DOSBoxMenu::alloc_item(const enum item_type_t type,const std::
     assert(master_list_alloc < master_list.size());
 
     name_map[name] = master_list_alloc;
-    return master_list[master_list_alloc].allocate(master_list_alloc,type,name);
+    return master_list[master_list_alloc].allocate(master_list_alloc,type,name,this);
 }
 
 void DOSBoxMenu::delete_item(const item_handle_t i) {
@@ -1131,11 +1126,12 @@ DOSBoxMenu::item::item() {
 DOSBoxMenu::item::~item() {
 }
 
-DOSBoxMenu::item &DOSBoxMenu::item::allocate(const item_handle_t id,const enum item_type_t new_type,const std::string &new_name) {
+DOSBoxMenu::item &DOSBoxMenu::item::allocate(const item_handle_t id,const enum item_type_t new_type,const std::string &new_name,DOSBoxMenu *_topMenu) {
     if (master_id != unassigned_item_handle || status.allocated)
         E_Exit("DOSBoxMenu::item::allocate() called on item already allocated");
 
     status.allocated = 1;
+    topMenu = _topMenu;
     name = new_name;
     type = new_type;
     master_id = id;
@@ -1146,6 +1142,7 @@ void DOSBoxMenu::item::deallocate(void) {
     if (master_id == unassigned_item_handle || !status.allocated)
         E_Exit("DOSBoxMenu::item::deallocate() called on item already deallocated");
 
+    topMenu = NULL;
     master_id = unassigned_item_handle;
     status.allocated = 0;
     status.changed = 1;
@@ -1155,34 +1152,44 @@ void DOSBoxMenu::item::deallocate(void) {
     name.clear();
 }
 
-void DOSBoxMenu::displaylist_append(displaylist &ls,const DOSBoxMenu::item_handle_t item_id) {
+void DOSBoxMenu::displaylist_append(const DOSBoxMenu::item_handle_t parent_id,const DOSBoxMenu::item_handle_t item_id) {
+    displaylist &ls = (parent_id == DOSBoxMenu::unassigned_item_handle) ? display_list : get_item(parent_id).display_list;
     DOSBoxMenu::item &item = get_item(item_id);
 
-    // Check if item is already in use (already added to a display list)
-    if (item.status.in_use) {
-        // Instead of crashing, just skip adding the duplicate item
-        return;
-    }
+    if (item.status.in_use)
+        E_Exit("DOSBoxMenu::displaylist_append() item already in use");
 
-    ls.disp_list.push_back(item.master_id);
+    //assert(item_id == item.master_id);
+
+    ls.disp_list.push_back(item_id);
+    item.parent_id = parent_id;
     item.status.in_use = true;
-    ls.order_changed = true;
+#if DOSBOXMENU_TYPE == DOSBOXMENU_SDLDRAW
+    ls.needLayout = true;
+#endif
 }
 
-void DOSBoxMenu::displaylist_clear(DOSBoxMenu::displaylist &ls) {
-    // First reset the in_use flag for all items currently in the display list
-    for (auto item_id : ls.disp_list) {
-        if (item_id != DOSBoxMenu::unassigned_item_handle && item_exists(item_id)) {
-            get_item(item_id).status.in_use = false;
+void DOSBoxMenu::displaylist_clear(const DOSBoxMenu::item_handle_t parent_id) {
+    displaylist &ls = (parent_id == DOSBoxMenu::unassigned_item_handle) ? display_list : get_item(parent_id).display_list;
+
+    for (auto &id : ls.disp_list) {
+        if (id != DOSBoxMenu::unassigned_item_handle) {
+            DOSBoxMenu::item &item = get_item(id);
+            item.parent_id = DOSBoxMenu::unassigned_item_handle;
         }
+        id = DOSBoxMenu::unassigned_item_handle;
     }
 
-    uint16_t id = DOSBoxMenu::unassigned_item_handle;
-    std::fill(ls.disp_list.begin(), ls.disp_list.end(), id);
-
     ls.disp_list.clear();
-    ls.items_changed = true;
-    ls.order_changed = true;
+#if DOSBOXMENU_TYPE == DOSBOXMENU_SDLDRAW
+    ls.needLayout = true;
+#endif
+}
+
+void DOSBoxMenu::check_layout(void) {
+#if DOSBOXMENU_TYPE == DOSBOXMENU_SDLDRAW
+    if (display_list.needLayout) layoutMenu();
+#endif
 }
 
 void DOSBoxMenu::rebuild(void) {
@@ -1264,7 +1271,7 @@ bool DOSBoxMenu::nsMenuSubInit(DOSBoxMenu::item &p_item) {
 
                 /* if a submenu, make the submenu */
                 if (item.type == submenu_type_id) {
-                    item.parent_id = p_item.master_id;
+                    item.parent_id = p_item.master_id;//FIXME: No longer needed?
                     nsMenuSubInit(item);
                 }
 
@@ -1291,7 +1298,7 @@ bool DOSBoxMenu::nsMenuInit(void) {
 
             /* if a submenu, make the submenu */
             if (item.type == submenu_type_id) {
-                item.parent_id = unassigned_item_handle;
+                item.parent_id = unassigned_item_handle;//FIXME: No longer needed?
                 nsMenuSubInit(item);
             }
 
@@ -1400,51 +1407,113 @@ std::string DOSBoxMenu::item::winConstructMenuText(void) {
     return r;
 }
 
-void DOSBoxMenu::item::winAppendMenu(HMENU handle) {
+void DOSBoxMenu::item::winAppendMenu(HMENU handle,int where) {
+    const int index = (where >= 0) ? where : GetMenuItemCount(handle);
+    if (index < 0) return;
+
+    if (type == submenu_type_id && winMenu == NULL)
+        return;
+
+    if (status.hidden)
+        return;
+
+    bool wide = false;
+    LPWSTR str = NULL;
     wchar_t* buffer = NULL;
     wchar_t emptyStr[] = L"";
-    if (type == separator_type_id) {
-        AppendMenu(handle, MF_SEPARATOR, 0, NULL);
-    }
-    else if (type == vseparator_type_id) {
-        AppendMenu(handle, MF_MENUBREAK, 0, NULL);
-    }
-    else if (type == submenu_type_id) {
-        if (winMenu != NULL) {
-            LPWSTR str = getWString(winConstructMenuText(), emptyStr, buffer);
-            if (wcscmp(str, L""))
-                AppendMenuW(handle, MF_POPUP | MF_STRING, (uintptr_t)winMenu, str);
-            else
-                AppendMenu(handle, MF_POPUP | MF_STRING, (uintptr_t)winMenu, winConstructMenuText().c_str());
+    const char* c_str = "";
+    UINT flags = 0;
+    UINT_PTR itemID = 0;
+    std::string mt;
+
+    if (type == submenu_type_id || type == item_type_id) {
+        mt = winConstructMenuText();
+        c_str = mt.c_str();
+
+        str = getWString(mt, emptyStr, buffer);
+        if (*str != 0/*wcslen() > 0 aka wcscmp(str,"")*/) wide = true;
+
+        flags |= MF_STRING;
+        flags |= (status.checked) ? MF_CHECKED : MF_UNCHECKED;
+        flags |= (status.enabled && !status.hidden) ? MF_ENABLED : (MF_DISABLED | MF_GRAYED);
+        if (type == submenu_type_id) {
+            flags |= MF_POPUP;
+            itemID = (UINT_PTR)winMenu;
+            menuInParent = true;/* and therefore, we don't need to free it because Windows will do it for us when we call DestroyMenu() */
+        }
+        else {
+            itemID = master_id + winMenuMinimumID;
         }
     }
-    else if (type == item_type_id) {
-        unsigned int attr = MF_STRING;
-
-        attr |= (status.checked) ? MF_CHECKED : MF_UNCHECKED;
-        attr |= (status.enabled) ? MF_ENABLED : (MF_DISABLED | MF_GRAYED);
-
-        LPWSTR str = getWString(winConstructMenuText(), emptyStr, buffer);
-        if (wcscmp(str, L""))
-            AppendMenuW(handle, attr, (uintptr_t)(master_id + winMenuMinimumID), str);
-        else
-            AppendMenu(handle, attr, (uintptr_t)(master_id + winMenuMinimumID), winConstructMenuText().c_str());
+    else if (type == separator_type_id) {
+        flags |= MF_SEPARATOR;
     }
-    if (buffer != NULL) {delete[] buffer;buffer = NULL;}
+    else if (type == vseparator_type_id) {
+        flags |= MF_MENUBREAK;
+        //FIXME: Windows 11 MF_MENUBREAK and MF_MENUBARBREAK work but also cause an extra emoty menu item,
+        //       which looks ugly and janky. Why?
+    }
+
+    if(wide)
+        InsertMenuW(handle, index, flags | MF_BYPOSITION, (uintptr_t)itemID, str);
+    else
+        InsertMenuA(handle, index, flags | MF_BYPOSITION, (uintptr_t)itemID, c_str);
+
+    if (buffer != NULL) {
+        delete[] buffer;
+        buffer = NULL;
+    }
+
+    {
+        MENUITEMINFO mii;
+        memset(&mii, 0, sizeof(mii));
+        mii.cbSize = sizeof(MENUITEMINFO);
+        mii.fMask = MIIM_DATA;
+        mii.dwItemData = (ULONG_PTR)master_id;
+        SetMenuItemInfo(handle, index, TRUE, &mii);
+    }
+}
+
+bool DOSBoxMenu::item::winLocateItem(HMENU handle, UINT& item, BOOL& fByPosition) {
+    /* items you can access by ID */
+    if (type == DOSBoxMenu::item_type_id) {
+        item = (UINT)(master_id + winMenuMinimumID);
+        fByPosition = FALSE;
+        return true;
+    }
+
+    MENUITEMINFO mii;
+    memset(&mii, 0, sizeof(mii));
+
+    /* anything else (submenus, separators, etc) we have to search for.
+       fortunately Windows 95 and higher have menu item info with a dwItemData we can use to hold the item ID */
+    const int count = GetMenuItemCount(handle);
+    for (int c = 0; c < count; c++) {
+        mii.cbSize = sizeof(mii);
+        mii.fMask = MIIM_DATA;
+        if(GetMenuItemInfo(handle, (UINT)c, TRUE, &mii)) {
+            if(mii.dwItemData == (ULONG_PTR)master_id) {
+                fByPosition = TRUE;
+                item = (UINT)c;
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 bool DOSBoxMenu::winMenuSubInit(DOSBoxMenu::item &p_item) {
     if (p_item.winMenu == NULL) {
         p_item.winMenu = CreatePopupMenu();
+        p_item.menuInParent = false;
         if (p_item.winMenu != NULL) {
             for (const auto id : p_item.display_list.disp_list) {
                 DOSBoxMenu::item &item = get_item(id);
 
                 /* if a submenu, make the submenu */
-                if (item.type == submenu_type_id) {
-                    item.parent_id = p_item.master_id;
+                if (item.type == submenu_type_id)
                     winMenuSubInit(item);
-                }
 
                 item.winAppendMenu(p_item.winMenu);
             }
@@ -1464,10 +1533,8 @@ bool DOSBoxMenu::winMenuInit(void) {
             DOSBoxMenu::item &item = get_item(id);
 
             /* if a submenu, make the submenu */
-            if (item.type == submenu_type_id) {
-                item.parent_id = unassigned_item_handle;
+            if (item.type == submenu_type_id)
                 winMenuSubInit(item);
-            }
 
             item.winAppendMenu(winMenu);
         }
@@ -1478,9 +1545,15 @@ bool DOSBoxMenu::winMenuInit(void) {
 
 void DOSBoxMenu::winMenuDestroy(void) {
     if (winMenu != NULL) {
-        /* go through all menu items, and clear the menu handle */
-        for (auto &id : master_list)
+        /* go through all menu items, and clear the menu handle.
+           destroy the menu handle UNLESS it was inserted into a parent menu,
+           in which case DestroyMenu() will destroy it as part of recursively
+           destroying the menu resource. */
+        for(auto& id : master_list) {
+            if(id.winMenu && !id.menuInParent) DestroyMenu(id.winMenu);
+            id.menuInParent = false;
             id.winMenu = NULL;
+        }
 
         /* destroy the menu.
          * By MSDN docs it destroys submenus automatically */
@@ -1508,44 +1581,132 @@ bool DOSBoxMenu::mainMenuWM_COMMAND(unsigned int id) {
 }
 #endif
 
+void DOSBoxMenu::item::check_layout(void) {
+#if DOSBOXMENU_TYPE == DOSBOXMENU_SDLDRAW
+    if (display_list.needLayout && topMenu) layoutSubmenu(*topMenu,/*toplevel*/(parent_id == unassigned_item_handle));
+#endif
+}
+
 void DOSBoxMenu::item::refresh_item(DOSBoxMenu &menu) {
     (void)menu;//POSSIBLY UNUSED
 #if DOSBOXMENU_TYPE == DOSBOXMENU_HMENU /* Windows menu handle */
-    if (menu.winMenu != NULL && status.in_use && status.changed) {
-        HMENU phandle = NULL;
+    HMENU phandle = NULL;
 
-        if (parent_id != unassigned_item_handle)
-            phandle = menu.get_item(parent_id).winMenu;
-        else
-            phandle = menu.winMenu;
+    if (parent_id != unassigned_item_handle)
+        phandle = menu.get_item(parent_id).winMenu;
+    else
+        phandle = menu.winMenu;
 
-        if (phandle != NULL) {
+    if (phandle && status.in_use && status.changed && status.changed_layout && !status.hidden) {
+        const displaylist& dl =
+            (parent_id != unassigned_item_handle) ?
+            menu.get_item(parent_id).display_list :
+            menu.display_list;
+
+        /* is the menu item there? if not, we'll need to add it back in */
+        {
+            const int count = GetMenuItemCount(phandle);
+            size_t dlist_found = 0;
+            size_t dlist_scan = 0;
+            bool insert = false;
+            int menu_scan = 0;
+
+            MENUITEMINFO mii;
+            memset(&mii, 0, sizeof(mii));
+            mii.cbSize = sizeof(mii);
+            mii.fMask = MIIM_DATA;
+
+            /* where am I in the display list? */
+            while (dlist_found < dl.disp_list.size() && dl.disp_list[dlist_found] != master_id)
+                dlist_found++;
+
+            /* where should I insert myself into the menu? */
+            if (dlist_found < dl.disp_list.size()) {
+                insert = true;
+                while (menu_scan < count && dlist_scan < dlist_found) {
+                    if (GetMenuItemInfo(phandle, (UINT)menu_scan, TRUE, &mii)) {
+                        while (dlist_scan < dlist_found) {
+                            if (mii.dwItemData == dl.disp_list[dlist_scan]) {
+                                dlist_scan++; /* continue scan after this entry */
+                                break;
+                            }
+                            if (mii.dwItemData == master_id) {
+                                insert = false; /* Oh! There I am! No insertion needed! */
+                                break;
+                            }
+                            dlist_scan++;
+                        }
+                    }
+
+                    menu_scan++;
+                }
+
+                if (insert)
+                    winAppendMenu(phandle, menu_scan);
+            }
+        }
+    }
+
+    if (phandle != NULL && status.in_use && status.changed) {
+        BOOL fByPosition = FALSE;
+        UINT item = 0;
+
+        if (phandle != NULL && winLocateItem(phandle,/*&*/item,/*&*/fByPosition)) {
+            if (status.hidden) {
+                /* need to remove the item from the menu */
+                RemoveMenu(phandle, item, fByPosition ? MF_BYPOSITION : MF_BYCOMMAND);
+                if (type == DOSBoxMenu::submenu_type_id)
+                    menuInParent = false; /* detached from menu, it is our responsibility to DestroyMenu() again */
+
+                status.changed_layout = false;
+                status.changed = false;
+                return;
+            }
+
+            MENUITEMINFO mii;
+            memset(&mii, 0, sizeof(mii));
+            mii.cbSize = sizeof(mii);
+
+            static_assert(sizeof(MENUITEMINFOA) == sizeof(MENUITEMINFOW), "oops");
+
             if (type == separator_type_id) {
                 /* none */
             }
             else if (type == vseparator_type_id) {
                 /* none */
             }
-            else if (type == submenu_type_id) {
-                /* TODO: Can't change by ID, have to change by position */
-            }
-            else if (type == item_type_id) {
-                unsigned int attr = MF_STRING;
+            else { /* item or submenu */
+                mii.fMask = MIIM_STATE;
 
-                attr |= (status.checked) ? MF_CHECKED : MF_UNCHECKED;
-                attr |= (status.enabled) ? MF_ENABLED : (MF_DISABLED | MF_GRAYED);
+                if(GetMenuItemInfo(phandle, item, fByPosition, &mii)) {
+                    /* NTS: MSDN aka "Microsoft Learn" website documents that MS_DISABLED == 0x03 and MF_GRAYED == 0x03, which is false.
+                            They reflect different bits same as from the Windows 3.1 days. Does Microsoft even check their own site? */
+                    if(status.checked)                   mii.fState |=   MF_CHECKED;/*MF_UNCHECKED==0*/
+                    else                                 mii.fState &=  ~MF_CHECKED;
+                    if(!status.enabled || status.hidden) mii.fState |=  (MF_DISABLED|MF_GRAYED);
+                    else                                 mii.fState &= ~(MF_DISABLED|MF_GRAYED);/*MF_ENABLED==0*/
 
-                wchar_t* buffer = NULL;
-                wchar_t emptyStr[] = L"";
-                LPWSTR str = getWString(winConstructMenuText(), emptyStr, buffer);
-                if (wcscmp(str, L""))
-                    ModifyMenuW(phandle, (uintptr_t)(master_id + winMenuMinimumID), attr | MF_BYCOMMAND, (uintptr_t)(master_id + winMenuMinimumID), str);
-                else
-                    ModifyMenu(phandle, (uintptr_t)(master_id + winMenuMinimumID), attr | MF_BYCOMMAND, (uintptr_t)(master_id + winMenuMinimumID), winConstructMenuText().c_str());
+                    wchar_t* buffer = NULL;
+                    wchar_t emptyStr[] = L"";
+                    LPWSTR str = getWString(winConstructMenuText(), emptyStr, buffer);
+                    mii.fMask |= MIIM_TYPE;
+                    mii.fType = MFT_STRING;
+                    if(wcscmp(str, L"")) {
+                        mii.dwTypeData = (LPTSTR)str;
+                        mii.cch = wcslen(str);
+                        SetMenuItemInfoW(phandle, item, fByPosition, (MENUITEMINFOW*)(&mii));
+                    }
+                    else {
+                        mii.dwTypeData = (LPTSTR)winConstructMenuText().c_str();
+                        mii.cch = winConstructMenuText().length();
+                        SetMenuItemInfoA(phandle, item, fByPosition, (MENUITEMINFOA*)(&mii));
+                    }
+                }
             }
         }
     }
 
+    status.changed_layout = false;
     status.changed = false;
 #endif
 #if DOSBOXMENU_TYPE == DOSBOXMENU_NSMENU /* Mac OS X menu handle */
@@ -1586,7 +1747,7 @@ void ConstructSubMenu(DOSBoxMenu::item_handle_t item_id, const char * const * li
         const char *ref = list[i];
 
         /* NTS: This code calls mainMenu.get_item(item_id) every iteration.
-         *      
+         *
          *      This seemingly inefficient method of populating the display
          *      list is REQUIRED because DOSBoxMenu::item& is a reference
          *      to a std::vector, and the reference becomes invalid when
@@ -1604,31 +1765,26 @@ void ConstructSubMenu(DOSBoxMenu::item_handle_t item_id, const char * const * li
              * rely that parameters are expanded from right to left
              * -> we must get separator handle first */
             DOSBoxMenu::item_handle_t separator_handle = separator_get(DOSBoxMenu::separator_type_id);
-            mainMenu.displaylist_append(
-                mainMenu.get_item(item_id).display_list, separator_handle);
+            mainMenu.displaylist_append(item_id, separator_handle);
         }
         else if (!strcmp(ref,"||")) {
             /* ditto */
             DOSBoxMenu::item_handle_t separator_handle = separator_get(DOSBoxMenu::vseparator_type_id);
-            mainMenu.displaylist_append(
-                mainMenu.get_item(item_id).display_list, separator_handle);
+            mainMenu.displaylist_append(item_id, separator_handle);
         }
         else if (mainMenu.item_exists(ref)) {
-            mainMenu.displaylist_append(
-                mainMenu.get_item(item_id).display_list, mainMenu.get_item_id_by_name(ref));
+            mainMenu.displaylist_append(item_id, mainMenu.get_item_id_by_name(ref));
         }
     }
 }
 
 void ConstructMenu(void) {
-    mainMenu.displaylist_clear(mainMenu.display_list);
+    mainMenu.displaylist_clear(DOSBoxMenu::unassigned_item_handle);
     separator_alloc = 0;
 
     /* top level */
     for (size_t i=0;def_menu__toplevel[i] != NULL;i++)
-        mainMenu.displaylist_append(
-            mainMenu.display_list,
-            mainMenu.get_item_id_by_name(def_menu__toplevel[i]));
+        mainMenu.displaylist_append(DOSBoxMenu::unassigned_item_handle,mainMenu.get_item_id_by_name(def_menu__toplevel[i]));
 
     /* main menu */
     ConstructSubMenu(mainMenu.get_item("MainMenu").get_master_id(), def_menu_main);
@@ -1681,13 +1837,13 @@ void ConstructMenu(void) {
 
             if (mainMenu.item_exists(name)) {
                 mainMenu.displaylist_append(
-                    mainMenu.get_item("VideoScalerMenu").display_list,
+                    mainMenu.get_item("VideoScalerMenu").get_master_id(),
                     mainMenu.get_item_id_by_name(name));
 
 #if DOSBOXMENU_TYPE == DOSBOXMENU_SDLDRAW
                 if ((count % 15) == 14) {
                     mainMenu.displaylist_append(
-                        mainMenu.get_item("VideoScalerMenu").display_list,
+                        mainMenu.get_item("VideoScalerMenu").get_master_id(),
                         separator_get(DOSBoxMenu::vseparator_type_id));
                 }
 #endif
@@ -1769,8 +1925,33 @@ void ConstructMenu(void) {
 
             if (mainMenu.item_exists(name)) {
                 mainMenu.displaylist_append(
-                    mainMenu.get_item(dname).display_list,
+                    mainMenu.get_item(dname).get_master_id(),
                     mainMenu.get_item_id_by_name(name));
+            }
+        }
+    }
+
+    {
+        const DOSBoxMenu::item_handle_t drvMenuID = mainMenu.get_item("DriveMenu").get_master_id();
+        char name[128],tmp[64];
+
+        /* Additional menus for IDE-only device mounts */
+        for (unsigned int ide=0;ide < MAX_IDE_CONTROLLERS;ide++) {
+            for (unsigned int ms=0;ms < 2;ms++) {
+                sprintf(name,"IDEDrive%u%c",ide+1,ms?'s':'m');
+                const DOSBoxMenu::item &nitem = mainMenu.get_item(name);
+
+                for (size_t i=0;drive_opts[i][0] != NULL;i++) {
+                    const std::string sname = std::string(name) + "_" + drive_opts[i][0];
+
+                    if (mainMenu.item_exists(sname)) {
+                        mainMenu.displaylist_append(
+                            nitem.get_master_id(),
+                            mainMenu.get_item_id_by_name(sname));
+                    }
+                }
+
+                mainMenu.displaylist_append(drvMenuID,nitem.get_master_id());
             }
         }
     }
@@ -1820,11 +2001,6 @@ void ConstructMenu(void) {
 
     /* help DOS command menu */
     ConstructSubMenu(mainMenu.get_item("HelpCommandMenu").get_master_id(), def_menu_help_command);
-
-#ifdef C_LUA
-    /* lua scripting menu */
-    ConstructSubMenu(mainMenu.get_item("LuaMenu").get_master_id(), def_menu_lua);
-#endif
 
 #if C_DEBUG
     /* debug menu */
@@ -1921,6 +2097,9 @@ void SDL1_hax_SetMenu(HMENU menu) {
 extern "C" void SDL1_hax_SetMenu(HMENU menu);
 #endif
 
+/**
+ * NOTE: this function can make a SDL_Surface become invalid (e.g. mapper, Windows)
+ */
 void DOSBox_SetMenu(DOSBoxMenu &altMenu) {
 #if DOSBOXMENU_TYPE == DOSBOXMENU_SDLDRAW
     /* nothing to do */
@@ -2295,7 +2474,7 @@ void BrowseFolder( char drive , std::string drive_type ) {
 void mem_conf(std::string memtype, int option) {
     std::string tmp;
     Section* sec = control->GetSection("dos");
-    Section_prop * section=static_cast<Section_prop *>(sec); 
+    Section_prop * section=static_cast<Section_prop *>(sec);
     if (!option) {
         tmp = section->Get_bool(memtype) ? "false" : "true";
     } else {
@@ -2331,7 +2510,7 @@ umount:
         switch (DriveManager::UnmountDrive(i_drive-'A')) {
         case 0:
             Drives[i_drive-'A'] = 0;
-            if(i_drive-'A' == DOS_GetDefaultDrive()) 
+            if(i_drive-'A' == DOS_GetDefaultDrive())
                 DOS_SetDrive(toupper('Z') - 'A');
             LOG_MSG("GUI:Drive %c has successfully been removed.",i_drive); break;
         case 1:
@@ -2451,7 +2630,9 @@ void MENU_Check_Drive(HMENU handle, int cdrom, int floppy, int local, int image,
     EnableMenuItem(handle, floppy, (Drives[drive - 'A'] || menu.boot) ? MF_GRAYED : MF_ENABLED);
     EnableMenuItem(handle, local, (Drives[drive - 'A'] || menu.boot) ? MF_GRAYED : MF_ENABLED);
     EnableMenuItem(handle, image, (Drives[drive - 'A'] || menu.boot) ? MF_GRAYED : MF_ENABLED);
+ #if !defined(OSFREE)
     if(sec) EnableMenuItem(handle, automount, AUTOMOUNT(full_drive.c_str(), drive) && !menu.boot && sec->Get_bool("automount") ? MF_ENABLED : MF_GRAYED);
+ #endif
     EnableMenuItem(handle, umount, (!Drives[drive - 'A']) || menu.boot ? MF_GRAYED : MF_ENABLED);
 #endif
 }
@@ -2573,6 +2754,9 @@ void DOSBoxMenu::updateRect(void) {
 void DOSBoxMenu::layoutMenu(void) {
     int x, y;
 
+    display_list.needLayout = false;
+    needRedraw = true;
+
     x = menuBox.x;
     y = menuBox.y;
 
@@ -2580,6 +2764,7 @@ void DOSBoxMenu::layoutMenu(void) {
         DOSBoxMenu::item &item = get_item(*i);
 
         item.placeItem(*this, x, y, /*toplevel*/true);
+        if (item.status.hidden) continue;
         x += item.screenBox.w;
     }
 
@@ -2596,6 +2781,11 @@ void DOSBoxMenu::layoutMenu(void) {
 
 void DOSBoxMenu::item::layoutSubmenu(DOSBoxMenu &menu, bool isTopLevel) {
     int x, y, minx, maxx;
+
+    if (status.hidden) return;
+
+    display_list.needLayout = false;
+    needRedraw = true;
 
     x = screenBox.x;
     y = screenBox.y;
@@ -2616,6 +2806,8 @@ void DOSBoxMenu::item::layoutSubmenu(DOSBoxMenu &menu, bool isTopLevel) {
     auto arr_follow=display_list.disp_list.begin();
     for (auto i=display_list.disp_list.begin();i!=display_list.disp_list.end();i++) {
         DOSBoxMenu::item &item = menu.get_item(*i);
+
+        if (item.status.hidden) continue;
 
         if (item.get_type() == DOSBoxMenu::vseparator_type_id) {
             for (;arr_follow < i;arr_follow++)
@@ -2645,6 +2837,7 @@ void DOSBoxMenu::item::layoutSubmenu(DOSBoxMenu &menu, bool isTopLevel) {
 
     for (auto i=display_list.disp_list.begin();i!=display_list.disp_list.end();i++) {
         DOSBoxMenu::item &item = menu.get_item(*i);
+        if (item.status.hidden) continue;
         int my = item.screenBox.y + item.screenBox.h;
         if (y < my) y = my;
     }
@@ -2714,6 +2907,8 @@ void DOSBoxMenu::item::layoutSubmenu(DOSBoxMenu &menu, bool isTopLevel) {
 }
 
 void DOSBoxMenu::item::placeItemFinal(DOSBoxMenu &menu,int finalwidth,bool isTopLevel) {
+    if (status.hidden) return;
+
     if (type < separator_type_id) {
         int x = 0,rx = 0;
 
@@ -2762,7 +2957,28 @@ void DOSBoxMenu::item::placeItemFinal(DOSBoxMenu &menu,int finalwidth,bool isTop
 }
 
 void DOSBoxMenu::item::placeItem(DOSBoxMenu &menu,int x,int y,bool isTopLevel) {
-    if (type < separator_type_id) {
+    if (status.hidden) {
+        screenBox.x = 0;
+        screenBox.y = 0;
+        screenBox.w = 0;
+        screenBox.h = 0;
+
+        checkBox.x = 0;
+        checkBox.y = 0;
+        checkBox.w = 0;
+        checkBox.h = 0;
+
+        textBox.x = 0;
+        textBox.y = 0;
+        textBox.w = 0;
+        textBox.h = 0;
+
+        shortBox.x = 0;
+        shortBox.y = 0;
+        shortBox.w = 0;
+        shortBox.h = 0;
+    }
+    else if (type < separator_type_id) {
         screenBox.x = x;
         screenBox.y = y;
         screenBox.w = 0;
@@ -3293,6 +3509,8 @@ void MenuDrawText(int x,int y,const char *text,Bitu color,bool check=false) {
 void DOSBoxMenu::item::drawMenuItem(DOSBoxMenu &menu) {
     (void)menu;//UNUSED
 
+    if (status.hidden) return;
+
     force_conversion = showdbcs;
     int cp = dos.loaded_codepage;
     if (!cp || force_conversion) InitCodePage();
@@ -3367,6 +3585,7 @@ void DOSBoxMenu::displaylist::DrawDisplayList(DOSBoxMenu &menu,bool updateScreen
 DOSBoxMenu::item_handle_t DOSBoxMenu::displaylist::itemFromPoint(DOSBoxMenu &menu,int x,int y) {
     for (auto &id : disp_list) {
         DOSBoxMenu::item &item = menu.get_item(id);
+        if (item.status.hidden) continue;
         if (x >= item.screenBox.x && y >= item.screenBox.y) {
             int sx = x - item.screenBox.x;
             int sy = y - item.screenBox.y;

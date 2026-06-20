@@ -290,54 +290,31 @@ int get_expanded_files(const std::string &path, std::vector<std::string> &paths,
 }
 
 void Set_Label(char const * const input, char * const output, bool cdrom) {
-    /* I don't know what MSCDEX.EXE does but don't put dots in the 11-char volume label for non-CD-ROM drives */
-    if (!cdrom) {
-        Bitu togo     = 11;
-        Bitu vnamePos = 0;
-        Bitu labelPos = 0;
-        char upcasebuf[12] = {0};
-        strncpy(upcasebuf, input, 11);
-        DBCS_upcase(upcasebuf);
+    uint8_t togo = 11;
+    uint8_t vnamePos = 0;
+    uint8_t labelPos = 0;
+    char upcasebuf[12];
+    bool str_end = false; // True if end of string is detected
+    strncpy(upcasebuf, input, 11);
+    //DBCS_upcase(upcasebuf);  /* Another mscdex quirk. Label is not always uppercase. (Daggerfall) */ 
 
-        while (togo > 0) {
-            if (upcasebuf[vnamePos]==0) break;
-            //Another mscdex quirk. Label is not always uppercase. (Daggerfall)
-            output[labelPos] = upcasebuf[vnamePos];
-            labelPos++;
-            vnamePos++;
-            togo--;
+    while (togo > 0) {
+        if(upcasebuf[vnamePos] == 0 && !str_end) {
+            str_end = true;
+            if(cdrom && vnamePos == 8) output[labelPos++] = '.';
+            //Add a trailing dot ('.') when on cdrom and label is exactly 8 characters, MSCDEX feature/bug (fifa96 cdrom detection)
         }
-        output[labelPos] = 0;
-        if((labelPos > 0) && (output[labelPos-1] == '.') && labelPos == 9) output[labelPos-1] = 0;
-        return;
+        else if(cdrom && vnamePos == 8 && !str_end && upcasebuf[vnamePos] != '.') {
+            output[labelPos] = '.'; // add a dot between 8th and 9th character (Descent 2 installer needs this)
+            labelPos++;
+        }
+        output[labelPos] = !str_end ? upcasebuf[vnamePos] : 0x0; // Pad empty characters with 0x00
+        labelPos++;
+        vnamePos++;
+        togo--;
     }
-
-	Bitu togo     = 8;
-	Bitu vnamePos = 0;
-	Bitu labelPos = 0;
-	bool point    = false;
-
-	//spacepadding the filenamepart to include spaces after the terminating zero is more closely to the specs. (not doing this now)
-	// HELLO\0' '' '
-
-	while (togo > 0) {
-		if (input[vnamePos]==0) break;
-		if (!point && (input[vnamePos]=='.')) {	togo=4; point=true; }
-
-		output[labelPos] = input[vnamePos];
-
-		labelPos++; vnamePos++;
-		togo--;
-		if ((togo==0) && !point) {
-			if (input[vnamePos]=='.') vnamePos++;
-			output[labelPos]='.'; labelPos++; point=true; togo=3;
-		}
-	}
-	output[labelPos]=0;
-
-	//Remove trailing dot. except when on cdrom and filename is exactly 8 (9 including the dot) letters. MSCDEX feature/bug (fifa96 cdrom detection)
-	if((labelPos > 0) && (output[labelPos-1] == '.') && !(cdrom && labelPos ==9))
-		output[labelPos-1] = 0;
+    output[labelPos] = 0;
+    return;
 }
 
 DOS_Drive::DOS_Drive() {
@@ -414,6 +391,12 @@ void DriveManager::ChangeDisk(int drive, DOS_Drive* disk) {
     if (old) old->UnMount();
 }
 
+void DriveManager::ClearDrive(int drive) {
+	UnmountDrive(drive); // which calls UnMount which drives delete themselves
+	if (dos_kernel_disabled && !driveInfos[drive].disks.empty()) E_Exit("Drive Manager ClearDrive UnmountDrive failed to clear disk swap chain");
+	Drives[drive] = NULL;
+}
+
 void DriveManager::InitializeDrive(int drive) {
 	currentDrive = drive;
 	DriveInfo& driveInfo = driveInfos[currentDrive];
@@ -422,8 +405,8 @@ void DriveManager::InitializeDrive(int drive) {
 		DOS_Drive* disk = driveInfo.disks[driveInfo.currentDisk];
 		Drives[currentDrive] = disk;
 		if (driveInfo.disks.size() > 1) disk->Activate();
-        disk->UpdateDPB(currentDrive);
-    }
+		disk->UpdateDPB(currentDrive);
+	}
 }
 
 /*
@@ -464,13 +447,13 @@ void DriveManager::CycleDisks(int drive, bool notify, unsigned int position) {
 	if (numDisks > 1) {
 		// cycle disk
 		unsigned int currentDisk = driveInfos[drive].currentDisk;
-        const DOS_Drive* oldDisk = driveInfos[drive].disks[currentDisk];
-        if (position<1)
-            currentDisk = (currentDisk + 1u) % numDisks;
-        else if (position>numDisks)
-            currentDisk = 0;
-        else
-            currentDisk = position - 1;
+		const DOS_Drive* oldDisk = driveInfos[drive].disks[currentDisk];
+		if (position<1)
+			currentDisk = (currentDisk + 1u) % numDisks;
+		else if (position>numDisks)
+			currentDisk = 0;
+		else
+			currentDisk = position - 1;
 		DOS_Drive* newDisk = driveInfos[drive].disks[currentDisk];
 		driveInfos[drive].currentDisk = currentDisk;
 		if (drive < MAX_DISK_IMAGES && imageDiskList[drive] != NULL) {
@@ -485,7 +468,7 @@ void DriveManager::CycleDisks(int drive, bool notify, unsigned int position) {
 			if (imageDiskList[drive] != NULL) imageDiskList[drive]->Addref();
 			if ((drive == 2 || drive == 3) && imageDiskList[drive]->hardDrive) updateDPT();
 		}
-		
+
 		// copy working directory, acquire system resources and finally switch to next drive
 		strcpy(newDisk->curdir, oldDisk->curdir);
 		newDisk->Activate();
@@ -505,17 +488,17 @@ void DriveManager::CycleAllCDs(void) {
 		if (numDisks > 1) {
 			// cycle disk
 			unsigned int currentDisk = driveInfos[idrive].currentDisk;
-            const DOS_Drive* oldDisk = driveInfos[idrive].disks[currentDisk];
-            if (dynamic_cast<const isoDrive*>(oldDisk) == NULL) continue;
+			const DOS_Drive* oldDisk = driveInfos[idrive].disks[currentDisk];
+			if (dynamic_cast<const isoDrive*>(oldDisk) == NULL) continue;
 			currentDisk = (currentDisk + 1u) % numDisks;
 			DOS_Drive* newDisk = driveInfos[idrive].disks[currentDisk];
 			driveInfos[idrive].currentDisk = currentDisk;
-			
+
 			// copy working directory, acquire system resources and finally switch to next drive
 			strcpy(newDisk->curdir, oldDisk->curdir);
 			newDisk->Activate();
-            if (!dos_kernel_disabled) newDisk->UpdateDPB(currentDrive);
-            Drives[idrive] = newDisk;
+			if (!dos_kernel_disabled) newDisk->UpdateDPB(currentDrive);
+			Drives[idrive] = newDisk;
 			LOG_MSG("Drive %c: disk %d of %d now active", 'A'+idrive, currentDisk+1, numDisks);
 		}
 	}
@@ -525,11 +508,14 @@ int DriveManager::UnmountDrive(int drive) {
 	int result = 0;
 	// unmanaged drive
 	if (driveInfos[drive].disks.size() == 0) {
-		result = (int)Drives[drive]->UnMount();
+		if (!dos_kernel_disabled) result = (int)Drives[drive]->UnMount();
+		else delete Drives[drive];
+		driveInfos[drive].currentDisk = 0;
 	} else {
 		// managed drive
 		unsigned int currentDisk = driveInfos[drive].currentDisk;
-		result = (int)driveInfos[drive].disks[currentDisk]->UnMount();
+		if (!dos_kernel_disabled) result = (int)driveInfos[drive].disks[currentDisk]->UnMount();
+		else delete driveInfos[drive].disks[currentDisk];
 		// only delete on success, current disk set to NULL because of UnMount
 		if (result == 0) {
 			driveInfos[drive].disks[currentDisk] = NULL;
@@ -537,6 +523,7 @@ int DriveManager::UnmountDrive(int drive) {
 				delete driveInfos[drive].disks[i];
 			}
 			driveInfos[drive].disks.clear();
+			driveInfos[drive].currentDisk = 0;
 		}
 	}
 	
@@ -556,6 +543,7 @@ char * DriveManager::GetDrivePosition(int drive) {
 bool drivemanager_init = false;
 bool int13_extensions_enable = true;
 bool int13_disk_change_detect_enable = true;
+bool int13_enable_48bitLBA = true;
 
 void DriveManager::Init(Section* s) {
     const Section_prop* section = static_cast<Section_prop*>(s);
@@ -564,6 +552,7 @@ void DriveManager::Init(Section* s) {
 
 	int13_extensions_enable = section->Get_bool("int 13 extensions");
 	int13_disk_change_detect_enable = section->Get_bool("int 13 disk change detect");
+    int13_enable_48bitLBA = section->Get_bool("int 13 enable 48-bit LBA");
 
 	// setup driveInfos structure
 	currentDrive = 0;
