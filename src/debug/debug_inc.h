@@ -18,10 +18,15 @@
 
 /* Local Debug Function */
 
+#ifndef DOSBOX_DEBUG_INC_H
+#define DOSBOX_DEBUG_INC_H
 
+#include "dosbox.h"
+#include "mem.h"   /* for PhysPt */
+#include <cstdint>
 #if C_DEBUG
 #include <curses.h>
-
+#include <functional>
 #include <string>
 
 #define PAIR_BLACK_BLUE 1
@@ -118,5 +123,9 @@ extern DBGBlock dbg;
 /* Local Debug Stuff */
 Bitu DasmI386(char* buffer, PhysPt pc, uint32_t cur_ip, bool bit32);
 int  DasmLastOperandSize(void);
-#endif
+bool ParseCommand(const char* str);
 
+extern std::function<void(uint16_t, uint32_t)> debug_on_code_view_update;
+extern std::function<void(uint16_t, uint32_t)> debug_on_data_view_update;
+#endif
+#endif // DOSBOX_DEBUG_INC_H

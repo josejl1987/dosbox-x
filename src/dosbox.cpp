@@ -78,6 +78,8 @@
 #include "pci_bus.h"
 #include "parport.h"
 #include "keyboard.h"
+#include "luaengine/core_debug_interface.h"
+#include "regs.h"
 #include "clockdomain.h"
 
 #if C_EMSCRIPTEN
@@ -92,10 +94,19 @@
 #include <list>
 #include <sol/sol.hpp>
 
+#if C_LUA
+#include "luaengine/luaengine.h"
+#endif
+
 bool int10_vp_use_always = false;
 bool int10_vp_use_auto = true;
 
 unsigned int preventcap = PREVCAP_NONE;
+
+#if C_LUA
+extern LuaEngine luaEngine;
+extern void LUA_Init(Section* section);
+#endif
 
 #ifndef WDA_NONE
 # define WDA_NONE 0x00
@@ -459,6 +470,11 @@ static Bitu Normal_Loop(void) {
                 dosbox_allow_nonrecursive_page_fault = true;
                 ret = (*cpudecoder)();
                 dosbox_allow_nonrecursive_page_fault = saved_allow;
+
+#if C_LUA
+                // Call LuaEngine hook after CPU instruction execution
+                luaEngine.LuaInstructionHook();
+#endif
 
                 if (GCC_UNLIKELY(ret<0))
                     return 1;
@@ -5201,6 +5217,36 @@ void DOSBOX_SetupConfigSections(void) {
 
     //TODO ?
     control->AddSection_line("autoexec",&Null_Init);
+#if C_LUA
+    secprop = control->AddSection_prop("lua", &Null_Init, true);
+    
+    Pbool = secprop->Add_bool("enabled", Property::Changeable::Always, true);
+    Pbool->Set_help("Enable LuaEngine for scripting and automation.");
+    Pbool->SetBasic(true);
+    
+    Pbool = secprop->Add_bool("hooks", Property::Changeable::Always, true);
+    Pbool->Set_help("Enable Lua hooks for CPU and memory events.");
+    Pbool->SetBasic(true);
+    
+    Pbool = secprop->Add_bool("console", Property::Changeable::Always, false);
+    Pbool->Set_help("Enable graphical Lua console window.");
+    Pbool->SetBasic(true);
+    
+    Pstring = secprop->Add_string("autostart", Property::Changeable::Always, "");
+    Pstring->Set_help("Lua script to automatically load and run at startup.");
+    Pstring->SetBasic(true);
+    
+    Pbool = secprop->Add_bool("lrdb_enable", Property::Changeable::Always, false);
+    Pbool->Set_help("Enable LRDB remote Lua debugger server.");
+    Pbool->SetBasic(true);
+
+    Pint = secprop->Add_int("lrdb_port", Property::Changeable::Always, 21110);
+    Pint->Set_help("TCP port for the LRDB remote Lua debugger.");
+    Pint->SetBasic(true);
+#else
+    control->AddSection_line("lua", &Null_Init);
+#endif
+
     AddMessages();
 }
 

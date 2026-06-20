@@ -17,6 +17,8 @@
  */
 
 #include <assert.h>
+#include <string>
+#include <functional>
 
 #include "dosbox.h"
 #include "menu.h"
@@ -36,6 +38,25 @@
 #include "../dos/drives.h"
 #include "../ints/int10.h"
 #include "../libs/tinyfiledialogs/tinyfiledialogs.h"
+
+#ifdef C_LUA
+#include "../luaengine/luaengine.h"
+#include "../luaengine/gui_windows.h"
+extern LuaEngine luaEngine;
+#endif
+#ifdef C_DEBUG
+#include "../luaengine/symbol_manager.h"
+
+// External declaration for symbol manager
+namespace LuaEngineSymbols {
+    extern SymbolManager* g_symbol_manager;
+}
+using namespace LuaEngineSymbols;
+
+// Forward declarations for symbol-related menu callbacks
+bool load_symbol_file_menu_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * const menuitem);
+bool symbol_management_menu_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * const menuitem);
+#endif
 #ifdef WIN32
 # include "Commdlg.h"
 # include "windows.h"
@@ -2459,6 +2480,187 @@ bool load_lua_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menu
     return true;
 }
 
+#ifdef C_LUA
+extern LuaEngine luaEngine;
+
+bool lua_console_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+    
+    // Toggle Lua console window
+    if (LuaEngineGUIWindows::g_window_manager) {
+        auto* wm = LuaEngineGUIWindows::g_window_manager;
+        if (wm->isConsoleVisible()) {
+            wm->hideConsole();
+        } else {
+            wm->showConsole();
+        }
+    }
+    return true;
+}
+
+bool lua_hex_editor_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+    
+    // Show/hide hex editor window
+    if (LuaEngineGUIWindows::g_window_manager) {
+        LuaEngineGUIWindows::g_window_manager->showHexEditor();
+        LOG_MSG("Lua hex editor window opened");
+    }
+    return true;
+}
+
+bool lua_memory_search_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+    
+    // Show/hide memory search window
+    if (LuaEngineGUIWindows::g_window_manager) {
+        LuaEngineGUIWindows::g_window_manager->showMemorySearch();
+        LOG_MSG("Lua memory search window opened");
+    }
+    return true;
+}
+
+bool lua_watch_list_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+    
+    // Show/hide watch list window
+    if (LuaEngineGUIWindows::g_window_manager) {
+        LuaEngineGUIWindows::g_window_manager->showWatchList();
+        LOG_MSG("Lua watch list window opened");
+    }
+    return true;
+}
+
+bool lua_disassembly_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+    
+    // Show disassembly window
+    if (LuaEngineGUIWindows::g_window_manager) {
+        LuaEngineGUIWindows::g_window_manager->showDisassembly();
+        LOG_MSG("Lua disassembly window opened");
+    }
+    return true;
+}
+
+bool lua_reload_script_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+    
+    // Reload current Lua script
+    if (luaEngine.luaRunning && luaEngine.luaScriptName) {
+        luaEngine.LoadCode(luaEngine.luaScriptName, nullptr);
+        LOG_MSG("Lua script reloaded");
+    }
+    return true;
+}
+
+bool lua_enable_overlay_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+
+    // Lua overlay system is disabled
+    LOG_MSG("Lua overlay system is disabled");
+    return true;
+}
+
+bool lua_performance_stats_menu_callback(DOSBoxMenu* const menu, DOSBoxMenu::item* const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+    
+    // Show Lua performance statistics
+    if (luaEngine.luaRunning) {
+        auto& stats = luaEngine.perf_stats;
+        char stats_buffer[512];
+        snprintf(stats_buffer, sizeof(stats_buffer), 
+                "Frame calls: %llu, Lua time: %llu μs, Script executions: %llu, Memory ops: %llu",
+                (unsigned long long)stats.total_frame_calls,
+                (unsigned long long)stats.total_lua_time_us,
+                (unsigned long long)stats.script_executions,
+                (unsigned long long)stats.memory_operations);
+        LOG_MSG("Lua Performance Stats: %s", stats_buffer);
+    }
+    return true;
+}
+#endif // C_LUA
+
+bool load_symbol_file_menu_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+    
+
+    
+    return true;
+}
+
+bool symbol_management_menu_callback(DOSBoxMenu * const menu, DOSBoxMenu::item * const menuitem) {
+    (void)menu;//UNUSED
+    (void)menuitem;//UNUSED
+    
+#ifdef C_DEBUG
+    if (!g_symbol_manager || !g_symbol_manager->hasSymbols()) {
+        DEBUG_ShowMsg("No symbols loaded. Use 'Load Symbol File' first.");
+        return true;
+    }
+    
+    // Display symbol management dashboard
+    auto symbols = g_symbol_manager->getAllSymbols();
+    auto filename = g_symbol_manager->getLoadedFileName();
+    auto format = g_symbol_manager->getLoadedFormat();
+    
+    const char* format_name = "UNKNOWN";
+    switch (format) {
+        case LuaEngineSymbols::SymbolFormat::MASM_MAP: format_name = "MASM MAP"; break;
+        case LuaEngineSymbols::SymbolFormat::MASM_LST: format_name = "MASM LST"; break;
+        case LuaEngineSymbols::SymbolFormat::WATCOM_MAP: format_name = "Watcom MAP"; break;
+        case LuaEngineSymbols::SymbolFormat::BORLAND_MAP: format_name = "Borland MAP"; break;
+        case LuaEngineSymbols::SymbolFormat::GNU_MAP: format_name = "GNU MAP"; break;
+        default: break;
+    }
+    
+    DEBUG_ShowMsg("=== Symbol Management Dashboard ===");
+    DEBUG_ShowMsg("Loaded file: %s", filename.c_str());
+    DEBUG_ShowMsg("Format: %s", format_name);
+    DEBUG_ShowMsg("Symbol count: %zu", symbols.size());
+    DEBUG_ShowMsg("");
+    
+    // Show symbol breakdown by type
+    std::map<std::string, int> type_counts;
+    for (const auto& symbol : symbols) {
+        type_counts[symbol.type]++;
+    }
+    
+    DEBUG_ShowMsg("Symbol breakdown:");
+    for (const auto& pair : type_counts) {
+        DEBUG_ShowMsg("  %s: %d", pair.first.c_str(), pair.second);
+    }
+    DEBUG_ShowMsg("");
+    
+    // Show first 10 symbols as examples
+    DEBUG_ShowMsg("Sample symbols (first 10):");
+    int count = 0;
+    for (const auto& symbol : symbols) {
+        if (count++ >= 10) break;
+        DEBUG_ShowMsg("  %s @ 0x%08X (%s)", symbol.name.c_str(), symbol.address, symbol.type.c_str());
+    }
+    
+    DEBUG_ShowMsg("");
+    DEBUG_ShowMsg("Commands:");
+    DEBUG_ShowMsg("  - Use 'b [symbol_name]' to set breakpoint at symbol");
+    DEBUG_ShowMsg("  - Use 'u [symbol_name]' to disassemble at symbol");
+    DEBUG_ShowMsg("  - Use 'd [symbol_name]' to view memory at symbol");
+    DEBUG_ShowMsg("=====================================");
+#else
+    DEBUG_ShowMsg("Symbol management not available in non-debug builds");
+#endif
+    
+    return true;
+}
+
 
 
 
@@ -3687,6 +3889,8 @@ void AllocCallback1() {
 #if !defined(C_EMSCRIPTEN)
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"show_console").set_text("Show logging console").set_callback_function(show_console_menu_callback);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"clear_console").set_text("Clear logging console").set_callback_function(clear_console_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"load_symbol_file").set_text("Load Symbol File...").set_callback_function(load_symbol_file_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"symbol_management").set_text("Symbol Management").set_callback_function(symbol_management_menu_callback).enable(false);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"disable_logging").set_text("Disable logging output").set_callback_function(disable_log_menu_callback).check(control->opt_nolog);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"wait_on_error").set_text("Console wait on error").set_callback_function(wait_on_error_menu_callback).check(sdl.wait_on_error);
 #endif
@@ -3695,6 +3899,15 @@ void AllocCallback1() {
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"show_logtext").set_text("Show logging text").set_callback_function(show_logtext_menu_callback);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"save_logas").set_text("Save logging as...").set_callback_function(save_logas_menu_callback);
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"load_lua").set_text("Load lua").set_callback_function(load_lua_menu_callback);
+#ifdef C_LUA
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_console").set_text("Lua Console").set_callback_function(lua_console_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_hex_editor").set_text("Lua Hex Editor").set_callback_function(lua_hex_editor_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_memory_search").set_text("Lua Memory Search").set_callback_function(lua_memory_search_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_watch_list").set_text("Lua Watch List").set_callback_function(lua_watch_list_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_reload_script").set_text("Reload Lua Script").set_callback_function(lua_reload_script_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_enable_overlay").set_text("Toggle Lua Overlay").set_callback_function(lua_enable_overlay_menu_callback);
+                mainMenu.alloc_item(DOSBoxMenu::item_type_id,"lua_performance_stats").set_text("Lua Performance Stats").set_callback_function(lua_performance_stats_menu_callback);
+#endif
 
                 debugrunmode = debuggerrun;
                 mainMenu.alloc_item(DOSBoxMenu::item_type_id,"debugger_rundebug").set_text("Debugger option: Run debugger").set_callback_function(debugger_rundebug_menu_callback).check(debugrunmode==0);
@@ -3723,6 +3936,13 @@ void AllocCallback1() {
                     }
                 }
             }
+
+#ifdef C_LUA
+            {
+                DOSBoxMenu::item &item = mainMenu.alloc_item(DOSBoxMenu::submenu_type_id,"LuaMenu");
+                item.set_text("Lua Scripting");
+            }
+#endif
 
             {
 #if C_DEBUG

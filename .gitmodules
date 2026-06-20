@@ -1,0 +1,3 @@
+[submodule "third_party/lrdb"]
+	path = third_party/lrdb
+	url = https://github.com/satoren/lrdb.git

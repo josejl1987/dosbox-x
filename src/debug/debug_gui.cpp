@@ -662,6 +662,8 @@ bool in_debug_showmsg = false;
 
 bool IsDebuggerActive(void);
 
+extern "C" void LuaEngine_LogDebuggerMessage(const char* msg);
+
 void DEBUG_ShowMsg(char const* format,...) {
 	bool stderrlog = false;
 	char buf[512];
@@ -702,6 +704,9 @@ void DEBUG_ShowMsg(char const* format,...) {
 
     /* remove newlines if present */
     while (len > 0 && buf[len-1] == '\n') buf[--len] = 0;
+
+    // Bridge debugger output to Lua console logger if available
+    LuaEngine_LogDebuggerMessage(buf);
 
 #if C_DEBUG
 	if (dbg.win_out != NULL)

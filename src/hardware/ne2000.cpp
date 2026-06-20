@@ -16,7 +16,8 @@
 #include "hardware.h"
 
 #ifdef WIN32
-# include <winsock.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #endif
 
 /* Couldn't find a real spec for the NE2000 out there, hence this is adapted heavily from Bochs */

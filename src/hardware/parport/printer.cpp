@@ -38,6 +38,11 @@
 #include "dos_inc.h"
 #include "../../ints/int10.h"
 #include "sdlmain.h"
+#ifdef _WIN32
+#include <windows.h>
+#include <commdlg.h>
+#include <shellapi.h>
+#endif
 
 #include <output/output_ttf.h>
 

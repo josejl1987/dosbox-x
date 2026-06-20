@@ -23,6 +23,7 @@ extern "C" {
 
 #include "sdlmain.h"
 #include "render.h"
+#include "../gui/imgui_window.h"
 
 using namespace std;
 
@@ -1027,19 +1028,24 @@ void OUTPUT_OPENGL_EndUpdate(const uint16_t *changedLines)
             if (changedLines && (changedLines[0] == sdl.draw.height))
                 return;
 
-            glUnmapBufferARB(GL_PIXEL_UNPACK_BUFFER_EXT);
-            glBindTexture(GL_TEXTURE_2D, sdl_opengl.texture);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
-                (int)sdl.draw.width, (int)sdl.draw.height, GL_BGRA_EXT,
+            if (changedLines) {
+                glUnmapBufferARB(GL_PIXEL_UNPACK_BUFFER_EXT);
+                glBindTexture(GL_TEXTURE_2D, sdl_opengl.texture);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                    (int)sdl.draw.width, (int)sdl.draw.height, GL_BGRA_EXT,
 #if defined (MACOSX)
-                // needed for proper looking graphics on macOS 10.12, 10.13
-                GL_UNSIGNED_INT_8_8_8_8,
+                    // needed for proper looking graphics on macOS 10.12, 10.13
+                    GL_UNSIGNED_INT_8_8_8_8,
 #else
-                // works on Linux
-                GL_UNSIGNED_INT_8_8_8_8_REV,
+                    // works on Linux
+                    GL_UNSIGNED_INT_8_8_8_8_REV,
 #endif
-                (void*)0);
-            glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_EXT, 0);
+                    (void*)0);
+                glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_EXT, 0);
+            } else {
+                // No new pixel data this frame; keep previously uploaded texture.
+                glBindTexture(GL_TEXTURE_2D, sdl_opengl.texture);
+            }
             //glCallList(sdl_opengl.displaylist);
             //SDL_GL_SwapBuffers();
         }
@@ -1074,8 +1080,11 @@ void OUTPUT_OPENGL_EndUpdate(const uint16_t *changedLines)
                 }
                 index++;
             }
-        } else
-            return;
+        } else {
+            // No changed lines (frameskip or UI-only update). Still draw the existing texture so the
+            // window isn't cleared to black when ImGui renders without a video upload.
+            glBindTexture(GL_TEXTURE_2D, sdl_opengl.texture);
+        }
         if (sdl_opengl.program_object) {
             glUniform1i(sdl_opengl.ruby.frame_count, sdl_opengl.actual_frame_count++);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);

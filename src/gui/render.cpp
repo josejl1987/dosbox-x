@@ -42,6 +42,11 @@
 #include "pc98_gdc.h"
 #include "pc98_gdc_const.h"
 
+// GUI overlay integration
+// #include "../luaengine/gui_overlay.h" // Removed: redundant with ImGui
+#include "../luaengine/frame_control.h"
+#include "../luaengine/gui_windows.h"
+
 #include "render_scalers.h"
 #include "render_glsl.h"
 #if defined(__SSE__)
@@ -322,6 +327,11 @@ static void RENDER_ClearCacheHandler(const void * src) {
 extern void GFX_SetTitle(int32_t cycles, int frameskip, Bits timing, bool paused);
 
 bool RENDER_StartUpdate(void) {
+    // Frame control integration - mark frame start
+    if (LuaEngineFrameControl::g_frame_controller) {
+        LuaEngineFrameControl::g_frame_controller->beginFrame();
+    }
+    
     if (GCC_UNLIKELY(render.updating))
         return false;
     if (GCC_UNLIKELY(!render.active))
@@ -430,12 +440,19 @@ void RENDER_EndUpdate( bool abort ) {
             total += render.frameskip.hadSkip[i];
         LOG_MSG( "Skipped frame %d %d", PIC_Ticks, (total * 100) / RENDER_SKIP_CACHE );
 #endif
-        // Force output to update the screen even if nothing changed...
-        // works only with Direct3D output (GFX_StartUpdate() was probably not even called)
-        if (RENDER_GetForceUpdate()) GFX_EndUpdate(nullptr);
+        // FIX: Always render ImGui to keep it responsive.
+        // Pass nullptr to avoid redrawing the static DOS screen.
+        GFX_EndUpdate(nullptr);
     }
     render.frameskip.index = (render.frameskip.index + 1) & (RENDER_SKIP_CACHE - 1);
     render.updating=false;
+
+    // GUI overlay removed - now using ImGui directly
+    
+    // Frame control integration - mark frame end
+    if (LuaEngineFrameControl::g_frame_controller) {
+        LuaEngineFrameControl::g_frame_controller->endFrame();
+    }
 
     if (pause_on_vsync) {
         pause_on_vsync = false;

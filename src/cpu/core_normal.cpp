@@ -23,6 +23,7 @@
 #include "fpu.h"
 #include "paging.h"
 #include "mmx.h"
+#include "../luaengine/luaengine.h"
 
 bool CPU_RDMSR();
 bool CPU_WRMSR();
@@ -158,7 +159,7 @@ Bits CPU_Core_Normal_Run(void) {
 	    return CBRET_NONE;
 
 	while (CPU_Cycles-->0) {
-        luaEngine.LuaFrameBoundary();
+        luaEngine.LuaInstructionHook();
 
 		LOADIP;
 		last_prefix=MP_NONE;

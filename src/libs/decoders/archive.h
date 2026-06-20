@@ -327,7 +327,7 @@ class Archive
 				uint32_t l;
 				
 #if defined(_MSC_VER)
-                l = min(toRead, (uint32_t)sizeof(buffer));
+                l = std::min(toRead, (uint32_t)sizeof(buffer));
 #else
                 l = std::min(toRead, (uint32_t)sizeof(buffer));
 #endif

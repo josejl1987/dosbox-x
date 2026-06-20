@@ -118,6 +118,9 @@ extern int tryconvertcp, Reflect_Menu(void);
 #include "callback.h"
 #include "support.h"
 #include "debug.h"
+#include "../luaengine/debug_tools_manager.h"
+#include "../luaengine/luaengine.h"
+#include "../../include/lua_re_hooks.h"
 #include "ide.h"
 #include "bitop.h"
 #include "ptrop.h"
@@ -129,6 +132,7 @@ extern int tryconvertcp, Reflect_Menu(void);
 #include "inout.h"
 #include "jfont.h"
 #include "render.h"
+#include "imgui_window.h"
 #include "../dos/cdrom.h"
 #include "../dos/drives.h"
 #include "../ints/int10.h"
@@ -160,12 +164,17 @@ extern int tryconvertcp, Reflect_Menu(void);
 #include <output/output_tools.h>
 #include <output/output_ttf.h>
 #include <output/output_tools_xbrz.h>
+#include "imgui_window.h"
 static bool init_output = false;
 
+#ifdef C_LUA
+#include "../luaengine/luaengine.h"
+#include "../luaengine/gui_windows.h"
+#include "../luaengine/core_debug_interface.h"
 #include <sol/sol.hpp>
-
+extern LuaEngine luaEngine;
 sol::state lua;
-LuaEngine luaEngine;
+#endif
 
 
 #if defined(WIN32)
@@ -966,6 +975,7 @@ static unsigned char logo[32*32*4]= {
 #include "dosbox_logo.h"
 };
 #endif
+#include <imgui.h>
 
 #if !defined(MACOSX)
 static void DOSBox_SetOriginalIcon(void) {
@@ -1079,6 +1089,9 @@ void GFX_SetTitle(int32_t cycles, int frameskip, Bits timing, bool paused) {
     if (paused) strcat(title," PAUSED");
 #if C_DEBUG
     if (IsDebuggerActive()) strcat(title," DEBUGGER");
+#endif
+#ifdef C_LUA
+    if (luaEngine.luaRunning) strcat(title," [LUA]");
 #endif
 #if defined(C_SDL2)
     SDL_SetWindowTitle(sdl.window,title);
@@ -1409,17 +1422,12 @@ void PauseDOSBoxLoop(Bitu /*unused*/) {
             break;
         }
 
-#if C_EMSCRIPTEN
-        emscripten_sleep(0);
-        SDL_PollEvent(&event);
-#elif C_GAMELINK
-        // Keep GameLink ticking over.
-        SDL_Delay(100);
-        OUTPUT_GAMELINK_Transfer();
-        SDL_PollEvent(&event);
-#else
-        SDL_WaitEvent(&event);    // since we're not polling, cpu usage drops to 0.
-#endif
+        // Keep processing events with polling instead of waiting
+        while (SDL_PollEvent(&event)) {
+            // Process ImGui events first to keep UI interactive
+            if (ImGui::GetCurrentContext()) {
+                ProcessImGuiEvents(event);
+            }
 
 #if defined(WIN32) && !defined(HX_DOS)
         UINT msg=0;
@@ -1444,8 +1452,12 @@ void PauseDOSBoxLoop(Bitu /*unused*/) {
             break;
         }
 #endif
-        switch (event.type) {
+            // Handle LuaEngine GUI events
+            if (LuaEngineGUIWindows::g_window_manager) {
+                LuaEngineGUIWindows::g_window_manager->onSDLEvent(event);
+            }
 
+            switch (event.type) {
             case SDL_QUIT: KillSwitch(true); break;
             case SDL_KEYDOWN:   // Must use Pause/Break or escape Key to resume.
             if(event.key.keysym.sym == SDLK_PAUSE || event.key.keysym.sym == SDLK_ESCAPE) {
@@ -1501,6 +1513,15 @@ void PauseDOSBoxLoop(Bitu /*unused*/) {
 # endif
 #endif
         }
+        }
+
+        // ALWAYS RENDER ImGui FRAME, EVEN WHEN PAUSED - this keeps UI interactive
+        if (ImGui::GetCurrentContext()) {
+            RenderImGuiFrame();
+        }
+
+        // Prevent 100% CPU usage while maintaining responsiveness
+        SDL_Delay(10);
     }
 
     // restore mouse state
@@ -1605,6 +1626,7 @@ SDL_Window* GFX_SetSDLWindowMode(uint16_t width, uint16_t height, SCREEN_TYPES s
             SDL_DestroyWindow(sdl.window);
         }
 
+
         sdl.window = SDL_CreateWindow("",
                                       SDL_WINDOWPOS_UNDEFINED_DISPLAY(sdl.displayNumber?sdl.displayNumber-1:0),
                                       SDL_WINDOWPOS_UNDEFINED_DISPLAY(sdl.displayNumber?sdl.displayNumber-1:0),
@@ -1628,6 +1650,22 @@ SDL_Window* GFX_SetSDLWindowMode(uint16_t width, uint16_t height, SCREEN_TYPES s
             sdl_opengl.context = SDL_GL_CreateContext(sdl.window);
             if (sdl_opengl.context == NULL) LOG_MSG("WARNING: SDL2 unable to create GL context");
             if (SDL_GL_MakeCurrent(sdl.window, sdl_opengl.context) != 0) LOG_MSG("WARNING: SDL2 unable to make current GL context");
+            
+            // Initialize ImGui for main window (shared context for all systems)
+            if (sdl.window && sdl_opengl.context) {
+                if (InitImGui(sdl.window)) {
+                    LOG_MSG("ImGui initialized successfully for main window shared context");
+                    
+                    // Initialize debug tools after ImGui is ready
+                    if (InitializeDebugTools()) {
+                        LOG_MSG("Debug tools initialized successfully");
+                    } else {
+                        LOG_MSG("WARNING: Failed to initialize debug tools");
+                    }
+                } else {
+                    LOG_MSG("WARNING: Failed to initialize ImGui for main window");
+                }
+            }
         }
 #endif
 
@@ -2984,6 +3022,7 @@ void GFX_OpenGLRedrawScreen(void) {
             glCallList(sdl_opengl.displaylist);
         }
     }
+    RenderImGuiFrame();
 #endif
 }
 
@@ -3053,7 +3092,7 @@ void GFX_EndUpdate(const uint16_t *changedLines) {
             break;
     }
 
-#if C_GAMELINK
+    #if C_GAMELINK
     OUTPUT_GAMELINK_Transfer();
 #endif
 
@@ -3080,6 +3119,8 @@ void GFX_EndUpdate(const uint16_t *changedLines) {
             sdl.gfx_force_redraw_count--;
         }
     }
+    
+    // ImGui rendering moved to main event loop to decouple from frameskip
 }
 
 void GFX_SetPalette(Bitu start,Bitu count,GFX_PalEntry * entries) {
@@ -4336,7 +4377,7 @@ static void HandleMouseMotion(SDL_MouseMotionEvent * motion) {
 #if C_OPENGL
             sdl_opengl.menudraw_countdown = 2; // two GL buffers
             GFX_OpenGLRedrawScreen();
-            GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
+            /*GFX_DrawSDLMenu(mainMenu,mainMenu.display_list)*/;
 # if defined(C_SDL2)
             SDL_GL_SwapWindow(sdl.window);
 # else
@@ -4356,7 +4397,7 @@ static void HandleMouseMotion(SDL_MouseMotionEvent * motion) {
 #if C_OPENGL
             sdl_opengl.menudraw_countdown = 2; // two GL buffers
             GFX_OpenGLRedrawScreen();
-            GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
+            /*GFX_DrawSDLMenu(mainMenu,mainMenu.display_list)*/;
 # if defined(C_SDL2)
             SDL_GL_SwapWindow(sdl.window);
 # else
@@ -4584,7 +4625,7 @@ static void HandleMouseButton(SDL_MouseButtonEvent * button, SDL_MouseMotionEven
                             (int)DOSBoxMenu::dropshadowY - 1/*menubar border*/);
 
                     mainMenu.setRedraw();
-                    GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
+                    /*GFX_DrawSDLMenu(mainMenu,mainMenu.display_list)*/;
 
                     for (auto i=popup_stack.begin();i!=popup_stack.end();i++) {
                         if (mainMenu.get_item(*i).get_type() == DOSBoxMenu::submenu_type_id) {
@@ -4894,7 +4935,7 @@ static void HandleMouseButton(SDL_MouseButtonEvent * button, SDL_MouseMotionEven
                             GFX_OpenGLRedrawScreen();
 
                             mainMenu.setRedraw();
-                            GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
+                            /*GFX_DrawSDLMenu(mainMenu,mainMenu.display_list)*/;
 #endif
                         }
                         else {
@@ -4967,7 +5008,7 @@ static void HandleMouseButton(SDL_MouseButtonEvent * button, SDL_MouseMotionEven
                     GFX_OpenGLRedrawScreen();
 
                     mainMenu.setRedraw();
-                    GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
+                    /*GFX_DrawSDLMenu(mainMenu,mainMenu.display_list)*/;
 
 # if defined(C_SDL2)
                     SDL_GL_SwapWindow(sdl.window);
@@ -5484,7 +5525,63 @@ void GFX_Events() {
     emscripten_sleep(0);
 #endif
 
-    while (SDL_PollEvent(&event)) {
+    // Mouse state management variables
+    static bool imgui_had_mouse_focus = false;
+    static bool dosbox_wants_mouse_lock = false;
+    
+    // Cached ImGui mouse state for performance optimization
+    static bool cached_imgui_wants_mouse = false;
+    static bool cached_imgui_hovering = false;
+    static bool cached_state_valid = false;
+    
+    // ImGui dirty flag system for selective rendering
+    
+    // Function to update cached ImGui mouse state (called once per frame)
+    auto UpdateImGuiMouseState = [&]() {
+        if (ImGui::GetCurrentContext()) {
+            ImGuiIO& io = ImGui::GetIO();
+            cached_imgui_wants_mouse = io.WantCaptureMouse;
+            
+            // Only do expensive hovering checks if WantCaptureMouse is false
+            if (!cached_imgui_wants_mouse) {
+                cached_imgui_hovering = ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) ||
+                                      ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+            } else {
+                cached_imgui_hovering = false; // No need to check if already wants mouse
+            }
+            cached_state_valid = true;
+            
+            // ImGui rendering check removed - now renders every frame
+        } else {
+            cached_imgui_wants_mouse = false;
+            cached_imgui_hovering = false;
+            cached_state_valid = false;
+        }
+    };
+    
+    // Function to check if ImGui should capture mouse (using cached state)
+    auto ShouldImGuiCaptureMouse = [&]() -> bool {
+        if (!cached_state_valid) {
+            UpdateImGuiMouseState(); // Fallback update if cache is invalid
+        }
+        return cached_imgui_wants_mouse || cached_imgui_hovering;
+    };
+    
+    static int event_loop_count = 0;
+
+    // Use a loop limit to prevent infinite loops if events are generated faster than processed
+    int max_events = 100;
+    while (max_events-- > 0 && SDL_PollEvent(&event)) {
+        event_loop_count++;
+
+        ImGuiIO& io = ImGui::GetIO();
+        
+        // Process ImGui events first so io.WantCaptureMouse is set correctly
+        ProcessImGuiEvents(event);
+        
+        // Invalidate cached mouse state at start of event processing cycle
+        cached_state_valid = false;
+
 #if defined(C_SDL2)
         /* SDL2 hack: There seems to be a problem where calling the SetWindowSize function,
            even for the same size, still causes a resize event, and sometimes for no apparent
@@ -5589,7 +5686,7 @@ void GFX_Events() {
                 skipdraw=false;
                 GFX_SDLMenuTrackHilight(mainMenu,DOSBoxMenu::unassigned_item_handle);
 
-                GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
+                /*GFX_DrawSDLMenu(mainMenu,mainMenu.display_list)*/;
 #endif
                 break;
             case SDL_WINDOWEVENT_FOCUS_GAINED:
@@ -5615,7 +5712,7 @@ void GFX_Events() {
                 GFX_SDLMenuTrackHover(mainMenu,DOSBoxMenu::unassigned_item_handle);
                 GFX_SDLMenuTrackHilight(mainMenu,DOSBoxMenu::unassigned_item_handle);
 
-                GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
+                /*GFX_DrawSDLMenu(mainMenu,mainMenu.display_list)*/;
 #endif
                 SetPriority(sdl.priority.nofocus);
                 GFX_LosingFocus();
@@ -5648,13 +5745,12 @@ void GFX_Events() {
 //                  }
 
                     while (paused) {
-#if C_EMSCRIPTEN
-                        emscripten_sleep(0);
-                        SDL_PollEvent(&ev);
-#else
-                        // WaitEvent waits for an event rather than polling, so CPU usage drops to zero
-                        SDL_WaitEvent(&ev);
-#endif
+                        // Keep processing events with polling instead of waiting to maintain ImGui rendering
+                        while (SDL_PollEvent(&ev)) {
+                            // Process ImGui events first to keep UI interactive during focus loss
+                            if (ImGui::GetCurrentContext()) {
+                                ProcessImGuiEvents(ev);
+                            }
 
                         switch (ev.type) {
                         case SDL_QUIT:
@@ -5681,12 +5777,59 @@ void GFX_Events() {
                             }
                             break;
                         }
+                        }
+
+                        // ALWAYS RENDER ImGui FRAME during focus loss to keep UI interactive
+                        if (ImGui::GetCurrentContext()) {
+                            RenderImGuiFrame();
+                        }
+
+                        // Prevent 100% CPU usage while maintaining responsiveness
+                        SDL_Delay(10);
                     }
                 }
             }
             break;
         case SDL_MOUSEMOTION:
             if (sdl.desktop.type == SCREEN_GAMELINK) break;
+            // Optimized mouse sharing logic: prioritize mouse lock over ImGui
+            {
+                // If mouse is locked, DOSBox has complete control - no ImGui interaction
+                if (mouselocked) {
+                    // Mouse is locked - DOSBox gets all input, no ImGui processing
+                    imgui_had_mouse_focus = false;
+                    // Continue to DOSBox mouse handling (don't break)
+                } else {
+                    // Mouse is not locked - use cached ImGui state for performance
+                    bool should_imgui_have_mouse = ShouldImGuiCaptureMouse();
+                    
+                    // Handle mouse state transitions only when not locked
+                    if (should_imgui_have_mouse != imgui_had_mouse_focus) {
+                        if (should_imgui_have_mouse) {
+                            // ImGui gaining focus - release DOSBox mouse lock if needed
+                            dosbox_wants_mouse_lock = mouselocked; // Remember current state
+                            if (mouselocked) {
+                                mouselocked = false;
+                                SDL_SetRelativeMouseMode(SDL_FALSE);
+                                SDL_ShowCursor(SDL_ENABLE);
+                                CaptureMouseNotify();
+                            }
+                        } else {
+                            // ImGui losing focus - restore DOSBox mouse lock if wanted
+                            if (dosbox_wants_mouse_lock && !mouselocked) {
+                                mouselocked = true;
+                                SDL_SetRelativeMouseMode(SDL_TRUE);
+                                SDL_ShowCursor(SDL_DISABLE);
+                                CaptureMouseNotify();
+                            }
+                        }
+                        imgui_had_mouse_focus = should_imgui_have_mouse;
+                    }
+                    
+                    // Only handle mouse motion if ImGui doesn't want it
+                    if (should_imgui_have_mouse) break;
+                }
+            }
 #if defined(C_SDL2)
             if (touchscreen_finger_lock == no_finger_id &&
                 touchscreen_touch_lock == no_touch_id &&
@@ -5700,15 +5843,21 @@ void GFX_Events() {
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
             if (sdl.desktop.type == SCREEN_GAMELINK) break;
-#if defined(C_SDL2)
-            if (touchscreen_finger_lock == no_finger_id &&
-                touchscreen_touch_lock == no_touch_id &&
-                event.button.which != SDL_TOUCH_MOUSEID) { /* don't handle mouse events faked by touchscreen */
-                HandleMouseButton(&event.button,&event.motion);
+            // Optimized mouse sharing logic: prioritize mouse lock over ImGui
+            {
+                // If mouse is locked, DOSBox has complete control - no ImGui interaction
+                if (mouselocked) {
+                    // Mouse is locked - DOSBox gets all input, no ImGui processing
+                    // Continue to DOSBox mouse handling (don't break)
+                } else {
+                    // Mouse is not locked - use cached ImGui state for performance
+                    bool should_imgui_have_mouse = ShouldImGuiCaptureMouse();
+                    
+                    // Only handle mouse buttons if ImGui doesn't want them
+                    if (should_imgui_have_mouse) break;
+                }
             }
-#else
             HandleMouseButton(&event.button,&event.motion);
-#endif
             break;
 #if !defined(IGNORE_TOUCHSCREEN)
         case SDL_FINGERDOWN:
@@ -5723,6 +5872,20 @@ void GFX_Events() {
             break;
 		case SDL_MOUSEWHEEL:
             if (sdl.desktop.type == SCREEN_GAMELINK) break;
+            // Optimized mouse sharing logic: prioritize mouse lock over ImGui
+            {
+                // If mouse is locked, DOSBox has complete control - no ImGui interaction
+                if (mouselocked) {
+                    // Mouse is locked - DOSBox gets all input, no ImGui processing
+                    // Continue to DOSBox mouse handling (don't break)
+                } else {
+                    // Mouse is not locked - use cached ImGui state for performance
+                    bool should_imgui_have_mouse = ShouldImGuiCaptureMouse();
+                    
+                    // Only handle mouse wheel if ImGui doesn't want it
+                    if (should_imgui_have_mouse) break;
+                }
+            }
 			if (wheel_key && (wheel_guest || !dos_kernel_disabled)) {
 				if(event.wheel.y > 0) {
 #if defined (WIN32) && !defined(HX_DOS)
@@ -5832,6 +5995,12 @@ void GFX_Events() {
             if (event.key.keysym.sym==SDLK_RCTRL) sdl.rctrlstate = event.key.type;
             if (event.key.keysym.sym==SDLK_LSHIFT) sdl.lshiftstate = event.key.type;
             if (event.key.keysym.sym==SDLK_RSHIFT) sdl.rshiftstate = event.key.type;
+            
+            // ESC key for emergency - will now just be logged for debugging
+            if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
+                printf("DEBUG: ESC key pressed - new position-based logic should not need manual release");
+            }
+            
             if (event.type == SDL_KEYDOWN && isModifierApplied())
                 ClipKeySelect(event.key.keysym.sym);
             if(dos.im_enable_flag) {
@@ -6070,7 +6239,7 @@ void GFX_Events() {
                     }
                 }
 
-                GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
+                /*GFX_DrawSDLMenu(mainMenu,mainMenu.display_list)*/;
 #endif
 
                 /* Non-focus priority is set to pause; check to see if we've lost window or input focus
@@ -6094,13 +6263,12 @@ void GFX_Events() {
 //                  }
 
                     while (paused) {
-#if C_EMSCRIPTEN
-                        emscripten_sleep(0);
-                        SDL_PollEvent(&ev);
-#else
-                        // WaitEvent waits for an event rather than polling, so CPU usage drops to zero
-                        SDL_WaitEvent(&ev);
-#endif
+                        // Keep processing events with polling instead of waiting to maintain ImGui rendering
+                        while (SDL_PollEvent(&ev)) {
+                            // Process ImGui events first to keep UI interactive during focus loss
+                            if (ImGui::GetCurrentContext()) {
+                                ProcessImGuiEvents(ev);
+                            }
 
                         switch (ev.type) {
                         case SDL_QUIT: if (CheckQuit()) throw(0); break; // a bit redundant at linux at least as the active events gets before the quit event.
@@ -6121,15 +6289,60 @@ void GFX_Events() {
                             }
                             break;
                         }
+                        }
+
+                        // ALWAYS RENDER ImGui FRAME during focus loss to keep UI interactive
+                        if (ImGui::GetCurrentContext()) {
+                            RenderImGuiFrame();
+                        }
+
+                        // Prevent 100% CPU usage while maintaining responsiveness
+                        SDL_Delay(10);
                     }
                 }
             }
             break;
         case SDL_MOUSEMOTION:
+            // SDL1 Optimized mouse sharing logic: prioritize mouse lock over ImGui
+            {
+                // If mouse is locked, DOSBox has complete control - no ImGui interaction
+                if (mouselocked) {
+                    // Mouse is locked - DOSBox gets all input, no ImGui processing
+                    // Continue to DOSBox mouse handling (don't break)
+                } else {
+                    // Mouse is not locked - use cached ImGui state for performance
+                    bool should_imgui_have_mouse = ShouldImGuiCaptureMouse();
+                    
+                    if (should_imgui_have_mouse) break;
+                }
+            }
             HandleMouseMotion(&event.motion);
             break;
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
+            // SDL1 Optimized mouse sharing logic: prioritize mouse lock over ImGui
+            {
+                // If mouse is locked, DOSBox has complete control - no ImGui interaction
+                if (mouselocked) {
+                    // Mouse is locked - DOSBox gets all input, no ImGui processing
+                    // Continue to DOSBox mouse handling (don't break)
+                } else {
+                    // Mouse is not locked - use cached ImGui state for performance
+                    bool should_imgui_have_mouse = ShouldImGuiCaptureMouse();
+                    
+                    // Only handle mouse buttons if ImGui doesn't want them
+                    if (should_imgui_have_mouse) break;
+                }
+            }
+                                           ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+                    }
+                    
+                    // Enhanced logic: prioritize WantCaptureMouse but also consider hovering for clicks
+                    bool should_imgui_have_mouse = imgui_wants_mouse || any_window_hovered;
+                    
+                    if (should_imgui_have_mouse) break;
+                }
+            }
             HandleMouseButton(&event.button,&event.motion);
             break;
         case SDL_VIDEORESIZE:
@@ -6338,6 +6551,11 @@ void GFX_Events() {
     static Bitu iPasteTicker = 0;
     if (paste_speed && (iPasteTicker++ % paste_speed) == 0) // emendelson: was 20 - good for WP51; Wengier: changed to 30 for better compatibility
         PasteClipboardNext();   // end added emendelson from dbDOS; improved by Wengier
+    
+    // Render ImGui frame normally (no artificial frame limiting)
+    if (ImGui::GetCurrentContext()) {
+        RenderImGuiFrame();
+    }
 }
 
 void Null_Init(Section *sec);
@@ -7612,7 +7830,6 @@ unsigned char *custom_bios_image = NULL;
 
 #if defined(WIN32) && !defined(HX_DOS)
 #include "Shlobj.h"
-#include <luaengine.h>
 int CALLBACK FolderBrowserCallback(HWND h_Dlg, UINT uMsg, LPARAM lParam, LPARAM lpData) {
     (void)lParam;
     if (uMsg == BFFM_INITIALIZED)
@@ -9008,6 +9225,50 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
             MAPPER_AddHandler(Sendkeymapper, MK_delete, MMODHOST, "sendkey_mapper", "Send special key", &item);
             item->set_text("Send special key");
         }
+
+#ifdef C_LUA
+        // Add keyboard shortcuts for Lua debug tools
+        {
+            DOSBoxMenu::item *item;
+            
+            // F9 - Toggle Lua console
+            MAPPER_AddHandler([](bool pressed) {
+                if (pressed && LuaEngineGUIWindows::g_window_manager) {
+                    // Toggle console - implementation would be added to window manager
+                    LOG_MSG("Lua console shortcut (F9) pressed");
+                }
+            }, MK_f9, 0, "lua_console_shortcut", "Lua Console", &item);
+            
+            // F10 - Toggle hex editor
+            MAPPER_AddHandler([](bool pressed) {
+                if (!pressed) return;
+                // If the disassembly view is up, honor debugger stepping instead of opening tools
+                if (LuaEngineGUIWindows::g_window_manager &&
+                    LuaEngineGUIWindows::g_window_manager->isDisassemblyVisible() &&
+                    LuaEngineDebug::g_core_debugger) {
+                    LuaEngineDebug::g_core_debugger->stepOver();
+                    return;
+                }
+                if (LuaEngineGUIWindows::g_window_manager) {
+                    LuaEngineGUIWindows::g_window_manager->showHexEditor();
+                }
+            }, MK_f10, 0, "lua_hexedit_shortcut", "Lua Hex Editor", &item);
+            
+            // F11 - Toggle memory search
+            MAPPER_AddHandler([](bool pressed) {
+                if (!pressed) return;
+                if (LuaEngineGUIWindows::g_window_manager &&
+                    LuaEngineGUIWindows::g_window_manager->isDisassemblyVisible() &&
+                    LuaEngineDebug::g_core_debugger) {
+                    LuaEngineDebug::g_core_debugger->stepInto();
+                    return;
+                }
+                if (LuaEngineGUIWindows::g_window_manager) {
+                    LuaEngineGUIWindows::g_window_manager->showMemorySearch();
+                }
+            }, MK_f11, 0, "lua_memsearch_shortcut", "Lua Memory Search", &item);
+        }
+#endif
         CPU_Init();
 #if C_FPU
         FPU_Init();
@@ -9103,6 +9364,12 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
         MAPPER_Init();
         AllocCallback2();
         MSG_Init();
+
+#if C_LUA
+        /* Initialize Lua scripting engine */
+        Section* lua_section = control->GetSection("lua");
+        luaEngine.LUAENGINE_Init(lua_section);
+#endif
 
         /* stop at this point, and show the configuration tool/mapper editor, if instructed */
         if (control->opt_startui) {
@@ -9470,6 +9737,11 @@ fresh_boot:
                 dos_kernel_shutdown = false;
             }
         }
+        catch (const std::exception& e) {
+            LOG(LOG_MISC, LOG_ERROR)("Unhandled std::exception caught at SDL_main: %s", e.what());
+            run_machine = false;
+            dos_kernel_shutdown = false;
+        }
         catch (...) {
             throw;
         }
@@ -9834,6 +10106,16 @@ fresh_boot:
 #if defined(C_SDL2)
         SDL_CDROMQuit();
 #endif
+        
+        // Shutdown debug tools before SDL cleanup
+        ShutdownDebugTools();
+
+        // Save any registered reverse-engineering CDL capture before the
+        // emulator fully terminates (in case destructors/atexit do not run).
+#if C_LUA_RE_HOOKS
+        LuaReHooks::SaveCDLFinalize();
+#endif
+
         SDL_Quit();//Let's hope sdl will quit as well when it catches an exception
 
 #if defined(WIN32) && !defined(HX_DOS) && !defined(_WIN32_WINDOWS)

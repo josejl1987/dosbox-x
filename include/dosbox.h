@@ -69,7 +69,6 @@
 #if defined(_MSC_VER)
 # include <sys/types.h>
 # include <sys/stat.h>
-#include <luaengine.h>
 
 /* Microsoft has their own stat/stat64 scheme */
 # define pref_stat			_stati64
@@ -98,6 +97,7 @@ typedef Bitu cpu_cycles_countu_t;
 
 class Config;
 class Section;
+struct LuaEngine;
 
 #if defined(__GNUC__)
 # define DEPRECATED __attribute__((deprecated))
@@ -165,6 +165,7 @@ enum ATICard {
 };
 
 typedef Bitu				(LoopHandler)(void);
+
 
 extern Config*				control;
 extern SVGACards			svgaCard;
@@ -411,12 +412,18 @@ public:
 protected:
     void getBytes(std::ostream& stream) override
     {
-        std::for_each(podRef.begin(), podRef.end(), std::bind1st(WriteGlobalPOD(), &stream));
+        std::for_each(podRef.begin(), podRef.end(), [&stream](POD& pod) {
+            WriteGlobalPOD()(stream, pod);
+
+            });
     }
 
     void setBytes(std::istream& stream) override
     {
-        std::for_each(podRef.begin(), podRef.end(), std::bind1st(ReadGlobalPOD(), &stream));
+        std::for_each(podRef.begin(), podRef.end(), [&stream](POD& pod) {
+            ReadGlobalPOD()(stream, pod);
+            }
+        );
     }
 
 private:

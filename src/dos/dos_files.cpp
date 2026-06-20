@@ -39,6 +39,9 @@
 #include "cdrom.h"
 #include "ide.h"
 #include "bios_disk.h"
+#if C_LUA_RE_HOOKS
+#include "lua_re_hooks.h"
+#endif
 
 #define DOS_FILESTART 4
 
@@ -673,8 +676,15 @@ bool DOS_ReadFile(uint16_t entry,uint8_t * data,uint16_t * amount,bool fcb) {
 	}
 */
 	uint16_t toread=*amount;
+	uint32_t file_offset = Files[handle]->GetSeekPos();
 	bool ret=Files[handle]->Read(data,&toread);
 	*amount=toread;
+#if C_LUA_RE_HOOKS
+	LuaReHooks::OnFileReadComplete(static_cast<uint16_t>(entry),
+	                               Files[handle]->name ? Files[handle]->name : "",
+	                               (file_offset != 0xffffffff) ? file_offset : 0,
+	                               *amount, toread, ret);
+#endif
 	return ret;
 }
 
@@ -703,8 +713,15 @@ bool DOS_WriteFile(uint16_t entry,const uint8_t * data,uint16_t * amount,bool fc
 	}
 */
 	uint16_t towrite=*amount;
+	uint32_t file_offset = Files[handle]->GetSeekPos();
 	bool ret=Files[handle]->Write(data,&towrite);
 	*amount=towrite;
+#if C_LUA_RE_HOOKS
+	LuaReHooks::OnFileWriteComplete(static_cast<uint16_t>(entry),
+	                                Files[handle]->name ? Files[handle]->name : "",
+	                                (file_offset != 0xffffffff) ? file_offset : 0,
+	                                *amount, towrite, ret);
+#endif
 	return ret;
 }
 
@@ -727,7 +744,13 @@ bool DOS_SeekFile(uint16_t entry,uint32_t * pos,uint32_t type,bool fcb) {
 		LOG(LOG_FILES, LOG_DEBUG)("Seeking to %d bytes from position type (%d) in %s ", *pos, type, Files[handle]->name);
 	}
 
-	return Files[handle]->Seek(pos,type);
+	bool ret = Files[handle]->Seek(pos,type);
+#if C_LUA_RE_HOOKS
+	LuaReHooks::OnFileSeekComplete(static_cast<uint16_t>(entry),
+	                               Files[handle]->name ? Files[handle]->name : "",
+	                               *pos, ret);
+#endif
+	return ret;
 }
 
 /* ert, 20100711: Locking extensions */
@@ -769,6 +792,13 @@ bool DOS_CloseFile(uint16_t entry, bool fcb, uint8_t * refcnt) {
 	if (!fcb) psp.SetFileHandle(entry,0xff);
 
 	Bits refs=Files[handle]->RemoveRef();
+#if C_LUA_RE_HOOKS
+	{
+		const char* name = Files[handle] && Files[handle]->name ? Files[handle]->name : "";
+		LuaReHooks::OnFileClose(static_cast<uint16_t>(entry), name,
+		                        static_cast<uint8_t>((refs <= 0) ? 0 : refs));
+	}
+#endif
 	if (refs<=0) {
 		delete Files[handle];
 		Files[handle]=nullptr;
@@ -847,8 +877,16 @@ bool DOS_CreateFile(char const * name,uint16_t attributes,uint16_t * entry,bool 
 		}
 		if (!fcb) psp.SetFileHandle(*entry,handle);
 		if (Files[handle]) Drives[drive]->EmptyCache();
+#if C_LUA_RE_HOOKS
+		LuaReHooks::OnFileOpenComplete(*entry,
+		                               Files[handle] && Files[handle]->name ? Files[handle]->name : name,
+		                               true);
+#endif
 		return true;
 	} else {
+#if C_LUA_RE_HOOKS
+		LuaReHooks::OnFileOpenComplete(*entry, name, false);
+#endif
 		if(dos.errorcode==DOSERR_ACCESS_DENIED||dos.errorcode==DOSERR_WRITE_PROTECTED) return false;
 		if(!PathExists(name)) DOS_SetError(DOSERR_PATH_NOT_FOUND); 
 		else DOS_SetError(DOSERR_FILE_NOT_FOUND);
@@ -917,8 +955,16 @@ bool DOS_OpenFile(char const * name,uint8_t flags,uint16_t * entry,bool fcb) {
 		Files[handle]->AddRef();
 		psp.SetFileHandle(*entry,handle);
 		Files[handle]->drive = drive;
+#if C_LUA_RE_HOOKS
+		LuaReHooks::OnFileOpenComplete(*entry,
+		                                 Files[handle]->name ? Files[handle]->name : name,
+		                                 true);
+#endif
 		return true;
 	} else {
+#if C_LUA_RE_HOOKS
+		LuaReHooks::OnFileOpenComplete(*entry, name, false);
+#endif
 		//Test if file exists, but opened in read-write mode (and writeprotected)
 		if((((flags&3) != OPEN_READ) || (enable_share_exe && !strncmp(Drives[drive]->GetInfo(),"local directory ",16))) && Drives[drive]->FileExists(fullname))
 			DOS_SetError(DOSERR_ACCESS_DENIED);

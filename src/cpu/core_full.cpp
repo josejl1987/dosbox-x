@@ -98,6 +98,12 @@ Bits CPU_Core_Full_Run(void) {
 			FillFlags();
 			return (Bits)debugCallback;
 		}
+#else
+		// Check for regular breakpoints when heavy debug is not enabled
+		if (DEBUG_Breakpoint()) {
+			FillFlags();
+			return (Bits)debugCallback;
+		}
 #endif
 #endif
 

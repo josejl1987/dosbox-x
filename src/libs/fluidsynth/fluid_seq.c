@@ -29,11 +29,15 @@
 
 #define FLUIDINC
 #include "config.h"
-#if !C_FLUIDSYNTH && defined(WIN32) && !defined(C_HX_DOS)
+#if defined(WIN32) && !defined(C_HX_DOS)
 #include "fluid_event_priv.h"
 #include "fluidsynth_priv.h"	// FLUID_NEW, etc
 #include "fluid_sys.h"	// timer, threads, etc...
 #include "fluid_list.h"
+
+#ifndef boolean
+typedef int boolean;
+#endif
 
 /***************************************************************
  *

@@ -30,6 +30,7 @@
 #include "control.h"
 #include "logging.h"
 #include "pic.h"
+#include "lua_re_hooks.h"
 
 // TODO: #ifdef FPU...
 #include "fpu.h"
@@ -124,6 +125,10 @@ CPUBlock cpu;
 Segments Segs;
 
 uint64_t CPU_fixed_RDTSC_rate = 0;
+
+uint64_t Get_CPU_fixed_RDTSC_rate() {
+    return CPU_fixed_RDTSC_rate;
+}
 
 int64_t CPU_RDTSC() {
 	pic_tickindex_t rate;
@@ -1200,6 +1205,12 @@ void CPU_Interrupt(Bitu num,Bitu type,uint32_t oldeip) {
       CPU_DebugException(0,oldeip); // DR6 bits need updating
       return;
     }
+#if C_LUA_RE_HOOKS
+    LuaReHooks::OnDOSInterrupt(static_cast<uint8_t>(num),
+                               reg_ax, reg_bx, reg_cx, reg_dx,
+                               SegValue(cs), SegValue(ds), SegValue(es), SegValue(ss),
+                               static_cast<uint16_t>(oldeip));
+#endif
 	lastint=(uint8_t)num;
 	FillFlags();
 #if C_DEBUG

@@ -48,6 +48,20 @@
 #include "pc98_gdc.h"
 #include "pc98_gdc_const.h"
 
+#if C_LUA
+#include "../luaengine/luaengine.h"
+extern LuaEngine luaEngine;
+
+// Track last frame boundary dispatched into Lua to avoid duplicate callbacks.
+static pic_tickindex_t lua_last_frame_boundary_time = -1.0;
+
+static inline void DispatchLuaFrameBoundary(pic_tickindex_t frame_start_time) {
+    if (frame_start_time == lua_last_frame_boundary_time) return;
+    lua_last_frame_boundary_time = frame_start_time;
+    luaEngine.LuaFrameBoundary();
+}
+#endif
+
 #if (C_SSHOT) || (C_AVCODEC)
 #include <zlib.h>
 #include <png.h>
@@ -3979,6 +3993,11 @@ static void VGA_PanningLatch(Bitu /*val*/) {
             pc98_gdc[i].begin_frame();
 
         pc98_text_draw.begin_frame();
+
+#if C_LUA
+        // PC-98 render path: ensure Lua frame callbacks fire even if the vertical timer path is skipped.
+        DispatchLuaFrameBoundary(vga.draw.delay.framestart);
+#endif
     }
 }
 
@@ -5803,6 +5822,12 @@ static void VGA_VerticalTimer(Bitu /*val*/) {
 	dbg_event_color_select = false;
 	dbg_event_color_plane_enable = false;
 	debugline_events.clear();
+
+#if C_LUA
+	// Call Lua frame boundary hook at true frame timing (~60 FPS)
+	// This works for both VGA and PC-98 GDC/EGC systems
+	DispatchLuaFrameBoundary(current_time);
+#endif
 
 	if (IS_PC98_ARCH) {
 		GDC_display_plane = GDC_display_plane_pending;

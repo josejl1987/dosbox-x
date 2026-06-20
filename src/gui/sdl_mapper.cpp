@@ -223,6 +223,30 @@ static CKeyEvent*                               num_lock_event = NULL;
 static std::map<std::string, size_t>            name_to_events;
 static std::map<std::string, std::string>       event_map;
 
+// Hotkey conflict detection system
+struct KeyBindingInfo {
+    MapKeys key;
+    Bitu mods;
+    CHandlerEvent* handler_event;
+    std::string binding_signature;
+
+    KeyBindingInfo() : key(MK_nothing), mods(0), handler_event(nullptr) {}
+
+    KeyBindingInfo(MapKeys k, Bitu m, CHandlerEvent* handler)
+        : key(k), mods(m), handler_event(handler) {
+        binding_signature = createBindingSignature(k, m);
+    }
+
+    static std::string createBindingSignature(MapKeys key, Bitu mods) {
+        char sig[64];
+        snprintf(sig, sizeof(sig), "key_%d_mod_%u", static_cast<int>(key), static_cast<unsigned int>(mods));
+        return std::string(sig);
+    }
+};
+
+static std::map<std::string, KeyBindingInfo> key_binding_registry;
+static std::vector<std::string> conflict_log;
+
 static SDL_Color                                map_pal[7] =
 {
     {0x00,0x00,0x00,0x00},          //0=black
@@ -4721,6 +4745,53 @@ static void CreateDefaultBinds(void) {
     sprintf(buffer,"jhat_0_0_3 \"stick_0 hat 0 8\" ");CreateStringBind(buffer);
 }
 
+// Hotkey conflict detection functions
+static bool CheckKeyBindingConflict(MapKeys key, Bitu mods, CHandlerEvent* new_handler, const char* eventname, const char* buttonname) {
+    std::string binding_sig = KeyBindingInfo::createBindingSignature(key, mods);
+    auto it = key_binding_registry.find(binding_sig);
+
+    if (it != key_binding_registry.end()) {
+        // Conflict detected!
+        const KeyBindingInfo& existing = it->second;
+
+        // Log the conflict
+        char conflict_msg[512];
+        snprintf(conflict_msg, sizeof(conflict_msg),
+                "HOTKEY CONFLICT: '%s' (event: %s) conflicts with existing '%s' (event: %s) - Key: %d, Mods: %u",
+                buttonname, eventname, existing.handler_event->ButtonName(), existing.handler_event->eventname.c_str(),
+                static_cast<int>(key), static_cast<unsigned int>(mods));
+        conflict_log.push_back(std::string(conflict_msg));
+
+        // Log to console
+        LOG(LOG_MISC, LOG_WARN)( conflict_msg);
+
+        return true; // Conflict found
+    }
+
+    return false; // No conflict
+}
+
+static void RegisterKeyBinding(MapKeys key, Bitu mods, CHandlerEvent* handler_event) {
+    std::string binding_sig = KeyBindingInfo::createBindingSignature(key, mods);
+    key_binding_registry[binding_sig] = KeyBindingInfo(key, mods, handler_event);
+}
+
+static void UnregisterKeyBinding(MapKeys key, Bitu mods) {
+    std::string binding_sig = KeyBindingInfo::createBindingSignature(key, mods);
+    key_binding_registry.erase(binding_sig);
+}
+
+static void ClearKeyBindingRegistry() {
+    key_binding_registry.clear();
+    conflict_log.clear();
+}
+
+// Function to get conflict report for debugging
+static std::vector<std::string> GetConflictReport() {
+    return conflict_log;
+}
+
+
 void MAPPER_AddHandler(MAPPER_Handler * handler,MapKeys key,Bitu mods,char const * const eventname,char const * const buttonname,DOSBoxMenu::item **ret_menuitem) {
     if (ret_menuitem != NULL)
         *ret_menuitem = NULL;
@@ -4739,8 +4810,18 @@ void MAPPER_AddHandler(MAPPER_Handler * handler,MapKeys key,Bitu mods,char const
         }
     }
 
+    // Check for hotkey conflicts before creating the event
+    bool has_conflict = CheckKeyBindingConflict(key, mods, nullptr, eventname, buttonname);
+    if (has_conflict) {
+        LOG_MSG("MAPPER: WARNING - Hotkey conflict detected for '%s' (%s)", buttonname, eventname);
+        // Continue with registration but log the conflict for user awareness
+    }
+
     CHandlerEvent *event = new CHandlerEvent(tempname,handler,key,mods,buttonname);
     event->eventname = eventname;
+
+    // Register the key binding for conflict detection
+    RegisterKeyBinding(key, mods, event);
 
     /* The mapper now automatically makes menu items for mapper events */
     DOSBoxMenu::item &menuitem = mainMenu.alloc_item(DOSBoxMenu::item_type_id, std::string("mapper_") + std::string(eventname));
@@ -5552,6 +5633,10 @@ void MAPPER_Init(void) {
     LOG(LOG_MISC,LOG_DEBUG)("Initializing DOSBox-X mapper");
 
     mapper.exit=true;
+
+    // Initialize hotkey conflict detection system
+    ClearKeyBindingRegistry();
+    LOG(LOG_MISC,LOG_DEBUG)("Hotkey conflict detection system initialized");
 
     MAPPER_CheckKeyboardLayout();
     if (initjoy) InitializeJoysticks();

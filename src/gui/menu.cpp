@@ -128,6 +128,9 @@ static const char *def_menu__toplevel[] =
 #if !defined(C_EMSCRIPTEN)
     "CaptureMenu",
 #endif
+#ifdef C_LUA
+    "LuaMenu",
+#endif
 #if C_DEBUG
     "DebugMenu",
 #endif
@@ -814,6 +817,25 @@ static const char *def_menu_drive[] =
 static const char *def_menu_help_command[MENU_HELP_COMMAND_MAX];
 char help_command_temp[MENU_HELP_COMMAND_MAX][30];
 
+/* lua scripting menu ("LuaMenu") */
+#ifdef C_LUA
+static const char* def_menu_lua[] =
+{
+    "load_lua",
+    "--",
+    "lua_console",
+    "lua_hex_editor",
+    "lua_memory_search", 
+    "lua_watch_list",
+    "lua_disassembly",
+    "--",
+    "lua_reload_script",
+    "lua_enable_overlay",
+    "lua_performance_stats",
+    NULL
+};
+#endif
+
 /* help debug ("DebugMenu" or "HelpDebugMenu") */
 #if C_DEBUG
 static const char* def_menu_debug[] =
@@ -835,6 +857,17 @@ static const char* def_menu_debug[] =
     "save_logas",
     "--",
     "load_lua",
+#ifdef C_LUA
+    "lua_console",
+    "lua_hex_editor", 
+    "lua_memory_search",
+    "lua_watch_list",
+    "lua_disassembly",
+    "--",
+    "lua_reload_script",
+    "lua_enable_overlay",
+    "lua_performance_stats",
+#endif
     "--",
     "show_console",
     "clear_console",
@@ -852,6 +885,9 @@ static const char* def_menu_help_debug[] =
 {
     "show_console",
     "wait_on_error",
+    "--",
+    "load_symbol_file",
+    "symbol_management", 
     "--",
     "video_debug_overlay",
     NULL
@@ -1122,8 +1158,11 @@ void DOSBoxMenu::item::deallocate(void) {
 void DOSBoxMenu::displaylist_append(displaylist &ls,const DOSBoxMenu::item_handle_t item_id) {
     DOSBoxMenu::item &item = get_item(item_id);
 
-    if (item.status.in_use)
-        E_Exit("DOSBoxMenu::displaylist_append() item already in use");
+    // Check if item is already in use (already added to a display list)
+    if (item.status.in_use) {
+        // Instead of crashing, just skip adding the duplicate item
+        return;
+    }
 
     ls.disp_list.push_back(item.master_id);
     item.status.in_use = true;
@@ -1131,6 +1170,13 @@ void DOSBoxMenu::displaylist_append(displaylist &ls,const DOSBoxMenu::item_handl
 }
 
 void DOSBoxMenu::displaylist_clear(DOSBoxMenu::displaylist &ls) {
+    // First reset the in_use flag for all items currently in the display list
+    for (auto item_id : ls.disp_list) {
+        if (item_id != DOSBoxMenu::unassigned_item_handle && item_exists(item_id)) {
+            get_item(item_id).status.in_use = false;
+        }
+    }
+
     uint16_t id = DOSBoxMenu::unassigned_item_handle;
     std::fill(ls.disp_list.begin(), ls.disp_list.end(), id);
 
@@ -1774,6 +1820,11 @@ void ConstructMenu(void) {
 
     /* help DOS command menu */
     ConstructSubMenu(mainMenu.get_item("HelpCommandMenu").get_master_id(), def_menu_help_command);
+
+#ifdef C_LUA
+    /* lua scripting menu */
+    ConstructSubMenu(mainMenu.get_item("LuaMenu").get_master_id(), def_menu_lua);
+#endif
 
 #if C_DEBUG
     /* debug menu */

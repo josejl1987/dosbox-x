@@ -1200,6 +1200,7 @@ fi
 dnl FEATURE: Whether to use Fluidsynth
 AH_TEMPLATE(C_FLUIDSYNTH,[Define to 1 to enable libfluidsynth MIDI synthesis])
 AC_ARG_ENABLE(libfluidsynth,AC_HELP_STRING([--disable-libfluidsynth],[Disable libfluidsynth support]),enable_libfluidsynth=$enableval,enable_libfluidsynth=yes)
+
 if test x$enable_libfluidsynth = xyes; then
     case "$host" in
         *-*-linux*)
@@ -1297,6 +1298,52 @@ case "$host" in
     ;;
 esac
 fi
+
+dnl LIBRARY USE: Lua scripting support
+AH_TEMPLATE(C_LUA,[Define to 1 to enable Lua scripting support])
+AC_ARG_ENABLE(lua,AC_HELP_STRING([--enable-lua],[Enable Lua scripting support]),enable_lua=$enableval,enable_lua=no)
+
+if test x$enable_lua = xyes; then
+  AC_MSG_CHECKING([for Lua headers])
+  if test -f "vs/lua/lua.h"; then
+    AC_MSG_RESULT(yes)
+    AC_DEFINE(C_LUA,1)
+    # Add Lua include path
+    CPPFLAGS="$CPPFLAGS -I\$(top_srcdir)/vs/lua"
+    # We'll link the static Lua library
+    LIBS="$LIBS -L\$(top_srcdir)/vs/lua -llua"
+  else
+    AC_MSG_RESULT(no)
+    AC_MSG_WARN([Lua headers not found in vs/lua/, Lua support disabled])
+    enable_lua=no
+  fi
+fi
+
+AM_CONDITIONAL(C_LUA, test x"$enable_lua" = x"yes")
+
+dnl LIBRARY USE: Lua reverse-engineering hooks
+AH_TEMPLATE(C_LUA_RE_HOOKS,[Define to 1 to enable Lua reverse-engineering / game-analysis hooks])
+AC_ARG_ENABLE(lua-re-hooks,AC_HELP_STRING([--enable-lua-re-hooks],[Enable Lua reverse-engineering / game-analysis hooks (requires --enable-lua)]),enable_lua_re_hooks=$enableval,enable_lua_re_hooks=no)
+
+if test x$enable_lua_re_hooks = xyes; then
+  if test x$enable_lua != xyes; then
+    AC_MSG_NOTICE([--enable-lua-re-hooks requires Lua support; enabling it now])
+    AC_MSG_CHECKING([for Lua headers])
+    if test -f "vs/lua/lua.h"; then
+      AC_MSG_RESULT(yes)
+      AC_DEFINE(C_LUA,1)
+      CPPFLAGS="$CPPFLAGS -I\$(top_srcdir)/vs/lua"
+      LIBS="$LIBS -L\$(top_srcdir)/vs/lua -llua"
+      enable_lua=yes
+    else
+      AC_MSG_RESULT(no)
+      AC_MSG_ERROR([Lua headers not found in vs/lua/, cannot enable lua-re-hooks])
+    fi
+  fi
+  AC_DEFINE(C_LUA_RE_HOOKS,1)
+fi
+
+AM_CONDITIONAL(C_LUA_RE_HOOKS, test x"$enable_lua_re_hooks" = x"yes")
 
 dnl LIBRARY USE: opencow
 case "$host" in

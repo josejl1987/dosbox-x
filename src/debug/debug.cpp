@@ -30,6 +30,8 @@
 #include <iomanip>
 #include <string>
 #include <sstream>
+#include <algorithm>
+#include <vector>
 using namespace std;
 
 #include "debug.h"
@@ -47,11 +49,13 @@ using namespace std;
 #include "paging.h"
 #include "shell.h"
 #include "debug_inc.h"
+#include "../luaengine/symbol_manager.h"
+#include "../luaengine/core_debug_interface.h"
 #include "../cpu/lazyflags.h"
 #include "keyboard.h"
 #include "control.h"
 
-#include <sol/sol.hpp>"
+#include <sol/sol.hpp>
 
 /* [https://github.com/joncampbell123/dosbox-x/issues/1264] ncurses non-ASCII keys are outside ASCII range (start at octal 0400 == hex 0x100) */
 static inline int ncurses_aware_toupper(int x) {
@@ -172,6 +176,44 @@ extern int debuggerrun;
 int debugrunmode=0;
 bool runnormal=false;
 bool inhibit_int_breakpoint=false;
+void DrawRegistersUpdateOld(void);
+void SetCodeWinStart(void);
+void DEBUG_DrawScreen(void);
+static inline uint32_t SegOffToLinear(uint16_t seg, uint32_t off) {
+    return (static_cast<uint32_t>(seg) << 4) + (off & 0xFFFF);
+}
+static LuaEngineDebug::DosBoxCoreDebugger* get_core_debugger() {
+    return LuaEngineDebug::g_core_debugger;
+}
+
+// Flag to disable old text-based debugger UI when using ImGui debugger
+// Set to false to enable both classic ncurses and modern ImGui debuggers simultaneously
+static bool use_imgui_debugger_only = false;
+
+static class LegacyDebuggerListener : public LuaEngineDebug::CoreDebuggerListener {
+public:
+    void onPaused(LuaEngineDebug::BreakReason, uint32_t) override {
+        // Keep classic debugger UI in sync with ImGui debugger
+        DrawRegistersUpdateOld();
+        SetCodeWinStart();
+        DEBUG_DrawScreen();
+    }
+    void onResumed() override {
+        // Keep UI in sync; refresh the screen
+        DEBUG_DrawScreen();
+    }
+    void onStepComplete(uint32_t) override {
+        DrawRegistersUpdateOld();
+        DEBUG_DrawScreen();
+    }
+    void onBreakpointHit(uint32_t, LuaEngineDebug::BreakReason) override {
+        DrawRegistersUpdateOld();
+        DEBUG_DrawScreen();
+    }
+    void onBreakpointListChanged() override {
+        DEBUG_DrawScreen();
+    }
+} legacy_coredbg_listener;
 
 void DEBUG_DrawInput(void) {
     DrawInput();
@@ -306,10 +348,13 @@ static Segment oldsegs[6];
 static Bitu oldflags,oldcpucpl;
 DBGBlock dbg;
 extern Bitu cycle_count;
-static bool debugging = false;
-static bool debug_running = false;
+bool debugging = false;
+bool debug_running = false;
 static bool check_rescroll = false;
 extern sol::state lua;
+std::function<void(uint16_t, uint32_t)> debug_on_code_view_update;
+std::function<void(uint16_t, uint32_t)> debug_on_data_view_update;
+static bool legacy_coredbg_listener_registered = false;
 
 static FPU_rec oldfpu;
 
@@ -519,7 +564,6 @@ std::vector<CDebugVar*> CDebugVar::varList;
 bool mustCompleteInstruction = false;
 bool skipFirstInstruction = false;
 
-enum EBreakpoint { BKPNT_UNKNOWN, BKPNT_PHYSICAL, BKPNT_INTERRUPT, BKPNT_MEMORY, BKPNT_MEMORY_PROT, BKPNT_MEMORY_LINEAR };
 CBreakpoint::CBreakpoint(void):type(BKPNT_UNKNOWN),location(0),
 #if !C_HEAVY_DEBUG
 oldData(0xCC),
@@ -577,14 +621,81 @@ void CBreakpoint::Activate(bool _active)
 }
 
 // Statics
-std::list<CBreakpoint*> CBreakpoint::BPoints;
+std::vector<CBreakpoint*> CBreakpoint::BPoints;
+// OPTIMIZATION: Separate vector for memory breakpoints
+std::vector<CBreakpoint*> CBreakpoint::memoryBreakpoints;
+// OPTIMIZATION: Initialize hash map with fast hash and atomic counters
+std::unordered_map<PhysPt, CBreakpoint*, PhysPtHash> CBreakpoint::BPointsByLocation;
+std::atomic<size_t> CBreakpoint::active_breakpoint_count{0};
+// OPTIMIZATION: Page bitmap for fast rejection of non-breakpoint pages
+std::vector<uint8_t> CBreakpoint::breakpoint_pages;
+// OPTIMIZATION: Fast mode direct lookup table for real-mode addresses
+std::vector<CBreakpoint*> CBreakpoint::fast_breakpoint_table;
+bool CBreakpoint::fast_mode_enabled = false;
+// OPTIMIZATION: Global debugging state for fast-path rejection
+volatile bool CBreakpoint::debugging_active = false;
+
+// OPTIMIZATION: Helper functions for page bitmap management
+void CBreakpoint::UpdatePageBitmap(PhysPt addr, bool add) {
+    const size_t page = addr >> PAGE_SHIFT;
+
+    // Resize bitmap if needed
+    if (page >= breakpoint_pages.size()) {
+        breakpoint_pages.resize(page + 1, 0);
+    }
+
+    if (add) {
+        breakpoint_pages[page] = 1;
+    } else {
+        // Check if any other breakpoints exist on this page
+        bool page_has_bps = false;
+        size_t page_start = page << PAGE_SHIFT;
+        size_t page_end = page_start + (1 << PAGE_SHIFT);
+
+        for (const auto& pair : BPointsByLocation) {
+            if (pair.first >= page_start && pair.first < page_end && pair.second->IsActive()) {
+                page_has_bps = true;
+                break;
+            }
+        }
+
+        if (!page_has_bps && page < breakpoint_pages.size()) {
+            breakpoint_pages[page] = 0;
+        }
+    }
+}
+
+void CBreakpoint::RebuildPageBitmap() {
+    breakpoint_pages.clear();
+    breakpoint_pages.resize(1024, 0); // Start with 4MB coverage
+
+    for (const auto& pair : BPointsByLocation) {
+        if (pair.second->IsActive() && pair.second->GetType() == BKPNT_PHYSICAL) {
+            UpdatePageBitmap(pair.first, true);
+        }
+    }
+}
 
 CBreakpoint* CBreakpoint::AddBreakpoint(uint16_t seg, uint32_t off, bool once)
 {
 	CBreakpoint* bp = new CBreakpoint();
 	bp->SetAddress		(seg,off);
 	bp->SetOnce			(once);
-	BPoints.push_front	(bp);
+
+	// OPTIMIZATION: Add to hash map for O(1) lookup
+	PhysPt location = GetAddress(seg, off);
+	BPointsByLocation[location] = bp;
+
+	// OPTIMIZATION: Update page bitmap for fast rejection
+	UpdatePageBitmap(location, true);
+
+	// OPTIMIZATION: Add to fast table if enabled and within real-mode range
+	if (fast_mode_enabled && location < fast_breakpoint_table.size()) {
+		fast_breakpoint_table[location] = bp;
+	}
+
+	BPoints.push_back(bp);
+	IncrementBreakpointCount();
 	return bp;
 }
 
@@ -593,7 +704,8 @@ CBreakpoint* CBreakpoint::AddIntBreakpoint(uint8_t intNum, uint16_t ah, uint16_t
 	CBreakpoint* bp = new CBreakpoint();
 	bp->SetInt			(intNum,ah,al);
 	bp->SetOnce			(once);
-	BPoints.push_front	(bp);
+	BPoints.push_back(bp);
+	IncrementBreakpointCount();
 	return bp;
 }
 
@@ -603,35 +715,36 @@ CBreakpoint* CBreakpoint::AddMemBreakpoint(uint16_t seg, uint32_t off)
 	bp->SetAddress		(seg,off);
 	bp->SetOnce			(false);
 	bp->SetType			(BKPNT_MEMORY);
-	BPoints.push_front	(bp);
+	// OPTIMIZATION: Add to both vectors for compatibility, but memoryBreakpoints gives O(1) access
+	BPoints.push_back(bp);
+	memoryBreakpoints.push_back(bp);
+	IncrementBreakpointCount();
 	return bp;
 }
 
 void CBreakpoint::ActivateBreakpoints()
 {
-	// activate all breakpoints
-	std::list<CBreakpoint*>::iterator i;
-	for (i = BPoints.begin(); i != BPoints.end(); ++i)
-		(*i)->Activate(true);
+	// OPTIMIZATION: Use range-based for loop with vector for better cache locality
+	for (CBreakpoint* bp : BPoints)
+		bp->Activate(true);
 }
 
 void CBreakpoint::DeactivateBreakpoints()
 {
-	// deactivate all breakpoints
-	std::list<CBreakpoint*>::iterator i;
-	for (i = BPoints.begin(); i != BPoints.end(); ++i)
-		(*i)->Activate(false);
+	// OPTIMIZATION: Use range-based for loop with vector for better cache locality
+	for (CBreakpoint* bp : BPoints)
+		bp->Activate(false);
 }
 
 void CBreakpoint::ActivateBreakpointsExceptAt(PhysPt adr)
 {
-	// activate all breakpoints, except those at adr
-	std::list<CBreakpoint*>::iterator i;
-	for (i = BPoints.begin(); i != BPoints.end(); ++i) {
-		CBreakpoint* bp = (*i);
+	// OPTIMIZATION: Use range-based for loop with vector for better cache locality
+	for (CBreakpoint* bp : BPoints) {
 		// Do not activate breakpoints at adr
-		if (bp->GetType() == BKPNT_PHYSICAL && bp->GetLocation() == adr)
-			continue;
+        if(bp->GetType() == BKPNT_PHYSICAL && bp->GetLocation() == adr) {
+            bp->Activate(false);  // Deactivate to restore original instruction byte
+            continue;
+        }
 		bp->Activate(true);
 	}
 }
@@ -639,65 +752,161 @@ void CBreakpoint::ActivateBreakpointsExceptAt(PhysPt adr)
 bool CBreakpoint::CheckBreakpoint(uint16_t seg, uint32_t off)
 // Checks if breakpoint is valid and should stop execution
 {
-	// Quick exit if there are no breakpoints
-	if (BPoints.empty()) return false;
 
-	// Search matching breakpoint
-	for (auto i = BPoints.begin(); i != BPoints.end(); ++i) {
-		CBreakpoint *bp = (*i);
 
-		if ((bp->GetType() == BKPNT_PHYSICAL) && bp->IsActive() &&
-		    (bp->GetLocation() == GetAddress(seg, off))) {
-			// Found
+	// OPTIMIZATION: Fast path - reject immediately if no breakpoints are active
+	// Use relaxed memory order since this is just a fast rejection check
+	if (active_breakpoint_count.load(std::memory_order_relaxed) == 0) {
+		return false;
+	}
+
+	// OPTIMIZATION: Only compute expensive address if we have breakpoints
+	PhysPt location = GetAddress(seg, off);
+
+	// OPTIMIZATION: Fast page bitmap rejection - skip hash lookup if page has no breakpoints
+	const size_t page = location >> PAGE_SHIFT;
+	if (page >= breakpoint_pages.size() || breakpoint_pages[page] == 0) {
+		return false;
+	}
+
+	// OPTIMIZATION: Fast mode direct table lookup for real-mode addresses
+	if (fast_mode_enabled && location < fast_breakpoint_table.size()) {
+		CBreakpoint* bp = fast_breakpoint_table[location];
+		if (bp && bp->IsActive()) {
+			// Handle once-only breakpoints
 			if (bp->GetOnce()) {
-				// delete it, if it should only be used once
-				(BPoints.erase)(i);
+				// Clear from fast table
+				fast_breakpoint_table[location] = nullptr;
+				// Remove from other data structures
+				auto it = BPointsByLocation.find(location);
+				if (it != BPointsByLocation.end()) {
+					BPointsByLocation.erase(it);
+				}
+				UpdatePageBitmap(location, false);
 				bp->Activate(false);
 				delete bp;
-			} else {
-				// Also look for once-only breakpoints at this address
-				bp = FindPhysBreakpoint(seg, off, true);
-				if (bp) {
-					BPoints.remove(bp);
-					bp->Activate(false);
-					delete bp;
-				}
+				DecrementBreakpointCount();
 			}
 			return true;
 		}
-#if C_HEAVY_DEBUG
-		// Memory breakpoint support
-		else if (bp->IsActive()) {
-			if ((bp->GetType()==BKPNT_MEMORY) || (bp->GetType()==BKPNT_MEMORY_PROT) || (bp->GetType()==BKPNT_MEMORY_LINEAR) || (bp->GetType()==BKPNT_MEMORY_FREEZE)) {
-				// Watch Protected Mode Memoryonly in pmode
-				if (bp->GetType()==BKPNT_MEMORY_PROT) {
-					// Check if pmode is active
-					if (!cpu.pmode) return false;
-					// Check if descriptor is valid
-					Descriptor desc;
-					if (!cpu.gdt.GetDescriptor(bp->GetSegment(),desc)) return false;
-					if (desc.GetLimit()==0) return false;
-				}
+		return false; // Fast mode entry was null or inactive
+	}
 
-				Bitu address; 
-				if (bp->GetType()==BKPNT_MEMORY_LINEAR) address = bp->GetOffset();
-				else address = (Bitu)GetAddress(bp->GetSegment(),bp->GetOffset());
-				uint8_t value=0;
-				if (mem_readb_checked((PhysPt)address,&value)) return false;
-				if (bp->GetValue() != value) {
-					// Yup, memory value changed
-                    if (bp->GetType()==BKPNT_MEMORY_FREEZE){
-                        mem_writeb_checked((PhysPt)address,bp->GetValue());
-                        return false;
-                    }
-					DEBUG_ShowMsg("DEBUG: Memory breakpoint %s: %04X:%04X - %02X -> %02X\n",(bp->GetType()==BKPNT_MEMORY_PROT)?"(Prot)":"",bp->GetSegment(),bp->GetOffset(),bp->GetValue(),value);
-					bp->SetValue(value);
-					return true;
+	// Fall back to hash map lookup for non-fast mode or out-of-range addresses
+	auto it = BPointsByLocation.find(location);
+
+	if (it != BPointsByLocation.end()) {
+		CBreakpoint *bp = it->second;
+
+		if (bp->GetType() == BKPNT_PHYSICAL && bp->IsActive()) {
+			// OPTIMIZATION: Check if there are multiple breakpoints at this location
+			// and batch process them to avoid multiple hash map operations
+			bool should_break = true;
+			std::vector<CBreakpoint*> to_remove;
+
+			// Handle the found breakpoint
+			if (bp->GetOnce()) {
+				to_remove.push_back(bp);
+			}
+
+			// OPTIMIZATION: Use the existing FindPhysBreakpoint but only if needed
+			if (!bp->GetOnce()) {
+				// Only search for additional once-only breakpoints if this one isn't once-only
+				CBreakpoint* once_bp = FindPhysBreakpoint(seg, off, true);
+				if (once_bp) {
+					to_remove.push_back(once_bp);
 				}
 			}
+
+			// Batch remove all once-only breakpoints
+			for (CBreakpoint* remove_bp : to_remove) {
+				// Remove from hash map
+				auto remove_it = BPointsByLocation.find(GetAddress(remove_bp->GetSegment(), remove_bp->GetOffset()));
+				if (remove_it != BPointsByLocation.end()) {
+					BPointsByLocation.erase(remove_it);
+				}
+
+				// OPTIMIZATION: Use faster removal from list - mark for removal instead of O(n) remove()
+				// Remove from memoryBreakpoints vector if needed
+				bool is_memory_bp = (remove_bp->GetType() != BKPNT_PHYSICAL);
+				if (is_memory_bp) {
+					auto it = std::find(memoryBreakpoints.begin(), memoryBreakpoints.end(), remove_bp);
+					if (it != memoryBreakpoints.end()) {
+						memoryBreakpoints.erase(it);
+					}
+				}
+				remove_bp->Activate(false);
+				delete remove_bp;
+				DecrementBreakpointCount();
+			}
+
+			return should_break;
 		}
-#endif
 	}
+
+#if C_HEAVY_DEBUG
+	// OPTIMIZATION: Fast-path check - skip memory breakpoint iteration if none exist
+	if (memoryBreakpoints.empty()) {
+		return false;
+	}
+
+	// OPTIMIZATION: Early exit for non-pmode when only pmode breakpoints exist
+	// Cache pmode state to avoid repeated checks in the loop
+	static bool last_pmode_state = false;
+	bool current_pmode = cpu.pmode;
+	if (current_pmode != last_pmode_state) {
+		last_pmode_state = current_pmode;
+	}
+
+	// OPTIMIZATION: Iterate only over memory breakpoints - O(m) instead of O(n) where m << n
+	for (CBreakpoint* bp : memoryBreakpoints) {
+
+		// Skip inactive breakpoints early
+		if (!bp->IsActive()) continue;
+
+		// Memory breakpoint support
+		if ((bp->GetType()==BKPNT_MEMORY) || (bp->GetType()==BKPNT_MEMORY_PROT) || (bp->GetType()==BKPNT_MEMORY_LINEAR) || (bp->GetType()==BKPNT_MEMORY_FREEZE)) {
+			// OPTIMIZATION: Early pmode check for protected breakpoints
+			if (bp->GetType()==BKPNT_MEMORY_PROT) {
+				if (!current_pmode) continue; // Skip instead of return false
+
+				// OPTIMIZATION: Cache descriptor checks
+				static uint16_t last_protected_segment = 0xFFFF;
+				static Descriptor cached_desc;
+				static bool desc_valid = false;
+
+				if (bp->GetSegment() != last_protected_segment) {
+					last_protected_segment = bp->GetSegment();
+					desc_valid = cpu.gdt.GetDescriptor(bp->GetSegment(), cached_desc);
+				}
+
+				if (!desc_valid || cached_desc.GetLimit()==0) continue;
+			}
+
+			Bitu address;
+			if (bp->GetType()==BKPNT_MEMORY_LINEAR) {
+				address = bp->GetOffset();
+			} else {
+				address = (Bitu)GetAddress(bp->GetSegment(),bp->GetOffset());
+			}
+
+			// OPTIMIZATION: Cache memory reads when possible
+			uint8_t value=0;
+			if (mem_readb_checked((PhysPt)address,&value)) continue;
+
+			if (bp->GetValue() != value) {
+				// Yup, memory value changed
+                if (bp->GetType()==BKPNT_MEMORY_FREEZE){
+                    mem_writeb_checked((PhysPt)address,bp->GetValue());
+                    continue; // Don't break on freeze, just continue
+                }
+				DEBUG_ShowMsg("DEBUG: Memory breakpoint %s: %04X:%04X - %02X -> %02X\n",(bp->GetType()==BKPNT_MEMORY_PROT)?"(Prot)":"",bp->GetSegment(),bp->GetOffset(),bp->GetValue(),value);
+				bp->SetValue(value);
+				return true;
+			}
+		}
+	}
+#endif
 	return false;
 }
 
@@ -710,18 +919,21 @@ bool CBreakpoint::CheckIntBreakpoint(PhysPt adr, uint8_t intNr, uint16_t ahValue
     (void)adr;
 
 	// Search matching breakpoint
-	std::list<CBreakpoint*>::iterator i;
-	for(i=BPoints.begin(); i != BPoints.end(); ++i) {
-		CBreakpoint* bp = (*i);
+	// Use index-based iteration for efficient vector access
+	size_t i;
+	for(i = 0; i < BPoints.size(); ++i) {
+		CBreakpoint* bp = BPoints[i];
 		if ((bp->GetType()==BKPNT_INTERRUPT) && bp->IsActive() && (bp->GetIntNr()==intNr)) {
 			if (((bp->GetValue()==BPINT_ALL) || (bp->GetValue()==ahValue)) && ((bp->GetOther()==BPINT_ALL) || (bp->GetOther()==alValue))) {
 				// Ignore it once ?
 				// Found
 				if (bp->GetOnce()) {
 					// delete it, if it should only be used once
-					(BPoints.erase)(i);
+					BPoints.erase(BPoints.begin() + i);
 					bp->Activate(false);
 					delete bp;
+					DecrementBreakpointCount();
+					return true;
 				}
 				return true;
 			}
@@ -732,33 +944,61 @@ bool CBreakpoint::CheckIntBreakpoint(PhysPt adr, uint8_t intNr, uint16_t ahValue
 
 void CBreakpoint::DeleteAll()
 {
-	std::list<CBreakpoint*>::iterator i;
-	for(i=BPoints.begin(); i != BPoints.end(); ++i) {
-		CBreakpoint* bp = (*i);
+	// Use index-based iteration for efficient vector access
+	size_t i;
+	for(i = 0; i < BPoints.size(); ++i) {
+		CBreakpoint* bp = BPoints[i];
 		bp->Activate(false);
-		delete bp;
+		//delete bp;
 	}
 	(BPoints.clear)();
+
+	// OPTIMIZATION: Clear hash map, memory breakpoints vector and reset atomic counter
+	memoryBreakpoints.clear();
+	BPointsByLocation.clear();
+	active_breakpoint_count.store(0, std::memory_order_relaxed);
+
+	// OPTIMIZATION: Clear page bitmap and fast table
+	breakpoint_pages.clear();
+	std::fill(fast_breakpoint_table.begin(), fast_breakpoint_table.end(), nullptr);
 }
 
 
 bool CBreakpoint::DeleteByIndex(uint16_t index)
 {
-	// Search matching breakpoint
-	int nr = 0;
-	std::list<CBreakpoint*>::iterator i;
-	CBreakpoint* bp;
-	for(i=BPoints.begin(); i != BPoints.end(); ++i) {
-		if (nr==index) {
-			bp = (*i);
-			(BPoints.erase)(i);
-			bp->Activate(false);
-			delete bp;
-			return true;
+	// OPTIMIZATION: Direct vector index access - O(1) instead of O(n)
+	if (index >= BPoints.size()) return false;
+
+	CBreakpoint* bp = BPoints[index];
+	PhysPt location = bp->GetLocation();
+
+	// Also remove from memoryBreakpoints if it's a memory breakpoint
+	if (bp->GetType() != BKPNT_PHYSICAL) {
+		auto it = std::find(memoryBreakpoints.begin(), memoryBreakpoints.end(), bp);
+		if (it != memoryBreakpoints.end()) {
+			memoryBreakpoints.erase(it);
 		}
-		nr++;
 	}
-	return false;
+	// Remove from hash map if it's a physical breakpoint
+	if (bp->GetType() == BKPNT_PHYSICAL) {
+		auto it = BPointsByLocation.find(location);
+		if (it != BPointsByLocation.end()) {
+			BPointsByLocation.erase(it);
+		}
+
+		// OPTIMIZATION: Update page bitmap
+		UpdatePageBitmap(location, false);
+
+		// OPTIMIZATION: Clear from fast table
+		if (fast_mode_enabled && location < fast_breakpoint_table.size()) {
+			fast_breakpoint_table[location] = nullptr;
+		}
+	}
+	BPoints.erase(BPoints.begin() + index);
+	bp->Activate(false);
+	delete bp;
+	DecrementBreakpointCount();
+	return true;
 }
 
 CBreakpoint* CBreakpoint::FindPhysBreakpoint(uint16_t seg, uint32_t off, bool once)
@@ -767,11 +1007,8 @@ CBreakpoint* CBreakpoint::FindPhysBreakpoint(uint16_t seg, uint32_t off, bool on
 #if !C_HEAVY_DEBUG
 	PhysPt adr = GetAddress(seg, off);
 #endif
-	// Search for matching breakpoint
-	std::list<CBreakpoint*>::iterator i;
-	CBreakpoint* bp;
-	for(i=BPoints.begin(); i != BPoints.end(); ++i) {
-		bp = (*i);
+	// OPTIMIZATION: Use range-based vector iteration for better cache performance
+	for (CBreakpoint* bp : BPoints) {
 #if C_HEAVY_DEBUG
 		// Heavy debugging breakpoints are triggered by matching seg:off
 		bool atLocation = bp->GetSegment() == seg && bp->GetOffset() == off;
@@ -789,9 +1026,8 @@ CBreakpoint* CBreakpoint::FindPhysBreakpoint(uint16_t seg, uint32_t off, bool on
 
 CBreakpoint* CBreakpoint::FindOtherActiveBreakpoint(PhysPt adr, CBreakpoint* skip)
 {
-	std::list<CBreakpoint*>::iterator i;
-	for (i = BPoints.begin(); i != BPoints.end(); ++i) {
-		CBreakpoint* bp = (*i);
+	// OPTIMIZATION: Use range-based vector iteration for better cache performance
+	for (CBreakpoint* bp : BPoints) {
 		if (bp != skip && bp->GetType() == BKPNT_PHYSICAL && bp->GetLocation() == adr && bp->IsActive())
 			return bp;
 	}
@@ -808,7 +1044,27 @@ bool CBreakpoint::DeleteBreakpoint(uint16_t seg, uint32_t off)
 {
 	CBreakpoint* bp = FindPhysBreakpoint(seg, off, false);
 	if (bp) {
-		BPoints.remove(bp);
+		// OPTIMIZATION: Remove from hash map and update counters
+		bool is_memory_bp = (bp->GetType() != BKPNT_PHYSICAL);
+		if (bp->GetType() == BKPNT_PHYSICAL) {
+			BPointsByLocation.erase(GetAddress(seg, off));
+		}
+
+		// Remove from BPoints vector
+		auto it = std::find(BPoints.begin(), BPoints.end(), bp);
+		if (it != BPoints.end()) {
+			BPoints.erase(it);
+		}
+
+		// Remove from memoryBreakpoints vector if needed
+		if (is_memory_bp) {
+			auto mem_it = std::find(memoryBreakpoints.begin(), memoryBreakpoints.end(), bp);
+			if (mem_it != memoryBreakpoints.end()) {
+				memoryBreakpoints.erase(mem_it);
+			}
+		}
+
+		DecrementBreakpointCount();
 		delete bp;
 		return true;
 	}
@@ -821,9 +1077,10 @@ void CBreakpoint::ShowList(void)
 {
 	// iterate list
 	int nr = 0;
-	std::list<CBreakpoint*>::iterator i;
-	for(i=BPoints.begin(); i != BPoints.end(); ++i) {
-		CBreakpoint* bp = (*i);
+	// Use index-based iteration for efficient vector access
+	size_t i;
+	for(i = 0; i < BPoints.size(); ++i) {
+		CBreakpoint* bp = BPoints[i];
 		if (bp->GetType()==BKPNT_PHYSICAL) {
 			DEBUG_ShowMsg("%02X. BP %04X:%04X\n",nr,bp->GetSegment(),bp->GetOffset());
 		} else if (bp->GetType()==BKPNT_INTERRUPT) {
@@ -843,9 +1100,86 @@ void CBreakpoint::ShowList(void)
 	}
 }
 
+// OPTIMIZATION: Fast mode management functions
+void CBreakpoint::EnableFastMode(bool enable) {
+	if (fast_mode_enabled == enable) return; // No change needed
+
+	fast_mode_enabled = enable;
+
+	if (enable) {
+		// Enable fast mode: allocate and populate fast lookup table
+		// For real-mode DOS, we need 1MB of addressable memory coverage
+		const size_t max_real_mode_address = 0x100000; // 1MB
+		fast_breakpoint_table.resize(max_real_mode_address, nullptr);
+
+		// Populate the fast table with existing breakpoints
+		for (const auto& pair : BPointsByLocation) {
+			PhysPt addr = pair.first;
+			CBreakpoint* bp = pair.second;
+
+			if (bp->GetType() == BKPNT_PHYSICAL && addr < fast_breakpoint_table.size()) {
+				fast_breakpoint_table[addr] = bp;
+			}
+		}
+
+		// OPTIMIZATION: Only log fast mode changes in verbose debug mode
+		#if C_HEAVY_DEBUG
+		DEBUG_ShowMsg("DEBUG: Fast breakpoint mode enabled (1MB direct lookup table)\n");
+		#endif
+	} else {
+		// Disable fast mode: clear and shrink the fast table
+		fast_breakpoint_table.clear();
+		#if C_HEAVY_DEBUG
+		DEBUG_ShowMsg("DEBUG: Fast breakpoint mode disabled\n");
+		#endif
+	}
+
+	// Rebuild page bitmap when mode changes
+	RebuildPageBitmap();
+}
+
+/********************/
+/* Resume Helper    */
+/********************/
+
+/**
+ * Helper function to properly resume execution from a breakpoint.
+ * This function ensures that the breakpoint at the current PC is temporarily
+ * disabled to prevent immediately hitting the same breakpoint again.
+ * Call this before setting debugging=false when resuming execution.
+ */
+static void DEBUG_ResumeFromBreakpoint(void) {
+    // Only handle breakpoints if we're actually stopped on one
+    // Check if there's an active breakpoint at current PC
+    PhysPt currentPC = SegPhys(cs) + reg_eip;
+    bool isOnBreakpoint = CBreakpoint::CheckBreakpoint(SegValue(cs), reg_eip);
+
+    DEBUG_ShowMsg("DEBUG: [Old Debugger] DEBUG_ResumeFromBreakpoint at %08X (on bp: %d)\n",
+                  currentPC, isOnBreakpoint);
+
+    // If we're on a breakpoint, activate all breakpoints except the one at current PC
+    // This prevents immediately re-hitting the same breakpoint
+    if (isOnBreakpoint) {
+        DEBUG_ShowMsg("DEBUG: [Old Debugger] Calling ActivateBreakpointsExceptAt for %08X\n", currentPC);
+        CBreakpoint::ActivateBreakpointsExceptAt(currentPC);
+    }
+
+    // Always set the normal loop to resume execution
+    DOSBOX_SetNormalLoop();
+}
+
 bool DEBUG_Breakpoint(void)
 {
 	if (inhibit_int_breakpoint) return false; /* or else stepping over INT 21h when BPINT 21h does nothing */
+
+	// If CoreDebugger is active, let it handle ALL breakpoint logic including skip_once
+	if (auto* core = get_core_debugger()) {
+		// CoreDebugger handles breakpoints in onInstructionExecuted -> checkBreakpoints
+		// So we don't need to do anything here - just return false to let execution continue
+		// The CoreDebugger will pause if needed via its own mechanism
+		return false;
+	}
+
 	/* First get the physical address and check for a set Breakpoint */
 	if (!CBreakpoint::CheckBreakpoint(SegValue(cs),reg_eip)) return false;
 	// Found. Breakpoint is valid
@@ -876,6 +1210,8 @@ static bool StepOver()
 		// Don't add a temporary breakpoint if there's already one here
 		if (!CBreakpoint::FindPhysBreakpoint(SegValue(cs), (uint32_t)(reg_eip+size), true))
 			CBreakpoint::AddBreakpoint(SegValue(cs),(uint32_t)(reg_eip+size), true);
+		// Properly handle breakpoints before resuming
+		DEBUG_ResumeFromBreakpoint();
 		debugging=false;
 
         logBuffSuppressConsole = false;
@@ -909,6 +1245,9 @@ bool DEBUG_ExitLoop(void)
 /********************/
 
 static void DrawData(void) {
+	if (use_imgui_debugger_only) {
+		return;  // Don't draw old ncurses UI when using ImGui
+	}
 	if (dbg.win_main == NULL || dbg.win_data == NULL)
 		return;
 
@@ -1034,6 +1373,10 @@ static void DrawData(void) {
 }
 
 void DrawRegistersUpdateOld(void) {
+	// When using ImGui debugger only, don't update old UI register display
+	if (use_imgui_debugger_only) {
+		return;
+	}
 	/* Main Registers */
 	oldregs.eax=reg_eax;
 	oldregs.ebx=reg_ebx;
@@ -1066,6 +1409,9 @@ extern bool do_pse;
 bool CPU_IsHLTed(void);
 
 static void DrawRegisters(void) {
+	if (use_imgui_debugger_only) {
+		return;  // Don't draw old ncurses UI when using ImGui
+	}
 	if (dbg.win_main == NULL || dbg.win_reg == NULL)
 		return;
 
@@ -1223,6 +1569,9 @@ static void DrawInput(void) {
 }
 
 static void DrawCode(void) {
+	if (use_imgui_debugger_only) {
+		return;  // Don't draw old ncurses UI when using ImGui
+	}
 	if (dbg.win_main == NULL || dbg.win_code == NULL)
 		return;
 
@@ -1233,6 +1582,13 @@ static void DrawCode(void) {
 
     getmaxyx(dbg.win_code,h,w);
 	for (int i=0;i<h;i++) {
+        // If we're viewing segment 0 or other suspicious areas, reset to current execution
+        if (codeViewData.useCS == 0 && SegValue(cs) != 0) {
+            codeViewData.useCS = SegValue(cs);
+            codeViewData.useEIP = reg_eip;
+            disEIP = codeViewData.useEIP;
+        }
+        
         uint64_t start = GetAddress(codeViewData.useCS,disEIP);
 
 		bool saveSel = false;
@@ -1287,7 +1643,12 @@ static void DrawCode(void) {
             drawsize=size=1;
             dline[0]=0;
         }
-		mvwprintw(dbg.win_code,i,0,"%04X:%08X ",codeViewData.useCS,disEIP);
+				// Show address in proper format based on CPU mode
+		if (cpu.code.big) {
+			mvwprintw(dbg.win_code,i,0,"%04X:%08X ",codeViewData.useCS,disEIP);
+		} else {
+			mvwprintw(dbg.win_code,i,0,"%04X:%04X ",codeViewData.useCS,(uint16_t)disEIP);
+		}
 
 		if (drawsize>10) { toolarge = true; drawsize = 9; }
  
@@ -1828,7 +2189,144 @@ void VGA_DumpFontRamBIN(const char *filename);
 void VGA_DumpFontRamBMP(const char *filename);
 int32_t DEBUG_Run(int32_t amount,bool quickexit);
 
-bool ParseCommand(char* str) {
+// Debug command completion system
+static std::vector<std::string> debug_commands = {
+    "QUIT", "MOVEWINDN", "MOVEWINUP", "SHOWWIN", "HIDEWIN",
+    "MEMDUMP", "MEMDUMPBIN", "IV", "SV", "LV", "EV", "ADDLOG",
+    "SR", "SM", "BP", "BPM", "BPPM", "BC", "BD", "BE", "BL",
+    "D", "DA", "DB", "DW", "DD", "DT", "U", "G", "P", "T",
+    "R", "H", "?", "HELP", "LOG", "HEAVY", "ZEROPROTECT",
+    "SMSW", "LMSW", "CPU", "GDT", "LDT", "IDT", "INTVEC",
+    "INTHAND", "SELINFO", "DOS", "XMS", "EMS", "MOUSE",
+    "PIC", "TIMER", "CMOS", "VGA", "SOUND", "CD",
+    "BIOS", "BIOSDATA", "BIOSMEM", "BOOTLOG"
+};
+
+static std::vector<std::string> getCompletions(const std::string& partial) {
+    std::vector<std::string> completions;
+    std::string upper_partial = partial;
+    std::transform(upper_partial.begin(), upper_partial.end(), upper_partial.begin(), ::toupper);
+    
+    // First check debug commands
+    for (const auto& cmd : debug_commands) {
+        if (cmd.substr(0, upper_partial.length()) == upper_partial) {
+            completions.push_back(cmd);
+        }
+    }
+    
+    // Then check symbol names if available
+#ifdef C_DEBUG
+    if (LuaEngineSymbols::HasSymbols()) {
+        auto symbol_names = LuaEngineSymbols::g_symbol_manager->getSymbolNames();
+        for (const auto& symbol : symbol_names) {
+            std::string upper_symbol = symbol;
+            std::transform(upper_symbol.begin(), upper_symbol.end(), upper_symbol.begin(), ::toupper);
+            if (upper_symbol.substr(0, upper_partial.length()) == upper_partial) {
+                completions.push_back(symbol);
+            }
+        }
+    }
+#endif
+    
+    return completions;
+}
+
+static void handleCommandCompletion() {
+    if (codeViewData.inputPos == 0) return;
+    
+    // Extract the current word being typed
+    std::string input_str = codeViewData.inputStr;
+    size_t word_start = input_str.find_last_of(' ', codeViewData.inputPos - 1);
+    if (word_start == std::string::npos) word_start = 0;
+    else word_start++;
+    
+    std::string partial_word = input_str.substr(word_start, codeViewData.inputPos - word_start);
+    if (partial_word.empty()) return;
+    
+    auto completions = getCompletions(partial_word);
+    
+    if (completions.empty()) {
+        DEBUG_ShowMsg("*** No completions found for '%s'", partial_word.c_str());
+        return;
+    }
+    
+    if (completions.size() == 1) {
+        // Single completion - auto-complete
+        std::string completion = completions[0];
+        
+        // Replace the partial word with the completion
+        int chars_to_remove = codeViewData.inputPos - word_start;
+        int chars_to_add = completion.length();
+        
+        // Remove partial word
+        for (int i = 0; i < chars_to_remove; i++) {
+            if (codeViewData.inputPos > 0) {
+                codeViewData.inputPos--;
+                for (char* p = &codeViewData.inputStr[codeViewData.inputPos]; (*p = *(p+1)); p++) {}
+            }
+        }
+        
+        // Add completion
+        for (char c : completion) {
+            if (codeViewData.inputPos < MAXCMDLEN) {
+                if (codeViewData.inputStr[codeViewData.inputPos] == 0) {
+                    codeViewData.inputStr[codeViewData.inputPos++] = c;
+                    codeViewData.inputStr[codeViewData.inputPos] = '\0';
+                } else {
+                    int len = (int)strlen(codeViewData.inputStr);
+                    if (len < MAXCMDLEN) {
+                        for (len++; len > codeViewData.inputPos; len--) {
+                            codeViewData.inputStr[len] = codeViewData.inputStr[len-1];
+                        }
+                        codeViewData.inputStr[codeViewData.inputPos++] = c;
+                    }
+                }
+            }
+        }
+        
+        // Add space after command completion
+        if (word_start == 0 && codeViewData.inputPos < MAXCMDLEN) {
+            codeViewData.inputStr[codeViewData.inputPos++] = ' ';
+            codeViewData.inputStr[codeViewData.inputPos] = '\0';
+        }
+    } else {
+        // Multiple completions - show them
+        DEBUG_ShowMsg("*** Multiple completions for '%s':", partial_word.c_str());
+        std::string completions_str;
+        for (size_t i = 0; i < completions.size() && i < 10; i++) {
+            if (!completions_str.empty()) completions_str += ", ";
+            completions_str += completions[i];
+        }
+        if (completions.size() > 10) {
+            completions_str += "... (" + std::to_string(completions.size()) + " total)";
+        }
+        DEBUG_ShowMsg("    %s", completions_str.c_str());
+        
+        // Find common prefix and auto-complete that
+        std::string common_prefix = completions[0];
+        for (size_t i = 1; i < completions.size(); i++) {
+            size_t j = 0;
+            while (j < common_prefix.length() && j < completions[i].length() && 
+                   toupper(common_prefix[j]) == toupper(completions[i][j])) {
+                j++;
+            }
+            common_prefix = common_prefix.substr(0, j);
+        }
+        
+        if (common_prefix.length() > partial_word.length()) {
+            // Auto-complete the common prefix
+            std::string additional = common_prefix.substr(partial_word.length());
+            for (char c : additional) {
+                if (codeViewData.inputPos < MAXCMDLEN) {
+                    codeViewData.inputStr[codeViewData.inputPos++] = c;
+                    codeViewData.inputStr[codeViewData.inputPos] = '\0';
+                }
+            }
+        }
+    }
+}
+
+bool ParseCommand(const char* str) {
     std::string copy_str = str;
     for (auto &c : copy_str) c = toupper(c);
     copy_str += '\0'; /* paranoid */
@@ -2092,6 +2590,9 @@ bool ParseCommand(char* str) {
 		uint16_t seg = (uint16_t)GetHexValue(found,found);found++; // skip ":"
 		uint32_t ofs = GetHexValue(found,found);
 		CBreakpoint::AddBreakpoint(seg,ofs,false);
+        if (auto* core = get_core_debugger()) {
+            core->addBreakpoint(static_cast<uint32_t>(SegOffToLinear(seg, ofs)));
+        }
 		DEBUG_ShowMsg("DEBUG: Set breakpoint at %04X:%04X\n",seg,ofs);
 		return true;
 	}
@@ -2176,10 +2677,16 @@ bool ParseCommand(char* str) {
 		uint8_t bpNr	= (uint8_t)GetHexValue(found,found); 
 		if ((bpNr==0x00) && (*found=='*')) { // Delete all
 			CBreakpoint::DeleteAll();
+            if (auto* core = get_core_debugger()) {
+                core->clearAllBreakpoints();
+            }
 			DEBUG_ShowMsg("DEBUG: Breakpoints deleted.\n");
 		} else {
 			// delete single breakpoint
 			DEBUG_ShowMsg("DEBUG: Breakpoint deletion %s.\n",(CBreakpoint::DeleteByIndex(bpNr)?"success":"failure"));
+            if (auto* core = get_core_debugger()) {
+                core->clearAllBreakpoints();
+            }
 		}
 		return true;
 	}
@@ -2190,8 +2697,16 @@ bool ParseCommand(char* str) {
 	}
 
 	if (command == "RUN") {
+		if (auto* core = get_core_debugger()) {
+			DEBUG_ShowMsg("DEBUG: [Old Debugger] RUN command routing to CoreDebugger\n");
+			core->resume();
+			return true;
+		}
+		DEBUG_ShowMsg("DEBUG: [Old Debugger] RUN command using legacy path\n");
 		DrawRegistersUpdateOld();
 		debug_running = false;
+		// Properly handle breakpoints before resuming
+		DEBUG_ResumeFromBreakpoint();
 		debugging=false;
 		DrawCode();
 		DrawInput();
@@ -2204,8 +2719,11 @@ bool ParseCommand(char* str) {
 		Bits DEBUG_NullCPUCore(void);
 
 		inhibit_int_breakpoint = true;
-		DEBUG_Run(1,false);
+		DEBUG_Run(1,true);  // Use quickexit=true to prevent premature breakpoint reactivation
+		skipFirstInstruction = false; // Safety clear in case the core loop didn't consume it
 		inhibit_int_breakpoint = false;
+		// Re-activate all breakpoints after stepping past the current one
+		CBreakpoint::ActivateBreakpoints();
 		mainMenu.get_item("debugger_rundebug").check(false).refresh_item(mainMenu);
 		mainMenu.get_item("debugger_runnormal").check(true).refresh_item(mainMenu);
 		mainMenu.get_item("debugger_runwatch").check(false).refresh_item(mainMenu);
@@ -2216,6 +2734,10 @@ bool ParseCommand(char* str) {
 	}
 
 	if (command == "RUNWATCH") {
+		if (auto* core = get_core_debugger()) {
+			core->resume();
+			return true;
+		}
 		auto oldcore = cpudecoder;
 		runnormal = false;
 		inhibit_int_breakpoint = true;
@@ -2312,6 +2834,7 @@ bool ParseCommand(char* str) {
 		codeViewData.useCS	= codeSeg;
 		codeViewData.useEIP = codeOfs;
 		codeViewData.cursorPos = 0;
+        if (debug_on_code_view_update) debug_on_code_view_update(codeSeg, codeOfs);
 		return true;
 	}
 
@@ -2324,6 +2847,7 @@ bool ParseCommand(char* str) {
 		dataOfs = GetHexValue(found,found); SkipSpace(found);
 		dbg.set_data_view(DBGBlock::DATV_SEGMENTED);
 		DEBUG_ShowMsg("DEBUG: Set data overview to %04X:%04X\n",dataSeg,dataOfs);
+        if (debug_on_data_view_update) debug_on_data_view_update(dataSeg, dataOfs);
 		return true;
 	}
 
@@ -3890,6 +4414,17 @@ int32_t DEBUG_Run(int32_t amount,bool quickexit) {
 	return ret;
 }
 
+// Wrapper function for Lua engine compatibility
+void DEBUG_RunLua(int count, bool usebreakpoint) {
+#if C_DEBUG
+	DEBUG_Run(static_cast<int32_t>(count), usebreakpoint);
+#else
+	// In non-debug builds, just do nothing or minimal operation
+	(void)count;
+	(void)usebreakpoint;
+#endif
+}
+
 uint32_t DEBUG_CheckKeys(void) {
 	Bits ret=0;
 	bool numberrun = false;
@@ -4157,7 +4692,14 @@ uint32_t DEBUG_CheckKeys(void) {
 				codeViewData.inputPos = (int)strlen(codeViewData.inputStr);
 				break;
 		case KEY_F(5):	// Run Program
+				if (auto* core = get_core_debugger()) {
+					core->resume();
+					skipDraw = true;
+					break;
+				}
 				DrawRegistersUpdateOld();
+				// Properly handle breakpoints before resuming
+				DEBUG_ResumeFromBreakpoint();
 				debugging=false;
 				DrawCode();
 				DrawInput();
@@ -4184,18 +4726,28 @@ uint32_t DEBUG_CheckKeys(void) {
 				showPrintable = !showPrintable;
 				break;
 		case KEY_F(9):	// Set/Remove Breakpoint
-				if (CBreakpoint::IsBreakpoint(codeViewData.cursorSeg, codeViewData.cursorOfs)) {
-					if (CBreakpoint::DeleteBreakpoint(codeViewData.cursorSeg, codeViewData.cursorOfs))
-						DEBUG_ShowMsg("DEBUG: Breakpoint deletion success.\n");
-					else
-						DEBUG_ShowMsg("DEBUG: Failed to delete breakpoint.\n");
-				}
-				else {
-					CBreakpoint::AddBreakpoint(codeViewData.cursorSeg, codeViewData.cursorOfs, false);
-					DEBUG_ShowMsg("DEBUG: Set breakpoint at %04X:%04X\n",codeViewData.cursorSeg,codeViewData.cursorOfs);
+				if (auto* core = get_core_debugger()) {
+					uint32_t linear = (static_cast<uint32_t>(codeViewData.cursorSeg) << 4) + codeViewData.cursorOfs;
+					core->toggleBreakpoint(linear);
+				} else {
+					if (CBreakpoint::IsBreakpoint(codeViewData.cursorSeg, codeViewData.cursorOfs)) {
+						if (CBreakpoint::DeleteBreakpoint(codeViewData.cursorSeg, codeViewData.cursorOfs))
+							DEBUG_ShowMsg("DEBUG: Breakpoint deletion success.\n");
+						else
+							DEBUG_ShowMsg("DEBUG: Failed to delete breakpoint.\n");
+					}
+					else {
+						CBreakpoint::AddBreakpoint(codeViewData.cursorSeg, codeViewData.cursorOfs, false);
+						DEBUG_ShowMsg("DEBUG: Set breakpoint at %04X:%04X\n",codeViewData.cursorSeg,codeViewData.cursorOfs);
+					}
 				}
 				break;
 		case KEY_F(10):	// Step over inst
+                if (auto* core = get_core_debugger()) {
+                    core->stepOver();
+                    skipDraw = true;
+                    break;
+                }
 				DrawRegistersUpdateOld();
 				if (StepOver()) {
 					mustCompleteInstruction = true;
@@ -4209,6 +4761,11 @@ uint32_t DEBUG_CheckKeys(void) {
 				// If we aren't stepping over something, do a normal step.
 				/* FALLTHROUGH */
 		case KEY_F(11):	// trace into
+                if (auto* core = get_core_debugger()) {
+                    core->stepInto();
+                    skipDraw = true;
+                    break;
+                }
 				DrawRegistersUpdateOld();
 				exitLoop = false;
 				mustCompleteInstruction = true;
@@ -4216,8 +4773,13 @@ uint32_t DEBUG_CheckKeys(void) {
 				mustCompleteInstruction = false;
 				break;
         case 0x09: //TAB
-                void DBGUI_NextWindow(void);
-                DBGUI_NextWindow();
+                // If we're typing a command, use completion, otherwise switch windows
+                if (codeViewData.inputPos > 0) {
+                    handleCommandCompletion();
+                } else {
+                    void DBGUI_NextWindow(void);
+                    DBGUI_NextWindow();
+                }
                 break;
         case KEY_BTAB:
                 void DBGUI_PrevWindow(void);
@@ -4397,6 +4959,10 @@ Bitu DEBUG_Loop(void) {
             DEBUG_RefreshPage(0);
         }
 
+        if (use_imgui_debugger_only) {
+            return 0; // Keep looping and pausing emulation; ImGui handles input via GFX_Events
+        }
+
     	return DEBUG_CheckKeys();
     }
 }
@@ -4439,6 +5005,8 @@ void DEBUG_Enable_Handler(bool pressed) {
 
     if (debugging) {
         DrawRegistersUpdateOld();
+        // Properly handle breakpoints before resuming
+        DEBUG_ResumeFromBreakpoint();
         debugging=false;
         logBuffSuppressConsole = false;
         if (logBuffSuppressConsoleNeedUpdate) {
@@ -4449,8 +5017,6 @@ void DEBUG_Enable_Handler(bool pressed) {
         void DEBUG_DrawScreen(void);
         DEBUG_DrawScreen();
 
-        CBreakpoint::ActivateBreakpointsExceptAt(SegPhys(cs)+reg_eip);
-        DOSBOX_SetNormalLoop();	
         GFX_SetTitle(-1,-1,-1,is_paused);
 //      if (tohide) return;
     }
@@ -4506,6 +5072,10 @@ void DEBUG_Enable_Handler(bool pressed) {
 }
 
 void DEBUG_DrawScreen(void) {
+	// When using ImGui debugger only, don't draw the old text-based UI
+	if (use_imgui_debugger_only) {
+		return;
+	}
 	DrawData();
 	DrawCode();
     DrawInput();
@@ -5131,12 +5701,19 @@ Bitu DEBUG_EnableDebugger(void)
 {
 	exitLoop = true;
 
-	if (!debugging || (debugging && debug_running))
-		DEBUG_Enable_Handler(true);
+    if (!debugging || (debugging && debug_running))
+        DEBUG_Enable_Handler(true);
 
-	CPU_CycleLeft += CPU_Cycles;
-	CPU_Cycles = 0;
-	return 0;
+    CPU_CycleLeft += CPU_Cycles;
+    CPU_Cycles = 0;
+
+    if (!legacy_coredbg_listener_registered) {
+        if (auto* core = get_core_debugger()) {
+            core->addListener(&legacy_coredbg_listener);
+            legacy_coredbg_listener_registered = true;
+        }
+    }
+    return 0;
 }
 
 // INIT
@@ -5166,6 +5743,7 @@ void DBGBlock::set_data_view(unsigned int view) {
 }
 
 void DEBUG_SetupConsole(void) {
+    if (use_imgui_debugger_only) return; // Prevent console creation when only ImGui debugger is desired
 	if (dbg.win_main == NULL) {
         LOG(LOG_MISC, LOG_DEBUG)("DEBUG_SetupConsole initializing GUI");
 
@@ -5216,6 +5794,9 @@ void DEBUG_Init() {
 
 	/* Reset code overview and input line */
 	memset((void*)&codeViewData,0,sizeof(codeViewData));
+	/* Initialize with current CS:EIP to avoid showing invalid disassembly */
+	codeViewData.useCS = SegValue(cs);
+	codeViewData.useEIP = reg_eip;
 	/* Setup callback */
 	debugCallback=CALLBACK_Allocate();
 	CALLBACK_Setup(debugCallback,DEBUG_EnableDebugger,CB_RETF,"debugger");
@@ -5634,5 +6215,3 @@ void DEBUG_StopLog(void) {
 
 
 #endif // DEBUG
-
-

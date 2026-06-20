@@ -1215,7 +1215,7 @@ std::string RestoreName(std::string name) {
 }
 
 #if C_DEBUG
-bool ParseCommand(char* str);
+bool ParseCommand(const char* str);
 int logwin = true;
 GUI::MessageBox3 *npwin = NULL;
 class EnterDebuggerCommand : public GUI::ToplevelWindow {
@@ -3253,7 +3253,7 @@ public:
                 "ipx", "ne2000", "ethernet, pcap", "ethernet, slirp",
                 "ide, primary", "ide, secondary", "ide, tertiary", "ide, quaternary",
                 "ide, quinternary", "ide, sexternary", "ide, septernary", "ide, octernary",
-                "fdc, primary",
+                "fdc, primary", "lua",
             };
 
             Section* section;
