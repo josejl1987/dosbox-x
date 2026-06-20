@@ -181,6 +181,9 @@ public:
     virtual void readMemoryBlock(uint32_t address, uint8_t* buffer, size_t size) = 0;
     virtual void writeMemoryBlock(uint32_t address, const uint8_t* buffer, size_t size) = 0;
     
+    // PR4: Bulk memory read returning vector (convenience wrapper over readMemoryBlock)
+    virtual std::vector<uint8_t> readMemoryRange(uint32_t address, size_t length) = 0;
+    
     // Text encoding support for Japanese and other languages
     virtual std::string convertToUTF8(const uint8_t* data, size_t length, uint16_t codepage = 932) = 0;
     virtual std::vector<uint8_t> convertFromUTF8(const std::string& utf8_text, uint16_t codepage = 932) = 0;
@@ -381,6 +384,9 @@ public:
     // Bulk memory operations for performance
     void readMemoryBlock(uint32_t address, uint8_t* buffer, size_t size) override;
     void writeMemoryBlock(uint32_t address, const uint8_t* buffer, size_t size) override;
+    
+    // PR4: Bulk memory read returning vector
+    std::vector<uint8_t> readMemoryRange(uint32_t address, size_t length) override;
     
     // Text encoding support for Japanese and other languages
     std::string convertToUTF8(const uint8_t* data, size_t length, uint16_t codepage = 932) override;

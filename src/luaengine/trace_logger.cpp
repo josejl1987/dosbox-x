@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <set>
 #include <cstring>
+#include <cstdio>
 
     using LuaEngineDebugUtils::formatAddress;
 
@@ -185,10 +186,15 @@
             trace_interval_(1), trace_counter_(0), include_registers_(true),
             include_instruction_bytes_(false), include_memory_data_(true),
             decode_japanese_text_(true), log_memory_access_(false), log_on_step_(true),
-            writer_should_stop_(false), events_this_second_(0), export_format_("txt") {
+            writer_should_stop_(false), events_this_second_(0), export_format_("txt"),
+            ring_buf_(std::make_unique<TraceRingBuffer>(100000)),
+            decode_cache_(std::make_unique<DecodeCache>(200)),
+            snapshot_store_(std::make_unique<SnapshotStore>()),
+            current_snapshot_index_(0) {
 
             stats_.reset();
             last_event_time_ = std::chrono::steady_clock::now();
+            trace_start_time_ = std::chrono::steady_clock::now();
         }
 
         TraceLogger::~TraceLogger() {
@@ -238,6 +244,11 @@
             std::lock_guard<std::mutex> lock(trace_mutex_);
             trace_log_.clear();
             stats_.reset();
+
+            // PR4: Clear ring buffer and caches
+            if(ring_buf_) ring_buf_->clear();
+            if(decode_cache_) decode_cache_->clear();
+            if(snapshot_store_) snapshot_store_->clear();
         }
 
         void TraceLogger::addEntry(uint32_t address, uint16_t cs, uint16_t ip, const std::string& disassembly) {
@@ -392,6 +403,12 @@
                 std::lock_guard<std::recursive_mutex> lock(call_stack_mutex_);
                 call_stack_.clear();  // Clear call stack when clearing trace log
             }
+
+            // PR4: Clear ring buffer and decode cache
+            if(ring_buf_) ring_buf_->clear();
+            if(decode_cache_) decode_cache_->clear();
+            if(snapshot_store_) snapshot_store_->clear();
+            trace_start_time_ = std::chrono::steady_clock::now();
 
             if(onTraceCleared) {
                 onTraceCleared();
@@ -611,6 +628,10 @@
         void TraceLogger::setMaxEntries(size_t max_entries) {
             max_entries_ = max_entries;
             trimToMaxEntries();
+            // PR4: Resize ring buffer to match
+            if(ring_buf_) {
+                ring_buf_ = std::make_unique<TraceRingBuffer>(max_entries);
+            }
         }
 
         const TraceEntry* TraceLogger::getEntry(size_t index) const {
@@ -1630,6 +1651,313 @@
             std::lock_guard<std::mutex> lock(trace_mutex_);
             return std::vector<TraceEntry>(trace_log_.begin(), trace_log_.end());
         }
+
+        std::vector<TraceEntry> TraceLogger::getRecentEntries(size_t count) const {
+            std::lock_guard<std::mutex> lock(trace_mutex_);
+            size_t start = (trace_log_.size() > count) ? trace_log_.size() - count : 0;
+            return std::vector<TraceEntry>(trace_log_.begin() + static_cast<ptrdiff_t>(start), trace_log_.end());
+        }
+
+    //=============================================================================
+    // PR4: FlowType Lookup Table
+    //=============================================================================
+
+    static const FlowType s_flow_table[256] = {
+        /* 00 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 04 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 08 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 0C */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 10 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 14 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 18 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 1C */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 20 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 24 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 28 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 2C */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 30 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 34 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 38 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 3C */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 40 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 44 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 48 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 4C */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 50 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 54 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 58 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 5C */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 60 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 64 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 68 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 6C */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 70 */ FlowType::CONDITIONAL_BRANCH, FlowType::CONDITIONAL_BRANCH,
+        /* 72 */ FlowType::CONDITIONAL_BRANCH, FlowType::CONDITIONAL_BRANCH,
+        /* 74 */ FlowType::CONDITIONAL_BRANCH, FlowType::CONDITIONAL_BRANCH,
+        /* 76 */ FlowType::CONDITIONAL_BRANCH, FlowType::CONDITIONAL_BRANCH,
+        /* 78 */ FlowType::CONDITIONAL_BRANCH, FlowType::CONDITIONAL_BRANCH,
+        /* 7A */ FlowType::CONDITIONAL_BRANCH, FlowType::CONDITIONAL_BRANCH,
+        /* 7C */ FlowType::CONDITIONAL_BRANCH, FlowType::CONDITIONAL_BRANCH,
+        /* 7E */ FlowType::CONDITIONAL_BRANCH, FlowType::CONDITIONAL_BRANCH,
+        /* 80 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 84 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 88 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 8C */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 90 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 94 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 98 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* 9C */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* A0 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* A4 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* A8 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* AC */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* B0 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* B4 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* B8 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* BC */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* C0 */ FlowType::NONE, FlowType::NONE, FlowType::RET, FlowType::RET,
+        /* C4 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* C8 */ FlowType::RET, FlowType::RET, FlowType::RET, FlowType::RET,
+        /* CC */ FlowType::INTERRUPT, FlowType::INTERRUPT, FlowType::INTERRUPT, FlowType::INTERRUPT,
+        /* D0 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* D4 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* D8 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* DC */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* E0 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* E4 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* E8 */ FlowType::CALL, FlowType::JMP, FlowType::JMP, FlowType::JMP,
+        /* EC */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* F0 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* F4 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* F8 */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+        /* FC */ FlowType::NONE, FlowType::NONE, FlowType::NONE, FlowType::NONE,
+    };
+
+    FlowType flowTypeFromOpcode(uint8_t opcode) {
+        // 0F prefix: second byte determines conditional branch (0F 80-8F)
+        // Caller must handle 0F prefix separately; we only classify the first byte.
+        if(opcode == 0x0F) return FlowType::CONDITIONAL_BRANCH;
+        return s_flow_table[opcode];
+    }
+
+    //=============================================================================
+    // PR4: TraceRingBuffer Implementation
+    //=============================================================================
+
+    static size_t nextPowerOf2(size_t v) {
+        if(v == 0) return 1;
+        v--;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+        return v + 1;
+    }
+
+    TraceRingBuffer::TraceRingBuffer(size_t capacity)
+        : buffer_(nextPowerOf2(capacity)),
+          mask_(buffer_.size() - 1) {
+    }
+
+    void TraceRingBuffer::push(const RawTraceEntry& entry) {
+        uint64_t idx = write_index_.fetch_add(1, std::memory_order_relaxed);
+        size_t slot = idx & mask_;
+        // Check if we're overwriting an unread entry
+        if(idx > buffer_.size()) {
+            dropped_count_.fetch_add(1, std::memory_order_relaxed);
+        }
+        buffer_[slot] = entry;
+    }
+
+    size_t TraceRingBuffer::getEntriesRange(size_t start, size_t count,
+                                             RawTraceEntry* out) const {
+        std::lock_guard<std::mutex> lock(read_mutex_);
+        uint64_t total = write_index_.load(std::memory_order_relaxed);
+        if(start >= total) return 0;
+
+        size_t avail = static_cast<size_t>(total - start);
+        size_t n = std::min(count, avail);
+
+        for(size_t i = 0; i < n; ++i) {
+            uint64_t idx = start + i;
+            size_t slot = idx & mask_;
+            out[i] = buffer_[slot];
+        }
+        return n;
+    }
+
+    size_t TraceRingBuffer::size() const {
+        return write_index_.load(std::memory_order_relaxed);
+    }
+
+    void TraceRingBuffer::clear() {
+        write_index_.store(0, std::memory_order_relaxed);
+        dropped_count_.store(0, std::memory_order_relaxed);
+        sampled_count_.store(0, std::memory_order_relaxed);
+    }
+
+    //=============================================================================
+    // PR4: DecodeCache Implementation
+    //=============================================================================
+
+    DecodeCache::DecodeCache(size_t cap) : cap_(cap) {
+    }
+
+    const std::string& DecodeCache::getOrDecode(uint32_t address,
+                                                  LuaEngineDebug::CoreDebugInterface* iface) {
+        auto it = cache_.find(address);
+        if(it != cache_.end()) {
+            // Move to back of LRU (most recently used)
+            auto lru_it = std::find(lru_order_.begin(), lru_order_.end(), address);
+            if(lru_it != lru_order_.end()) {
+                lru_order_.erase(lru_it);
+            }
+            lru_order_.push_back(address);
+            return it->second;
+        }
+
+        // Cache miss — decode
+        std::string disasm;
+        if(iface) {
+            disasm = iface->disassembleInstruction(address);
+        }
+
+        // Evict LRU if at capacity
+        while(cache_.size() >= cap_ && !lru_order_.empty()) {
+            uint32_t evict_addr = lru_order_.front();
+            lru_order_.erase(lru_order_.begin());
+            cache_.erase(evict_addr);
+        }
+
+        auto result = cache_.emplace(address, std::move(disasm));
+        lru_order_.push_back(address);
+        return result.first->second;
+    }
+
+    void DecodeCache::clear() {
+        cache_.clear();
+        lru_order_.clear();
+    }
+
+    //=============================================================================
+    // PR4: SnapshotStore Implementation
+    //=============================================================================
+
+    uint32_t SnapshotStore::push(const DebuggerUiSnapshot& snapshot) {
+        uint32_t idx = write_index_.fetch_add(1, std::memory_order_relaxed);
+        size_t slot = idx % buffer_.size();
+        buffer_[slot] = snapshot;
+        return idx;
+    }
+
+    const DebuggerUiSnapshot& SnapshotStore::get(uint32_t index) const {
+        static const DebuggerUiSnapshot s_empty{};
+        if(buffer_.empty()) return s_empty;
+        size_t slot = index % buffer_.size();
+        return buffer_[slot];
+    }
+
+    //=============================================================================
+    // PR4: TraceLogger Hot-Path addRawEntry
+    //=============================================================================
+
+    void TraceLogger::addRawEntry(uint32_t address, uint16_t cs, uint16_t ip, uint8_t opcode_byte) {
+        if(!handleRangeAutoControl(address)) return;
+        if(!enabled_ || paused_) return;
+
+        // Check trace interval
+        if(trace_interval_ > 1) {
+            trace_counter_++;
+            if(trace_counter_ % trace_interval_ != 0) return;
+        }
+
+        // Classify flow from opcode byte — zero string operations
+        // ponytail: 0F prefix classified as CONDITIONAL_BRANCH (slight over-classification
+        // for SETcc/MOVZX, but correct for Jcc which is the common case)
+        FlowType ft = flowTypeFromOpcode(opcode_byte);
+
+        // Capture register snapshot for this UI frame
+        uint32_t snap_idx = current_snapshot_index_;
+        if(debug_interface_ && include_registers_) {
+            DebuggerUiSnapshot snap{};
+            debug_interface_->getCpuRegistersFast(snap.registers);
+            snap.frame_number = current_frame_;
+            snap_idx = snapshot_store_->push(snap);
+        }
+
+        // Pack timestamp as relative ms from trace start
+        auto now = std::chrono::steady_clock::now();
+        auto rel_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - trace_start_time_).count();
+        uint32_t ts_packed = static_cast<uint32_t>(rel_ms & 0xFFFFFFFF);
+
+        RawTraceEntry entry{};
+        entry.address = address;
+        entry.cs = cs;
+        entry.ip = ip;
+        entry.opcode_byte = opcode_byte;
+        entry.flow_type = ft;
+        entry.event_type = static_cast<uint8_t>(TraceEventType::INSTRUCTION);
+        entry._pad = 0;
+        entry.snapshot_index = snap_idx;
+        entry.timestamp_packed = ts_packed;
+        entry.frame = current_frame_;
+        entry.cycle = current_cycle_;
+
+        // Write to ring buffer — O(1), zero heap allocs on the hot path
+        ring_buf_->push(entry);
+
+        // Update lightweight stats (no string operations)
+        // ponytail: stats_ updates are not under trace_mutex_ here; 
+        // integer counters are fine for best-effort display, address_frequency map
+        // may have rare races. Upgrade to atomic counters if accuracy matters.
+        stats_.total_instructions++;
+        if(ft == FlowType::CALL) stats_.call_count++;
+        else if(ft == FlowType::JMP || ft == FlowType::CONDITIONAL_BRANCH) stats_.jump_count++;
+        else if(ft == FlowType::RET) stats_.ret_count++;
+        else if(ft == FlowType::INTERRUPT) stats_.interrupt_count++;
+        // ponytail: skip address_frequency update on hot path to avoid map allocation;
+        // unique_addresses count will be slightly low, acceptable for display
+
+        // Fire callback — only used for auto-scroll notification, entry data not consumed
+        if(onEntryAdded) {
+            // ponytail: create minimal TraceEntry for callback compat; 
+            // empty string uses SSO (no heap alloc), and callback only triggers auto-scroll
+            TraceEntry placeholder(address, cs, ip, "");
+            placeholder.frame_number = current_frame_;
+            placeholder.cycle_count = current_cycle_;
+            onEntryAdded(placeholder);
+        }
+    }
+
+    //=============================================================================
+    // PR4: Range-based trace retrieval
+    //=============================================================================
+
+    std::vector<RawTraceEntry> TraceLogger::getEntriesRange(size_t start, size_t count) const {
+        std::vector<RawTraceEntry> result(count);
+        size_t n = ring_buf_->getEntriesRange(start, count, result.data());
+        result.resize(n);
+        return result;
+    }
+
+    size_t TraceLogger::getRingEntryCount() const {
+        return ring_buf_->size();
+    }
+
+    uint64_t TraceLogger::getDroppedCount() const {
+        return ring_buf_->dropped_count();
+    }
+
+    void TraceLogger::onUiFrameTick() {
+        if(debug_interface_ && include_registers_) {
+            DebuggerUiSnapshot snap{};
+            debug_interface_->getCpuRegistersFast(snap.registers);
+            snap.frame_number = current_frame_;
+            current_snapshot_index_ = snapshot_store_->push(snap);
+        }
+    }
 
     } // namespace LuaEngineTraceLogger
 

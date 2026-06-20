@@ -284,7 +284,8 @@ namespace LuaEngineTraceLogger {
 
         ImGui::SameLine();
 
-        size_t total_entries = trace_logger_->getEntryCount();
+        size_t total_entries = trace_logger_->getRingEntryCount();
+        if(total_entries == 0) total_entries = trace_logger_->getEntryCount();
         size_t total_pages = (total_entries + entries_per_page_ - 1) / entries_per_page_;
 
         ImGui::Text("Page %zu/%zu", current_page_ + 1, std::max(size_t(1), total_pages));
@@ -321,15 +322,33 @@ namespace LuaEngineTraceLogger {
     void TraceLoggerWindow::renderTraceTable() {
         if(!trace_logger_) return;
 
-        const auto& entries = trace_logger_->getEntries();
-        if(entries.empty()) {
+        // PR4: Use range-based retrieval instead of full-copy getEntries()
+        size_t total_entries = trace_logger_->getRingEntryCount();
+        if(total_entries == 0) {
+            // Fall back to legacy count for backward compat
+            total_entries = trace_logger_->getEntryCount();
+        }
+
+        if(total_entries == 0) {
             ImGui::Text("No trace entries. Start tracing to see execution flow.");
             return;
         }
 
         // Calculate visible entries
         size_t start_index = current_page_ * entries_per_page_;
-        size_t end_index = std::min(start_index + entries_per_page_, entries.size());
+        // PR4: Clamp to valid ring buffer range (avoid showing overwritten entries)
+        size_t ring_count = trace_logger_->getRingEntryCount();
+        if(ring_count > 0 && start_index >= ring_count) {
+            start_index = (ring_count > entries_per_page_) ? ring_count - entries_per_page_ : 0;
+            current_page_ = start_index / entries_per_page_;
+        }
+        size_t end_index = std::min(start_index + entries_per_page_, total_entries);
+
+        // PR4: Fetch only the visible page from ring buffer via DecodeCache
+        auto raw_entries = trace_logger_->getEntriesRange(start_index, end_index - start_index);
+        auto* decode_cache = trace_logger_->getDecodeCache();
+        auto* snapshot_store = trace_logger_->getSnapshotStore();
+        auto* debug_iface = trace_logger_->getDebugInterface();
 
         // Calculate column count: Address, Label, Type, Disassembly, Memory, Frame, Time (7 base)
         int column_count = 7;
@@ -360,30 +379,38 @@ namespace LuaEngineTraceLogger {
 
             ImGui::TableHeadersRow();
 
-            // Render entries
+            // Render entries — PR4: use RawTraceEntry + lazy decode
             LuaEngineTraceLogger::FastRegisterSnapshot prev_regs{};
             bool have_prev_regs = false;
 
-            for(size_t i = start_index; i < end_index; ++i) {
-                const auto& entry = entries[i];
+            for(size_t i = 0; i < raw_entries.size(); ++i) {
+                const auto& raw = raw_entries[i];
+
+                // Lazy-decode disassembly via address-keyed cache
+                const std::string& disasm_str = (decode_cache && debug_iface)
+                    ? decode_cache->getOrDecode(raw.address, debug_iface)
+                    : *(new std::string());  // ponytail: rare no-interface case, just empty
+
+                // Get register snapshot for this entry
+                const DebuggerUiSnapshot* snap = (snapshot_store)
+                    ? &snapshot_store->get(raw.snapshot_index) : nullptr;
 
                 ImGui::TableNextRow();
-                ImGui::PushID(static_cast<int>(i));
+                ImGui::PushID(static_cast<int>(start_index + i));
 
-                // Determine row color based on instruction type
+                // Determine row color based on flow type (PR4: enum-based, no string scanning)
                 bool should_highlight = false;
                 ImVec4 highlight_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
 
-                if(highlight_calls_ && entry.instruction_mnemonic.find("CALL") != std::string::npos) {
+                if(highlight_calls_ && raw.flow_type == FlowType::CALL) {
                     should_highlight = true;
                     highlight_color = ImVec4(0.8f, 0.9f, 1.0f, 1.0f);  // Light blue
                 }
-                else if(highlight_jumps_ && (entry.instruction_mnemonic.find("JMP") != std::string::npos ||
-                    (entry.instruction_mnemonic.length() > 0 && entry.instruction_mnemonic[0] == 'J'))) {
+                else if(highlight_jumps_ && (raw.flow_type == FlowType::JMP || raw.flow_type == FlowType::CONDITIONAL_BRANCH)) {
                     should_highlight = true;
                     highlight_color = ImVec4(1.0f, 0.9f, 0.8f, 1.0f);  // Light orange
                 }
-                else if(highlight_interrupts_ && entry.instruction_mnemonic.find("INT") != std::string::npos) {
+                else if(highlight_interrupts_ && raw.flow_type == FlowType::INTERRUPT) {
                     should_highlight = true;
                     highlight_color = ImVec4(1.0f, 0.8f, 0.8f, 1.0f);  // Light red
                 }
@@ -392,22 +419,22 @@ namespace LuaEngineTraceLogger {
                     ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(highlight_color));
                 }
 
-                // Address column
+                // Address column — format CS:IP from raw entry
                 ImGui::TableNextColumn();
-                ImGui::Text("%s", entry.getAddressString().c_str());
+                char addr_buf[16];
+                std::snprintf(addr_buf, sizeof(addr_buf), "%04X:%04X", raw.cs, raw.ip);
+                ImGui::TextUnformatted(addr_buf);
 
                 // Label column
                 ImGui::TableNextColumn();
                 std::string label;
-                std::string source_line;
 
                 if(symbol_manager_) {
-                    if(auto* sym = symbol_manager_->findSymbol(entry.address)) {
+                    if(auto* sym = symbol_manager_->findSymbol(raw.address)) {
                         label = sym->name;
-                        source_line = sym->sourceline;
                     }
                     else {
-                        label = symbol_manager_->getSymbolName(entry.address, true);
+                        label = symbol_manager_->getSymbolName(raw.address, true);
                     }
                 }
 
@@ -418,33 +445,43 @@ namespace LuaEngineTraceLogger {
                     ImGui::TextUnformatted("");
                 }
 
-                // Type column
+                // Type column — flow type enum instead of string matching
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(entry.getEventTypeString().c_str());
-
-                // Disassembly column
-                ImGui::TableNextColumn();
-                if (!source_line.empty()) {
-                    ImGui::TextUnformatted(source_line.c_str());
-                } else {
-                    ImGui::Text("%s", entry.disassembly.c_str());
+                const char* type_str = "INSTRUCTION";
+                switch(raw.flow_type) {
+                case FlowType::CALL: type_str = "CALL"; break;
+                case FlowType::JMP: type_str = "JMP"; break;
+                case FlowType::RET: type_str = "RET"; break;
+                case FlowType::CONDITIONAL_BRANCH: type_str = "BRANCH"; break;
+                case FlowType::INTERRUPT: type_str = "INT"; break;
+                default: break;
                 }
+                ImGui::TextUnformatted(type_str);
 
-                // Registers column
+                // Disassembly column — lazy-decoded from cache
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", disasm_str.c_str());
+
+                // Registers column — from snapshot store
                 if(show_registers_) {
                     ImGui::TableNextColumn();
-                    if(!show_changes_only_ || !have_prev_regs) {
-                        ImGui::Text("%s", entry.getRegisterString().c_str());
+                    if(snap && !show_changes_only_) {
+                        const auto& r = snap->registers;
+                        char buf[256];
+                        std::snprintf(buf, sizeof(buf),
+                            "EAX=%08X EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X ESP=%08X EBP=%08X",
+                            r.eax, r.ebx, r.ecx, r.edx, r.esi, r.edi, r.esp, r.ebp);
+                        ImGui::TextUnformatted(buf);
                     }
-                    else {
-                        const auto& cur = entry.fast_registers;
+                    else if(snap && have_prev_regs) {
+                        const auto& cur = snap->registers;
                         char buf[256];
                         char* p = buf;
 
                         auto emit = [&](const char* name, uint32_t oldv, uint32_t newv) {
                             if(oldv == newv) return;
                             p += std::sprintf(p, "%s:%08X->%08X ", name, oldv, newv);
-                            };
+                        };
 
                         emit("EAX", prev_regs.eax, cur.eax);
                         emit("EBX", prev_regs.ebx, cur.ebx);
@@ -454,8 +491,6 @@ namespace LuaEngineTraceLogger {
                         emit("EDI", prev_regs.edi, cur.edi);
                         emit("ESP", prev_regs.esp, cur.esp);
                         emit("EBP", prev_regs.ebp, cur.ebp);
-                        // EIP changing is taken for granted - don't show it
-                        // emit("EIP", prev_regs.eip, cur.eip);
                         emit("EFL", prev_regs.eflags, cur.eflags);
 
                         if(p == buf) {
@@ -466,70 +501,52 @@ namespace LuaEngineTraceLogger {
                             ImGui::TextUnformatted(buf);
                         }
                     }
-                    prev_regs = entry.fast_registers;
-                    have_prev_regs = true;
+                    if(snap) {
+                        prev_regs = snap->registers;
+                        have_prev_regs = true;
+                    }
                 }
 
-                // Instruction bytes column
+                // Instruction bytes column — PR4: not in RawTraceEntry, show opcode byte
                 if(show_instruction_bytes_) {
                     ImGui::TableNextColumn();
-                    std::stringstream ss;
-                    for(size_t j = 0; j < entry.instruction_bytes.size(); ++j) {
-                        if(j > 0) ss << " ";
-                        ss << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
-                            << static_cast<int>(entry.instruction_bytes[j]);
-                    }
-                    ImGui::Text("%s", ss.str().c_str());
+                    char byte_buf[8];
+                    std::snprintf(byte_buf, sizeof(byte_buf), "%02X", raw.opcode_byte);
+                    ImGui::TextUnformatted(byte_buf);
                 }
 
-                // Memory column
+                // Memory column — PR4: not tracked in RawTraceEntry for hot path
                 ImGui::TableNextColumn();
-                if(entry.event_type == LuaEngineTraceLogger::TraceEventType::MEMORY_READ ||
-                    entry.event_type == LuaEngineTraceLogger::TraceEventType::MEMORY_WRITE) {
-                    ImGui::Text("0x%08X = 0x%08X", entry.memory_access.address, entry.memory_access.value);
-                }
-                else {
-                    ImGui::TextUnformatted("");
-                }
+                ImGui::TextUnformatted("");
 
                 // Frame column
                 ImGui::TableNextColumn();
-                ImGui::Text("%u", entry.frame_number);
+                ImGui::Text("%u", raw.frame);
 
-                // Timestamp column
+                // Timestamp column — show packed relative ms
                 ImGui::TableNextColumn();
-                ImGui::Text("%s", entry.getTimestampString().c_str());
+                ImGui::Text("%u", raw.timestamp_packed);
 
                 // Handle selection
                 if(ImGui::IsItemClicked()) {
-                    selected_entry_index_ = static_cast<int>(i);
+                    selected_entry_index_ = static_cast<int>(start_index + i);
                 }
 
                 // Context menu
                 if(ImGui::BeginPopupContextItem("TraceLoggerContextMenu")) {
                     if(ImGui::MenuItem("Copy Address")) {
-                        std::string address_str = entry.getAddressString();
-                        if(!address_str.empty()) {
-                            ImGui::SetClipboardText(address_str.c_str());
-                        }
+                        char addr_copy[16];
+                        std::snprintf(addr_copy, sizeof(addr_copy), "%04X:%04X", raw.cs, raw.ip);
+                        ImGui::SetClipboardText(addr_copy);
                     }
                     if(ImGui::MenuItem("Copy Disassembly")) {
-                        if(!entry.disassembly.empty()) {
-                            ImGui::SetClipboardText(entry.disassembly.c_str());
-                        }
-                    }
-                    if(ImGui::MenuItem("Copy Line")) {
-                        std::string formatted_line = entry.getFormattedLine();
-                        if(!formatted_line.empty()) {
-                            ImGui::SetClipboardText(formatted_line.c_str());
+                        if(!disasm_str.empty()) {
+                            ImGui::SetClipboardText(disasm_str.c_str());
                         }
                     }
                     ImGui::Separator();
-                    if(ImGui::MenuItem("Find Similar")) {
-                        findSimilarInstructions(entry.instruction_mnemonic);
-                    }
                     if(ImGui::MenuItem("Find at Address")) {
-                        findAtAddress(entry.address);
+                        findAtAddress(raw.address);
                     }
                     ImGui::EndPopup();
                 }
@@ -547,9 +564,17 @@ namespace LuaEngineTraceLogger {
         const auto& stats = trace_logger_->getStatistics();
 
         ImGui::Text("Entries: %zu/%zu | Instructions: %u | Unique Addresses: %u | Calls: %u | Jumps: %u | Interrupts: %u",
-            trace_logger_->getEntryCount(), trace_logger_->getMaxEntries(),
+            trace_logger_->getRingEntryCount(), trace_logger_->getMaxEntries(),
             stats.total_instructions, stats.unique_addresses,
             stats.call_count, stats.jump_count, stats.interrupt_count);
+
+        // PR4: Show dropped count in status bar when > 0
+        uint64_t dropped = trace_logger_->getDroppedCount();
+        if(dropped > 0) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "| Dropped: %llu",
+                static_cast<unsigned long long>(dropped));
+        }
 
         if(trace_logger_->isEnabled()) {
             ImGui::SameLine();

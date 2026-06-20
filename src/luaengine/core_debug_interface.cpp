@@ -1160,6 +1160,12 @@ namespace LuaEngineDebug {
         }
     }
 
+    std::vector<uint8_t> DosBoxCoreDebugger::readMemoryRange(uint32_t address, size_t length) {
+        std::vector<uint8_t> buffer(length);
+        readMemoryBlock(address, buffer.data(), length);
+        return buffer;
+    }
+
     //=============================================================================
     // Text Encoding Support for Japanese and Other Languages
     //=============================================================================

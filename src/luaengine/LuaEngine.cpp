@@ -576,21 +576,13 @@ void LuaEngine::LuaInstructionHook() {
         const uint32_t physical_address = (uint32_t(cs) << 4) + ip;
         LuaEngineDebug::g_core_debugger->onInstructionExecuted(physical_address);
 
-        // Forward to trace logger if available
+        // PR4: Forward to trace logger using zero-alloc hot path
         if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
             if (auto* trace_logger = window_manager->getTraceLogger()) {
                 if (trace_logger->isEnabled()) {
-                    std::string disasm = LuaEngineDebug::g_core_debugger->disassembleInstruction(physical_address);
-                    trace_logger->addEntry(physical_address, cs, ip, disasm);
-
-                    // Track function calls and returns for call stack
-                    if (disasm.find("CALL") != std::string::npos || disasm.find("call") != std::string::npos) {
-                        // For CALL instructions, log the target address (if we can parse it)
-                        // or just use the current address as a placeholder
-                        trace_logger->logFunctionCall(physical_address, "");
-                    } else if (disasm.find("RET") != std::string::npos || disasm.find("ret") != std::string::npos) {
-                        trace_logger->logFunctionReturn(physical_address);
-                    }
+                    // Read first opcode byte for flow classification — no string disassembly
+                    uint8_t opcode_byte = LuaEngineDebug::g_core_debugger->readMemoryByte(physical_address);
+                    trace_logger->addRawEntry(physical_address, cs, ip, opcode_byte);
                 }
             }
         }

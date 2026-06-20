@@ -82,6 +82,10 @@ private:
     bool show_memrefs_{true};  // Toggle for memory reference column
     bool show_callstack_{true};
 
+    // PR4: Bounded cached lines
+    static constexpr size_t CACHED_LINES_CAP = 500;
+    uint32_t anchor_address_{0};  // First visible address for virtual window
+
     // Memory view state
     uint32_t memory_view_address_{0};
     bool memory_follow_csip_{true};

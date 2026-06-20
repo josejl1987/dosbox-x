@@ -244,12 +244,16 @@ namespace LuaEngineDebugger {
         cached_lines_.clear();
 
         // Pull a reasonable window around the current instruction
+        // PR4: Cap at CACHED_LINES_CAP to prevent unbounded growth
         constexpr int kLineCount = 128;
         const uint32_t start = current_address_;
+        anchor_address_ = start;
         auto lines = debug_interface_->disassembleRange(start, kLineCount);
-        cached_lines_.reserve(lines.size());
+        cached_lines_.reserve(std::min(lines.size(), CACHED_LINES_CAP));
 
         for(const auto& l : lines) {
+            // PR4: Enforce cap even on refresh
+            if(cached_lines_.size() >= CACHED_LINES_CAP) break;
             DisassemblyLine dl{};
             dl.address = l.address;
             dl.opcodes = (l.bytes.size() > 64) ? l.bytes.substr(0, 64) : l.bytes;
@@ -1107,6 +1111,7 @@ namespace LuaEngineDebugger {
             ImGui::EndTable();
 
             // Infinite scrolling: Load more lines when scrolling near the bottom
+            // PR4: Cap cached_lines_ at CACHED_LINES_CAP (500) to prevent unbounded growth
             scroll_y = ImGui::GetScrollY();
             float scroll_max_y = ImGui::GetScrollMaxY();
             if(scroll_max_y > 0 && scroll_y >= scroll_max_y * 0.9f) {
@@ -1115,7 +1120,24 @@ namespace LuaEngineDebugger {
                     uint32_t last_address = cached_lines_.back().address;
                     uint32_t next_address = last_address + cached_lines_.back().instruction_length;
                     auto more_lines = debug_interface_->disassembleRange(next_address, 64);
+
+                    // Recycle from top if adding would exceed cap
+                    size_t to_add = more_lines.size();
+                    if(cached_lines_.size() + to_add > CACHED_LINES_CAP) {
+                        size_t excess = (cached_lines_.size() + to_add) - CACHED_LINES_CAP;
+                        if(excess < cached_lines_.size()) {
+                            // Shift anchor forward
+                            anchor_address_ = cached_lines_[excess].address;
+                            cached_lines_.erase(cached_lines_.begin(),
+                                               cached_lines_.begin() + static_cast<ptrdiff_t>(excess));
+                        } else {
+                            cached_lines_.clear();
+                            anchor_address_ = next_address;
+                        }
+                    }
+
                     for(const auto& l : more_lines) {
+                        if(cached_lines_.size() >= CACHED_LINES_CAP) break;
                         DisassemblyLine dl{};
                         dl.address = l.address;
                         dl.opcodes = (l.bytes.size() > 64) ? l.bytes.substr(0, 64) : l.bytes;

@@ -26,6 +26,120 @@ namespace LuaEngineTraceLogger {
 class TraceLogger;
 using MemoryDomainManager = LuaEngineMemoryDomains::MemoryDomainManager;
 
+// PR4: Flow type classification from opcode byte (zero-alloc, no string parsing)
+enum class FlowType : uint8_t {
+    NONE = 0,
+    CALL,
+    JMP,
+    RET,
+    CONDITIONAL_BRANCH,
+    INTERRUPT
+};
+static_assert(sizeof(FlowType) == 1, "FlowType must be 1 byte");
+
+// Classify flow type from the first opcode byte
+FlowType flowTypeFromOpcode(uint8_t opcode);
+
+// PR4: Compact fixed-size trace record (~28-32 bytes, zero heap allocations)
+struct RawTraceEntry {
+    uint32_t address;           // 4  linear address
+    uint16_t cs;                // 2
+    uint16_t ip;                // 2
+    uint8_t  opcode_byte;       // 1  first byte of instruction
+    FlowType flow_type;         // 1  classified at capture
+    uint8_t  event_type;        // 1  TraceEventType as u8
+    uint8_t  _pad;              // 1  alignment
+    uint32_t snapshot_index;    // 4  index into snapshot ring
+    uint32_t timestamp_packed;  // 4  truncated relative ms
+    uint32_t frame;             // 4
+    uint32_t cycle;             // 4
+};
+static_assert(sizeof(RawTraceEntry) == 28 || sizeof(RawTraceEntry) == 32,
+    "RawTraceEntry must be 28 or 32 bytes");
+
+// OPTIMIZATION: Fixed register snapshot (cache-friendly, zero allocations)
+// Moved before DebuggerUiSnapshot to satisfy dependency
+struct FastRegisterSnapshot {
+    // Fixed memory layout (cache friendly)
+    uint32_t eax, ebx, ecx, edx;
+    uint32_t esi, edi, ebp, esp;
+    uint32_t eip;
+    uint16_t cs, ds, es, fs, gs, ss;
+    uint32_t eflags;
+
+    // Validity bitmask for lazy loading (optimization)
+    mutable uint32_t valid_mask;
+
+    FastRegisterSnapshot()
+        : eax(0), ebx(0), ecx(0), edx(0), esi(0), edi(0), ebp(0), esp(0),
+          eip(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0), eflags(0),
+          valid_mask(0xFFFFFFFF) {}  // All valid by default
+
+    // Convert to legacy map format (for compatibility)
+    std::map<std::string, uint32_t> toLegacyMap() const {
+        std::map<std::string, uint32_t> result;
+        result["EAX"] = eax; result["EBX"] = ebx; result["ECX"] = ecx; result["EDX"] = edx;
+        result["ESI"] = esi; result["EDI"] = edi; result["ESP"] = esp; result["EBP"] = ebp;
+        result["EIP"] = eip; result["EFLAGS"] = eflags;
+        result["CS"] = cs; result["DS"] = ds; result["ES"] = es;
+        result["FS"] = fs; result["GS"] = gs; result["SS"] = ss;
+        return result;
+    }
+};
+
+// PR4: Bounded power-of-2 ring buffer for RawTraceEntry
+class TraceRingBuffer {
+public:
+    explicit TraceRingBuffer(size_t capacity);  // rounds to power-of-2
+    void push(const RawTraceEntry& entry);
+    size_t getEntriesRange(size_t start, size_t count,
+                           RawTraceEntry* out) const;
+    size_t size() const;
+    size_t capacity() const { return buffer_.size(); }
+    uint64_t dropped_count() const { return dropped_count_.load(std::memory_order_relaxed); }
+    uint64_t sampled_count() const { return sampled_count_.load(std::memory_order_relaxed); }
+    void clear();
+private:
+    std::vector<RawTraceEntry> buffer_;
+    alignas(64) std::atomic<uint64_t> write_index_{0};
+    size_t mask_;
+    alignas(64) std::atomic<uint64_t> dropped_count_{0};
+    alignas(64) std::atomic<uint64_t> sampled_count_{0};
+    mutable std::mutex read_mutex_;  // ponytail: mutex-protected range read, upgrade to seqlock if contention measured
+};
+
+// PR4: Address-keyed LRU decode cache
+class DecodeCache {
+public:
+    explicit DecodeCache(size_t cap);
+    const std::string& getOrDecode(uint32_t address,
+                                    LuaEngineDebug::CoreDebugInterface* iface);
+    void clear();
+    size_t size() const { return cache_.size(); }
+private:
+    std::unordered_map<uint32_t, std::string> cache_;
+    std::vector<uint32_t> lru_order_;  // ponytail: vector-based LRU, upgrade to intrusive if throughput matters
+    size_t cap_;
+};
+
+// PR4: One register snapshot per stopped UI frame
+struct DebuggerUiSnapshot {
+    FastRegisterSnapshot registers;
+    uint32_t frame_number;
+};
+
+// PR4: Small ring buffer for snapshots (capacity 64)
+class SnapshotStore {
+public:
+    SnapshotStore() : buffer_(64), write_index_(0) {}
+    uint32_t push(const DebuggerUiSnapshot& snapshot);
+    const DebuggerUiSnapshot& get(uint32_t index) const;
+    void clear() { write_index_.store(0, std::memory_order_relaxed); }
+private:
+    std::vector<DebuggerUiSnapshot> buffer_;
+    std::atomic<uint32_t> write_index_;
+};
+
 // Enhanced trace event types
 enum class TraceEventType {
     INSTRUCTION,        // CPU instruction execution
@@ -62,34 +176,7 @@ struct MemoryAccess {
                     codepage(932), is_text_data(false) {}
 };
 
-// OPTIMIZATION: Fixed register snapshot (cache-friendly, zero allocations)
-struct FastRegisterSnapshot {
-    // Fixed memory layout (cache friendly)
-    uint32_t eax, ebx, ecx, edx;
-    uint32_t esi, edi, ebp, esp;
-    uint32_t eip;
-    uint16_t cs, ds, es, fs, gs, ss;
-    uint32_t eflags;
-
-    // Validity bitmask for lazy loading (optimization)
-    mutable uint32_t valid_mask;
-
-    FastRegisterSnapshot()
-        : eax(0), ebx(0), ecx(0), edx(0), esi(0), edi(0), ebp(0), esp(0),
-          eip(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0), eflags(0),
-          valid_mask(0xFFFFFFFF) {}  // All valid by default
-
-    // Convert to legacy map format (for compatibility)
-    std::map<std::string, uint32_t> toLegacyMap() const {
-        std::map<std::string, uint32_t> result;
-        result["EAX"] = eax; result["EBX"] = ebx; result["ECX"] = ecx; result["EDX"] = edx;
-        result["ESI"] = esi; result["EDI"] = edi; result["ESP"] = esp; result["EBP"] = ebp;
-        result["EIP"] = eip; result["EFLAGS"] = eflags;
-        result["CS"] = cs; result["DS"] = ds; result["ES"] = es;
-        result["FS"] = fs; result["GS"] = gs; result["SS"] = ss;
-        return result;
-    }
-};
+// FastRegisterSnapshot is defined earlier in this header (before DebuggerUiSnapshot)
 
 // Enhanced trace entry structure
 struct TraceEntry {
@@ -266,6 +353,13 @@ private:
     size_t max_entries_;
     std::atomic<bool> enabled_;
     std::atomic<bool> paused_;
+
+    // PR4: Ring buffer for fast hot-path writes
+    std::unique_ptr<TraceRingBuffer> ring_buf_;
+    std::unique_ptr<DecodeCache> decode_cache_;
+    std::unique_ptr<SnapshotStore> snapshot_store_;
+    uint32_t current_snapshot_index_;
+    std::chrono::steady_clock::time_point trace_start_time_;
     
     // Filtering and statistics
     TraceFilter filter_;
@@ -322,6 +416,10 @@ public:
     // Core functionality
     void addEntry(uint32_t address, uint16_t cs, uint16_t ip, const std::string& disassembly);
     void addEntry(const TraceEntry& entry);
+
+    // PR4: Zero-alloc hot path — writes RawTraceEntry to ring buffer
+    void addRawEntry(uint32_t address, uint16_t cs, uint16_t ip, uint8_t opcode_byte);
+
     void clear();
     void pause();
     void resume();
@@ -378,6 +476,16 @@ public:
     std::vector<TraceEntry> getEntries() const;
     const TraceEntry* getEntry(size_t index) const;
     std::vector<TraceEntry> getRecentEntries(size_t count) const;
+
+    // PR4: Range-based trace retrieval from ring buffer
+    std::vector<RawTraceEntry> getEntriesRange(size_t start, size_t count) const;
+    size_t getRingEntryCount() const;
+    uint64_t getDroppedCount() const;
+
+    // PR4: Decode cache access
+    DecodeCache* getDecodeCache() const { return decode_cache_.get(); }
+    SnapshotStore* getSnapshotStore() const { return snapshot_store_.get(); }
+    LuaEngineDebug::CoreDebugInterface* getDebugInterface() const { return debug_interface_; }
     
     // Enhanced statistics
     TraceStatistics getStatistics() const;
@@ -424,6 +532,9 @@ public:
     void onFrameStart();
     void onFrameEnd();
     void setCycleCount(uint32_t cycles) { current_cycle_ = cycles; }
+
+    // PR4: Advance snapshot boundary on UI frame tick
+    void onUiFrameTick();
     
     // File output control
     bool startFileOutput(const std::string& filename, const std::string& format = "txt");
