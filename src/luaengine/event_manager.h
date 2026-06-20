@@ -101,8 +101,8 @@ struct MemoryEventData {
     uint16_t segment;
     uint32_t offset;
     uint32_t physical_addr;
-    uint8_t value;
-    size_t size;
+    uint64_t data;          // was: uint8_t value — widened per PR1-003
+    uint8_t  access_size;   // was: size_t size — narrowed to uint8_t per PR1-003
     bool is_write;
 };
 
@@ -178,14 +178,16 @@ private:
 
     // PHASE 3 STEP 3 OPTIMIZATION: Deferred callback batching
     // Queue callbacks to execute at frame boundaries instead of immediately
-    struct DeferredCallback {
+    struct DeferredMemoryEvent {
         sol::protected_function func;
-        sol::table context;  // Context table (already populated)
-
-        DeferredCallback(sol::protected_function f, const sol::table& ctx)
-            : func(std::move(f)), context(ctx) {}
+        uint16_t segment;
+        uint32_t offset;
+        uint32_t physical_addr;
+        uint64_t data;
+        uint8_t  access_size;
+        bool     is_write;
     };
-    std::vector<DeferredCallback> deferred_callbacks;
+    std::vector<DeferredMemoryEvent> deferred_callbacks;
     mutable std::mutex deferred_mutex;  // Mutable to allow locking in const methods
     bool enable_deferred_execution;
 

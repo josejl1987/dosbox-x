@@ -32,6 +32,10 @@ namespace {
     constexpr uint32_t DEFAULT_BATCH_FLUSH_INTERVAL_MS = 16;      // Flush every 16ms (~60fps)
     constexpr size_t DEFAULT_MAX_BATCH_SIZE = 100;               // Max events per batch
     constexpr size_t DEFAULT_FILTER_BUCKET_RESERVE = 4;          // Most buckets will have few filters
+
+    // Single thread-local batch shared by fireMemoryEvent() and flushThreadLocalBatch()
+    // PR1-002: unified variable — was duplicated in both functions (defect 3a)
+    static thread_local std::vector<MemoryEventData> t_local_batch;
 }
 
 EventManager::EventManager()
@@ -242,49 +246,51 @@ void EventManager::fireFrameEvent(EventType type) {
         return;
     }
 
-    // Thread-safe double-checked locking pattern
     size_t type_index = toIndex(type);
 
-    // First check with shared lock (read-only access)
+    // Snapshot enabled callbacks under lock, then invoke without lock
+    // PR1-012 + PR1-014: copy shared_ptrs under lock, release, invoke (defect 14)
+    std::vector<std::shared_ptr<LuaCallback>> active_callbacks;
     {
         std::lock_guard<std::mutex> lock(callback_mutex);
         if (callbacks[type_index].empty()) {
-            return; // No callbacks for this event type
+            return;
         }
-    }
-
-    // Proceed with callback execution under lock
-    std::lock_guard<std::mutex> lock(callback_mutex);
-    
-    // Performance mode: minimal overhead using cached table
-    if (performance_mode && lua_state) {
-        // Reuse cached event table instead of creating new one
-        cached_event_table["type"] = static_cast<int>(type);
-        
-        // Fast callback execution without exception handling
-        for (const auto& callback : callbacks[type_index]) {
-            if (callback->enabled) {
-                callback->function(cached_event_table);
+        for (const auto& cb : callbacks[type_index]) {
+            if (cb->enabled) {
+                active_callbacks.push_back(cb);
             }
         }
-        
-        // Clear table for next use
+    }
+    // callback_mutex is now released — re-entrant fireFrameEvent will not deadlock
+
+    // Performance mode: minimal overhead using cached table
+    if (performance_mode && lua_state) {
+        cached_event_table["type"] = static_cast<int>(type);
+
+        for (const auto& callback : active_callbacks) {
+            // PR1-015: try/catch in performance mode (defect 15)
+            try {
+                callback->function(cached_event_table);
+            } catch (const std::exception& e) {
+                DEBUG_ShowMsg("LuaEngine: Error in perf frame event callback %s: %s",
+                             callback->name.c_str(), e.what());
+            }
+        }
+
         cached_event_table.clear();
     } else {
         // Standard mode: full error handling but still avoid EventContext allocation
-        for (const auto& callback : callbacks[type_index]) {
-            if (!callback->enabled) continue;
-            
+        for (const auto& callback : active_callbacks) {
             try {
                 if (lua_state) {
                     auto event_table = lua_state->create_table();
                     event_table["type"] = static_cast<int>(type);
-                    
-                    // Call the Lua function with the minimal event table
+
                     callback->function(event_table);
                 }
             } catch (const std::exception& e) {
-                DEBUG_ShowMsg("LuaEngine: Error in frame event callback %s: %s", 
+                DEBUG_ShowMsg("LuaEngine: Error in frame event callback %s: %s",
                              callback->name.c_str(), e.what());
             }
         }
@@ -295,9 +301,9 @@ void EventManager::fireMemoryEvent(const MemoryEventData& data) {
     // Log to trace logger if enabled
     if (trace_logger_ && trace_logger_->getLogMemoryAccess()) {
         if (data.is_write) {
-            trace_logger_->logMemoryWrite(data.physical_addr, data.value, data.size, "SYSTEM");
+            trace_logger_->logMemoryWrite(data.physical_addr, data.data, data.access_size, "SYSTEM");
         } else {
-            trace_logger_->logMemoryRead(data.physical_addr, data.value, data.size, "SYSTEM");
+            trace_logger_->logMemoryRead(data.physical_addr, data.data, data.access_size, "SYSTEM");
         }
     }
 
@@ -338,7 +344,6 @@ void EventManager::fireMemoryEvent(const MemoryEventData& data) {
 
         // OPTIMIZATION: Thread-local batching (lock-free fast path)
         // Accumulate events in thread-local storage, only lock when full
-        static thread_local std::vector<MemoryEventData> t_local_batch;
 
         // Reserve capacity on first use
         if (t_local_batch.capacity() == 0) {
@@ -351,7 +356,7 @@ void EventManager::fireMemoryEvent(const MemoryEventData& data) {
         // Flush only when the local batch is full
         if (t_local_batch.size() >= THREAD_LOCAL_BATCH_LIMIT) {
             // Now we need to lock and flush to main batch
-            std::lock_guard<std::mutex> batch_lock(memory_batch.batch_mutex);
+            std::unique_lock<std::mutex> batch_lock(memory_batch.batch_mutex);
 
             // Bulk move elements to main queue
             memory_batch.events.insert(
@@ -368,8 +373,9 @@ void EventManager::fireMemoryEvent(const MemoryEventData& data) {
                                 >= memory_batch.flush_interval_ms);
 
             if (should_flush) {
-                // Release lock before flushing (flushMemoryEventBatch will reacquire)
-                batch_lock.~lock_guard();
+                // Release lock before flushing (flushMemoryEventBatch will reacquire callback_mutex)
+                // PR1-001: unique_lock::unlock() instead of explicit destructor to avoid double-unlock UB
+                batch_lock.unlock();
                 flushMemoryEventBatch();
             }
         }
@@ -404,14 +410,23 @@ void EventManager::fireMemoryEvent(const MemoryEventData& data) {
                     event_table[EventTableKeys::SEGMENT] = data.segment;
                     event_table[EventTableKeys::OFFSET] = data.offset;
                     event_table[EventTableKeys::ADDRESS] = data.physical_addr;
-                    event_table[EventTableKeys::VALUE] = data.value;
-                    event_table[EventTableKeys::SIZE] = data.size;
+                    event_table[EventTableKeys::VALUE] = data.data;
+                    event_table[EventTableKeys::SIZE] = static_cast<size_t>(data.access_size);
 
                     // PHASE 3 STEP 3: Defer callback execution if enabled
                     if (enable_deferred_execution) {
                         // Queue for batch execution at frame boundary
+                        // PR1-007: store native struct instead of sol::table reference (defect 6)
                         std::lock_guard<std::mutex> deferred_lock(deferred_mutex);
-                        deferred_callbacks.emplace_back(filter->callback->function, event_table);
+                        deferred_callbacks.push_back({
+                            filter->callback->function,
+                            data.segment,
+                            data.offset,
+                            data.physical_addr,
+                            data.data,
+                            data.access_size,
+                            data.is_write
+                        });
                     } else {
                         // Immediate execution (legacy path)
                         filter->callback->function(event_table);
@@ -567,10 +582,7 @@ void EventManager::setMemoryThrottleThreshold(uint32_t threshold) {
 }
 
 void EventManager::flushThreadLocalBatch() {
-    // OPTIMIZATION: Flush thread-local batch to main batch
-    // This should be called at frame boundaries or other safe points
-    static thread_local std::vector<MemoryEventData> t_local_batch;
-
+    // FIX: Uses file-scope t_local_batch (PR1-002 — duplicate removed, defect 3a)
     if (t_local_batch.empty()) {
         return;
     }
@@ -628,8 +640,8 @@ void EventManager::flushMemoryEventBatch() {
             cached_event_table[EventTableKeys::SEGMENT] = data.segment;
             cached_event_table[EventTableKeys::OFFSET] = data.offset;
             cached_event_table[EventTableKeys::ADDRESS] = data.physical_addr;
-            cached_event_table[EventTableKeys::VALUE] = data.value;
-            cached_event_table[EventTableKeys::SIZE] = data.size;
+            cached_event_table[EventTableKeys::VALUE] = data.data;
+            cached_event_table[EventTableKeys::SIZE] = static_cast<size_t>(data.access_size);
             
             // Call without exception handling for maximum speed
             filter->callback->function(cached_event_table);
@@ -734,7 +746,7 @@ void EventManager::setDeferredCallbackMode(bool enabled) {
 
 void EventManager::executeDeferredCallbacks() {
     // Step 1: Extract all callbacks under lock
-    std::vector<DeferredCallback> callbacks_to_execute;
+    std::vector<DeferredMemoryEvent> callbacks_to_execute;
     {
         std::lock_guard<std::mutex> lock(deferred_mutex);
         if (deferred_callbacks.empty()) {
@@ -745,9 +757,19 @@ void EventManager::executeDeferredCallbacks() {
 
     // Step 2: Execute all callbacks without holding the deferred lock
     // This allows new callbacks to be queued while we're executing
+    // PR1-007: build fresh sol::table from native struct data (defect 6)
     for (auto& deferred : callbacks_to_execute) {
         try {
-            deferred.func(deferred.context);
+            if (lua_state) {
+                auto ctx = lua_state->create_table();
+                ctx[EventTableKeys::TYPE]   = deferred.is_write ? EventTableKeys::WRITE : EventTableKeys::READ;
+                ctx[EventTableKeys::SEGMENT] = deferred.segment;
+                ctx[EventTableKeys::OFFSET]  = deferred.offset;
+                ctx[EventTableKeys::ADDRESS] = deferred.physical_addr;
+                ctx[EventTableKeys::VALUE]   = deferred.data;
+                ctx[EventTableKeys::SIZE]    = static_cast<size_t>(deferred.access_size);
+                deferred.func(ctx);
+            }
         } catch (const std::exception& e) {
             DEBUG_ShowMsg("LuaEngine: Error in deferred callback: %s", e.what());
         }

@@ -1036,6 +1036,14 @@ if test x$enable_freetype = xyes; then
   fi
 fi
 
+dnl FEATURE: LUA engine
+AH_TEMPLATE(C_LUA,[Define to 1 to enable the Lua engine])
+AC_ARG_ENABLE(lua,AC_HELP_STRING([--disable-lua],[Disable the Lua engine]),enable_lua=$enableval,enable_lua=yes)
+AM_CONDITIONAL(C_LUA, test "x$enable_lua" = "xyes")
+if test x$enable_lua = xyes; then
+    AC_DEFINE(C_LUA,1)
+fi
+
 dnl FEATURE: xBRZ
 AH_TEMPLATE(C_XBRZ,[Define to 1 to enable XBRZ scaler])
 AC_ARG_ENABLE(xbrz,AC_HELP_STRING([--enable-xbrz],[compile with xBRZ scaler (default yes)]),enable_xbrz=$enableval,enable_xbrz=yes)

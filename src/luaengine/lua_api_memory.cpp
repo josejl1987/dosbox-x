@@ -156,8 +156,8 @@ void LuaEngine::registerMemoryAPI() {
                 mem_event.segment = seg;
                 mem_event.offset = offset;
                 mem_event.physical_addr = phys;
-                mem_event.value = value;
-                mem_event.size = 1;
+                mem_event.data = value;
+                mem_event.access_size = 1;
                 mem_event.is_write = false;
                 event_manager->fireMemoryEvent(mem_event);
             }
@@ -176,8 +176,8 @@ void LuaEngine::registerMemoryAPI() {
                 mem_event.segment = seg;
                 mem_event.offset = offset;
                 mem_event.physical_addr = phys;
-                mem_event.value = value;
-                mem_event.size = 1;
+                mem_event.data = value;
+                mem_event.access_size = 1;
                 mem_event.is_write = true;
                 event_manager->fireMemoryEvent(mem_event);
             }
@@ -197,8 +197,8 @@ void LuaEngine::registerMemoryAPI() {
                 mem_event.segment = seg;
                 mem_event.offset = offset;
                 mem_event.physical_addr = phys;
-                mem_event.value = value;
-                mem_event.size = 2;
+                mem_event.data = value;
+                mem_event.access_size = 2;
                 mem_event.is_write = false;
                 event_manager->fireMemoryEvent(mem_event);
             }
@@ -216,8 +216,8 @@ void LuaEngine::registerMemoryAPI() {
                 mem_event.segment = seg;
                 mem_event.offset = offset;
                 mem_event.physical_addr = phys;
-                mem_event.value = value;
-                mem_event.size = 2;
+                mem_event.data = value;
+                mem_event.access_size = 2;
                 mem_event.is_write = true;
                 event_manager->fireMemoryEvent(mem_event);
             }

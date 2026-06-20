@@ -1313,6 +1313,7 @@ void WindowManager::renderAllWindows() {
     }
 }
 
+// DEAD CODE: no callers outside definition — remove or wire in a future PR
 void WindowManager::updateAllWindows() {
     if (!initialized_.load()) return;
     

@@ -190,8 +190,8 @@ bool WriteBytes(uint16_t seg, uint32_t ofs, const std::vector<uint8_t>& data) {
                     mem_event.segment = seg;
                     mem_event.offset = ofs + i;
                     mem_event.physical_addr = phys;
-                    mem_event.value = data[i];
-                    mem_event.size = 1;
+                    mem_event.data = data[i];
+                    mem_event.access_size = 1;
                     mem_event.is_write = true;
                     luaEngine.event_manager->fireMemoryEvent(mem_event);
                 }
@@ -257,8 +257,8 @@ std::vector<uint8_t> GetBytes(uint16_t seg, uint32_t ofs, size_t size) {
                         mem_event.segment = seg;
                         mem_event.offset = ofs + i;
                         mem_event.physical_addr = phys;
-                        mem_event.value = value;
-                        mem_event.size = 1;
+                        mem_event.data = value;
+                        mem_event.access_size = 1;
                         mem_event.is_write = false;
                         luaEngine.event_manager->fireMemoryEvent(mem_event);
                     }
@@ -847,13 +847,10 @@ void LuaEngine::LUAENGINE_Init(Section* section) {
     // The singleton function will create the manager if it doesn't exist
     LuaEngineSymbols::GetSymbolicBreakpointManager()->loadFromFile("symbolic_breakpoints.dat");
 
-    // Initialize event system with trace logger if available
+    // Initialize event system (create first; initialize after WindowManager for TraceLogger)
+    // PR1-006 + PR1-008: defer trace_logger retrieval + initialize() until after window_manager
+    // is created (defect 8)
     event_manager = std::make_unique<LuaEngineEvents::EventManager>();
-    LuaEngineTraceLogger::TraceLogger* trace_logger = nullptr;
-    if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
-        trace_logger = window_manager->getTraceLogger();
-    }
-    event_manager->initialize(&lua, trace_logger);
 
     // Enable performance mode by default to minimize overhead
     event_manager->setPerformanceMode(true);
@@ -885,6 +882,16 @@ void LuaEngine::LUAENGINE_Init(Section* section) {
     // GUI overlay manager removed - system disabled
     window_manager = std::make_unique<LuaEngineGUIWindows::WindowManager>();
     LuaEngineGUIWindows::g_window_manager = window_manager.get();
+
+    // Now retrieve TraceLogger from the constructed WindowManager and finalize event manager init
+    // PR1-006 + PR1-008: moved here so trace_logger_ is non-null when TraceLogger is active
+    {
+        LuaEngineTraceLogger::TraceLogger* trace_logger = nullptr;
+        if (auto* wm = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+            trace_logger = wm->getTraceLogger();
+        }
+        event_manager->initialize(&lua, trace_logger);
+    }
 
     // Initialize save state manager
     save_state_manager = std::make_unique<SaveStateManager::Manager>();

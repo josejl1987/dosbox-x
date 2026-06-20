@@ -383,12 +383,15 @@
         }
 
         void TraceLogger::clear() {
-            trace_log_.clear();
+            {
+                std::lock_guard<std::mutex> lock(trace_mutex_);
+                trace_log_.clear();
+                stats_.reset();
+            }
             {
                 std::lock_guard<std::recursive_mutex> lock(call_stack_mutex_);
                 call_stack_.clear();  // Clear call stack when clearing trace log
             }
-            stats_.reset();
 
             if(onTraceCleared) {
                 onTraceCleared();
@@ -1238,6 +1241,9 @@
             {
                 std::lock_guard<std::mutex> lock(trace_mutex_);
                 trace_log_.push_back(entry);
+
+                // PR1-011: increment rate-limit counter under trace_mutex_ (defect 12)
+                ++events_this_second_;
 
                 // Update statistics
                 stats_.updateEventStats(entry);
