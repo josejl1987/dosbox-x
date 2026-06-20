@@ -64,6 +64,13 @@ bool DebuggerSession::initialize() {
             if (debug_interface_) debug_interface_->stepOut();
         });
 
+        // Register Ctrl+Shift window toggle shortcuts as hotkeys
+        config_manager_->addHotkey("toggle_memory_search", "Toggle RAM Search", 'S', true, false, true);
+        config_manager_->addHotkey("toggle_watch_list", "Toggle Watch List", 'W', true, false, true);
+        config_manager_->addHotkey("toggle_hex_editor", "Toggle Hex Editor", 'H', true, false, true);
+        config_manager_->addHotkey("toggle_trace_logger", "Toggle Trace Logger", 'T', true, false, true);
+        config_manager_->addHotkey("toggle_disassembly", "Toggle Disassembly", 'D', true, false, true);
+
         // Debug logger
         debug_logger_ = std::make_unique<LuaEngineDebugLogger::DebugLogger>();
 

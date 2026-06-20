@@ -99,9 +99,9 @@ void DebugConfigManager::setupDefaultConfig() {
     addHotkey("cheat_engine", "Cheat Engine", '4', true, false, false);
     addHotkey("trace_logger", "Trace Logger", '5', true, false, false);
     addHotkey("disassembly", "Disassembly", '6', true, false, false);
-    addHotkey("step_into", "Step Into", ImGuiKey_F7, false, false, false);
-    addHotkey("step_over", "Step Over", ImGuiKey_F8, false, false, false);
-    addHotkey("step_out", "Step Out", ImGuiKey_F9, false, false, false);
+    addHotkey("step_into", "Step Into", ImGuiKey_F11, false, false, false);
+    addHotkey("step_over", "Step Over", ImGuiKey_F10, false, false, false);
+    addHotkey("step_out", "Step Out", ImGuiKey_F12, false, false, false);
     addHotkey("run_pause", "Run/Pause", ImGuiKey_F5, false, false, false);
 }
 
@@ -240,6 +240,9 @@ void DebugConfigManager::setConfigChangedCallback(const std::string& key, std::f
 
 void DebugConfigManager::processHotkeys() {
     ImGuiIO& io = ImGui::GetIO();
+    
+    // Skip hotkey processing when ImGui wants keyboard input (e.g., text fields)
+    if (io.WantCaptureKeyboard) return;
     
     for (auto& [name, hotkey] : hotkeys_) {
         if (hotkey.callback) {

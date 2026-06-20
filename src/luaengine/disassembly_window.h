@@ -41,6 +41,9 @@ struct DisassemblyLine {
 
 class DisassemblyWindow : public LuaEngineDebug::CoreDebuggerListener {
 public:
+    // Address-space display mode
+    enum class AddressSpaceMode { Logical, Linear, Physical };
+
     DisassemblyWindow();
     ~DisassemblyWindow();
 
@@ -63,6 +66,18 @@ public:
     int getActiveTab() const { return active_tab_; }
     void setCurrentAddress(uint32_t address) { current_address_ = address; }
 
+    // Address-space mode accessors
+    AddressSpaceMode getAddressSpaceMode() const { return address_space_mode_; }
+    void setAddressSpaceMode(AddressSpaceMode mode) { address_space_mode_ = mode; }
+
+    // Navigation history accessors (for persistence)
+    const std::vector<uint32_t>& getNavBackStack() const { return nav_back_stack_; }
+    const std::vector<uint32_t>& getNavForwardStack() const { return nav_forward_stack_; }
+    void setNavStacks(const std::vector<uint32_t>& back, const std::vector<uint32_t>& forward) {
+        nav_back_stack_ = back;
+        nav_forward_stack_ = forward;
+    }
+
 private:
     // Core Components
     LuaEngineDebug::CoreDebugInterface* debug_interface_{nullptr};
@@ -82,6 +97,9 @@ private:
     bool show_memrefs_{true};  // Toggle for memory reference column
     bool show_callstack_{true};
 
+    // Address-space mode
+    AddressSpaceMode address_space_mode_{AddressSpaceMode::Logical};
+
     // PR4: Bounded cached lines
     static constexpr size_t CACHED_LINES_CAP = 500;
     uint32_t anchor_address_{0};  // First visible address for virtual window
@@ -100,8 +118,25 @@ private:
     static bool follow_execution_;  // Whether to auto-follow EIP
     static bool user_navigated_;    // Whether user manually navigated away from EIP
 
+    // Navigation history (back/forward)
+    std::vector<uint32_t> nav_back_stack_;
+    std::vector<uint32_t> nav_forward_stack_;
+    static constexpr size_t NAV_HISTORY_CAP = 256;
+    void pushNavHistory(uint32_t addr);
+    void navigateBack();
+    void navigateForward();
+
     // Symbol management popup
     bool show_symbol_dialog_{false};
+
+    // Go-to expression
+    char goto_input_[64] = {};
+    bool goto_error_{false};
+    float goto_error_timer_{0.0f};
+
+    // Run-to-cursor
+    uint32_t run_to_cursor_addr_{0};
+    bool run_to_cursor_active_{false};
 
     // Dump memory dialog state
     bool show_dump_dialog_{false};
@@ -119,7 +154,7 @@ private:
     uint32_t trace_end_addr_{0};
 
     // Rendering Helpers - Unified Layout
-    void renderToolbar();
+    void renderTraceRangeControls();
     void renderNavigationControls();
     void renderCompactRegisters();
     void renderMemoryHexDump();
@@ -149,6 +184,7 @@ private:
     void handleHoverInspection(const DisassemblyLine& line);
     void refreshCachedLines();
     bool toggleSymbolicBreakpoint(uint32_t address);
+    uint32_t resolveAddressExpression(const std::string& expr);
 
     // CoreDebuggerListener hooks
     void onPaused(LuaEngineDebug::BreakReason reason, uint32_t address) override;

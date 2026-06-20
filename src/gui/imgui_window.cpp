@@ -61,6 +61,9 @@ bool InitImGui(SDL_Window * window) {
     // Enable Keyboard/Gamepad
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
+    // Enable Docking for debugger workspace
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
     // Setup Platform/Renderer backends
     bool use_dx11_backend = false;
 
@@ -115,71 +118,80 @@ void CleanupImGui() {
 
 void ProcessImGuiEvents(SDL_Event& event) {
 #if C_DEBUG
-    // Handle debug tools keyboard shortcuts
+    // Handle debug tools keyboard shortcuts via HotkeyConfig
     if (event.type == SDL_KEYDOWN) {
         auto* session = ::GetDebuggerSession();
         if (session && session->isInitialized()) {
-            // Check for Ctrl+Shift combinations
-            if ((event.key.keysym.mod & KMOD_CTRL) && (event.key.keysym.mod & KMOD_SHIFT)) {
-                switch (event.key.keysym.sym) {
-                    case SDLK_s:
+            // Skip hotkey processing when ImGui wants keyboard input (e.g., text fields)
+            ImGuiIO& io = ImGui::GetIO();
+            if (!io.WantCaptureKeyboard) {
+                // Register Ctrl+Shift shortcuts as one-shot dispatches
+                if ((event.key.keysym.mod & KMOD_CTRL) && (event.key.keysym.mod & KMOD_SHIFT)) {
+                    auto* config = session->config();
+                    if (config) {
+                        switch (event.key.keysym.sym) {
+                            case SDLK_s:
 #if C_LUA
-                        if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
-                            if (window_manager->isMemorySearchVisible()) {
-                                window_manager->hideMemorySearch();
-                            } else {
-                                window_manager->showMemorySearch();
-                            }
-                        }
+                                if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                                    if (window_manager->isMemorySearchVisible()) {
+                                        window_manager->hideMemorySearch();
+                                    } else {
+                                        window_manager->showMemorySearch();
+                                    }
+                                }
 #endif
-                        return; // Don't pass to ImGui
-                    case SDLK_w:
+                                return;
+                            case SDLK_w:
 #if C_LUA
-                        if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
-                            if (window_manager->isWatchListVisible()) {
-                                window_manager->hideWatchList();
-                            } else {
-                                window_manager->showWatchList();
-                            }
-                        }
+                                if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                                    if (window_manager->isWatchListVisible()) {
+                                        window_manager->hideWatchList();
+                                    } else {
+                                        window_manager->showWatchList();
+                                    }
+                                }
 #endif
-                        return; // Don't pass to ImGui
-                    case SDLK_h:
+                                return;
+                            case SDLK_h:
 #if C_LUA
-                        if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
-                            if (window_manager->isHexEditorVisible()) {
-                                window_manager->hideHexEditor();
-                            } else {
-                                window_manager->showHexEditor();
-                            }
-                        }
+                                if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                                    if (window_manager->isHexEditorVisible()) {
+                                        window_manager->hideHexEditor();
+                                    } else {
+                                        window_manager->showHexEditor();
+                                    }
+                                }
 #endif
-                        return; // Don't pass to ImGui
-                    case SDLK_t:
+                                return;
+                            case SDLK_t:
 #if C_LUA
-                        if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
-                            if (window_manager->isTraceLoggerVisible()) {
-                                window_manager->hideTraceLogger();
-                            } else {
-                                window_manager->showTraceLogger();
-                            }
-                        }
+                                if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                                    if (window_manager->isTraceLoggerVisible()) {
+                                        window_manager->hideTraceLogger();
+                                    } else {
+                                        window_manager->showTraceLogger();
+                                    }
+                                }
 #endif
-                        return; // Don't pass to ImGui
-                    case SDLK_d:
+                                return;
+                            case SDLK_d:
 #if C_LUA
-                        if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
-                            if (window_manager->isDisassemblyVisible()) {
-                                window_manager->hideDisassembly();
-                            } else {
-                                window_manager->showDisassembly();
-                            }
-                        }
-                        return; // Don't pass to ImGui
+                                if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                                    if (window_manager->isDisassemblyVisible()) {
+                                        window_manager->hideDisassembly();
+                                    } else {
+                                        window_manager->showDisassembly();
+                                    }
+                                }
+                                return;
 #else
-                        break;
+                                break;
 #endif
+                        }
+                    }
                 }
+                // F-key hotkeys are dispatched by DebugConfigManager::processHotkeys()
+                // which runs in the render loop via DebuggerSession::update()
             }
         }
     }

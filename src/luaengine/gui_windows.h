@@ -18,7 +18,7 @@
 #include "cheat_window.h"
 
 // Forward declaration for debugger UI
-namespace LuaEngineDebugger { class DisassemblyWindow; }
+namespace LuaEngineDebugger { class DisassemblyWindow; class ExecutionToolbar; }
 
 // Forward declaration for debugger session
 namespace LuaEngineDebugTools { class DebuggerSession; }
@@ -318,6 +318,7 @@ private:
     std::unique_ptr<WatchListWindow> watch_list_;
     std::unique_ptr<MemorySearchWindow> memory_search_;
     std::unique_ptr<LuaEngineDebugger::DisassemblyWindow> disassembly_window_;
+    std::unique_ptr<LuaEngineDebugger::ExecutionToolbar> execution_toolbar_;
     // TraceLogger is now owned by DebuggerSession — not here
     std::unique_ptr<LuaEngineTraceLogger::TraceLoggerWindow> trace_logger_window_;
     std::unique_ptr<LuaEngineCheatEngine::CheatWindow> cheat_window_;
@@ -381,6 +382,7 @@ public:
     // Window state management
     void saveWindowStates(const std::string& filename);
     void loadWindowStates(const std::string& filename);
+    bool window_states_loaded_{false};
     
     // Event handling
     void onSDLEvent(const SDL_Event& event);

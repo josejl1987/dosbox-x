@@ -21,6 +21,7 @@ libluaengine_a_SOURCES = LuaEngine.cpp luaengine.h event_manager.cpp event_manag
 	lua_api_breakpoint.cpp \
 	autocomplete.cpp autocomplete.h \
 	disassembly_window.cpp disassembly_window.h \
+	execution_toolbar.cpp execution_toolbar.h \
 	memory_reference_analyzer.cpp memory_reference_analyzer.h \
 	ram_search_engine.cpp ram_search_engine.h \
 	ram_search_window.cpp ram_search_window.h \

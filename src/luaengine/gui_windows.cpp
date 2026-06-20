@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "disassembly_window.h"
+#include "execution_toolbar.h"
 #include "core_debug_interface.h"
 #include "luaengine.h" // Access LuaEngine for console messages/commands
 #include "symbol_manager.h"
@@ -18,6 +19,7 @@
 #include "lua_memory_domains.h"
 #include "../gui/imgui_window.h"
 #include <imgui/imgui.h>
+#include <imgui/imgui_internal.h> // DockBuilder API
 
 
 // DOSBox-X includes
@@ -939,44 +941,73 @@ DockingManager::DockingManager() : docking_enabled_(true), dockspace_visible_(tr
 
 void DockingManager::renderDockspace() {
     if (!dockspace_visible_ || !docking_enabled_) return;
-    
+
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->Pos);
     ImGui::SetNextWindowSize(viewport->Size);
-    
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar ;
+
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar;
     window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
     window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-    
+
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    
+
     ImGui::Begin("DockSpace", &dockspace_visible_, window_flags);
     ImGui::PopStyleVar(3);
-    
-    // DockSpace functionality not available in this ImGui version
-    // Simplified to just create a main window container
-    ImGui::Text("Tool Windows Container");
-    ImGui::Text("(Docking not available in this ImGui version)");
-    
+
+    ImGuiID dockspace_id = ImGui::GetID("DebugDockSpace");
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+
+    // Create default layout on first launch (no .ini file)
+    static bool layout_created = false;
+    if (!layout_created) {
+        createDockLayout();
+        layout_created = true;
+    }
+
     ImGui::End();
 }
 
 void DockingManager::dockWindow(const std::string& window_id, const std::string& dock_name) {
-    // Implementation would require storing dock relationships
+    auto it = dock_nodes_.find(dock_name);
+    if (it != dock_nodes_.end()) {
+        ImGui::DockBuilderDockWindow(window_id.c_str(), it->second);
+    }
 }
 
 void DockingManager::createDockLayout() {
-    // Create default dock layout
+    ImGuiID dockspace_id = ImGui::GetID("DebugDockSpace");
+    ImGui::DockBuilderRemoveNode(dockspace_id);
+    ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetMainViewport()->Size);
+
+    // Split: left (Registers) | center-right
+    ImGuiID id_left, id_right;
+    ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.2f, &id_left, &id_right);
+
+    // Split right: center (Disassembly) | right-bottom (WatchList/CallStack)
+    ImGuiID id_center, id_bottom_right;
+    ImGui::DockBuilderSplitNode(id_right, ImGuiDir_Down, 0.3f, &id_bottom_right, &id_center);
+
+    // Dock windows to nodes
+    ImGui::DockBuilderDockWindow("Disassembly", id_center);
+    ImGui::DockBuilderDockWindow("Watch List", id_bottom_right);
+
+    dock_nodes_["left"] = id_left;
+    dock_nodes_["center"] = id_center;
+    dock_nodes_["right_bottom"] = id_bottom_right;
+
+    ImGui::DockBuilderFinish(dockspace_id);
 }
 
 void DockingManager::saveDockLayout(const std::string& filename) {
-    // Save docking layout to file
+    // ImGui .ini handles dock layout automatically
 }
 
 void DockingManager::loadDockLayout(const std::string& filename) {
-    // Load docking layout from file
+    // ImGui .ini handles dock layout automatically
 }
 
 // WindowManager implementation
@@ -1004,6 +1035,10 @@ bool WindowManager::initialize(sol::state* lua_state, LuaEngineDebugTools::Debug
         std::cout << "[WindowSystem] ImGui already initialized, reusing context" << std::endl;
     }
 
+    // Set ImGui .ini path for automatic dock layout persistence
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = "debugger_layout.ini";
+
     lua_state_ = lua_state;
     session_ = session;
 
@@ -1012,6 +1047,9 @@ bool WindowManager::initialize(sol::state* lua_state, LuaEngineDebugTools::Debug
 
     // Register Lua API
     registerLuaAPI();
+
+    // Load custom window states (address-space mode, nav history, etc.)
+    loadWindowStates("debugger_state.json");
 
     initialized_ = true;
     std::cout << "[WindowSystem] Window manager initialized" << std::endl;
@@ -1022,12 +1060,16 @@ bool WindowManager::initialize(sol::state* lua_state, LuaEngineDebugTools::Debug
 void WindowManager::shutdown() {
     if (!initialized_.load()) return;
 
+    // Save custom window states before destroying windows
+    saveWindowStates("debugger_state.json");
+
     std::lock_guard<std::mutex> lock(windows_mutex_);
     windows_.clear();
     hex_editor_.reset();
     watch_list_.reset();
     memory_search_.reset();
     disassembly_window_.reset();
+    execution_toolbar_.reset();
     trace_logger_window_.reset();
     // trace_logger_ is no longer owned here — it's in DebuggerSession
     cheat_window_.reset();
@@ -1200,6 +1242,12 @@ void WindowManager::ensureDisassemblyWindow() {
                                     getTraceLogger(),
                                     trace_logger_window_.get(),
                                     LuaEngineSymbols::g_symbol_manager);
+
+    // Apply saved window states to the newly created disassembly window
+    if (!window_states_loaded_) {
+        loadWindowStates("debugger_state.json");
+        window_states_loaded_ = true;
+    }
 }
 
 void WindowManager::ensureTraceLoggerWindow() {
@@ -1233,6 +1281,11 @@ void WindowManager::renderAllWindows() {
 
     // Render dockspace
     docking_manager_.renderDockspace();
+    
+    // Render execution toolbar inside dockspace (before windows)
+    if (execution_toolbar_) {
+        execution_toolbar_->render();
+    }
     
     // Render built-in windows
     if (hex_editor_ && hex_editor_->isVisible()) {
@@ -1325,11 +1378,99 @@ void WindowManager::showDockspace(bool show) {
 }
 
 void WindowManager::saveWindowStates(const std::string& filename) {
-    // Implementation for saving window states
+    try {
+        std::ofstream file(filename);
+        if (!file.is_open()) return;
+
+        file << "{\n";
+
+        // Address-space mode from DisassemblyWindow
+        if (disassembly_window_) {
+            int mode = static_cast<int>(disassembly_window_->getAddressSpaceMode());
+            file << "  \"address_space_mode\": " << mode << ",\n";
+
+            // Nav history back stack
+            const auto& back = disassembly_window_->getNavBackStack();
+            file << "  \"nav_back_stack\": [";
+            for (size_t i = 0; i < back.size(); ++i) {
+                if (i > 0) file << ", ";
+                file << back[i];
+            }
+            file << "],\n";
+
+            // Nav history forward stack
+            const auto& forward = disassembly_window_->getNavForwardStack();
+            file << "  \"nav_forward_stack\": [";
+            for (size_t i = 0; i < forward.size(); ++i) {
+                if (i > 0) file << ", ";
+                file << forward[i];
+            }
+            file << "]\n";
+        } else {
+            file << "  \"address_space_mode\": 0\n";
+        }
+
+        file << "}\n";
+    } catch (...) {
+        // Guard file I/O — corrupted state is better than a crash
+    }
 }
 
 void WindowManager::loadWindowStates(const std::string& filename) {
-    // Implementation for loading window states
+    try {
+        std::ifstream file(filename);
+        if (!file.is_open()) return;
+
+        std::string content((std::istreambuf_iterator<char>(file)),
+                             std::istreambuf_iterator<char>());
+
+        // Simple manual JSON parsing — no nlohmann dependency
+        // ponytail: manual string parsing, add nlohmann if complexity grows
+        auto extract_int = [](const std::string& json, const std::string& key) -> int {
+            std::string search = "\"" + key + "\":";
+            size_t pos = json.find(search);
+            if (pos == std::string::npos) return 0;
+            pos += search.size();
+            while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+            return std::stoi(json.substr(pos));
+        };
+
+        auto extract_array = [](const std::string& json, const std::string& key) -> std::vector<uint32_t> {
+            std::vector<uint32_t> result;
+            std::string search = "\"" + key + "\": [";
+            size_t pos = json.find(search);
+            if (pos == std::string::npos) return result;
+            pos += search.size();
+            size_t end = json.find(']', pos);
+            if (end == std::string::npos) return result;
+            std::string arr = json.substr(pos, end - pos);
+            std::istringstream iss(arr);
+            std::string token;
+            while (std::getline(iss, token, ',')) {
+                // Trim whitespace
+                size_t start = token.find_first_not_of(" \t\n\r");
+                if (start != std::string::npos) {
+                    try { result.push_back(static_cast<uint32_t>(std::stoul(token.substr(start)))); }
+                    catch (...) {}
+                }
+            }
+            return result;
+        };
+
+        // Apply loaded state to DisassemblyWindow
+        if (disassembly_window_) {
+            int mode = extract_int(content, "address_space_mode");
+            disassembly_window_->setAddressSpaceMode(
+                static_cast<LuaEngineDebugger::DisassemblyWindow::AddressSpaceMode>(mode));
+
+            auto back_stack = extract_array(content, "nav_back_stack");
+            auto forward_stack = extract_array(content, "nav_forward_stack");
+            disassembly_window_->setNavStacks(back_stack, forward_stack);
+        }
+
+    } catch (...) {
+        // Missing or corrupted file → defaults (no crash)
+    }
 }
 
 
@@ -1521,7 +1662,11 @@ void WindowManager::registerLuaAPI() {
 }
 
 void WindowManager::setupBuiltinWindows() {
-    // Built-in windows are created on demand
+    // Create execution toolbar (needs debug interface from session)
+    if (session_ && session_->debugger()) {
+        execution_toolbar_ = std::make_unique<LuaEngineDebugger::ExecutionToolbar>(
+            session_->debugger());
+    }
 }
 
 // Utility functions

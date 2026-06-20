@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <sstream>
 #include <fstream>
@@ -180,7 +181,47 @@ namespace LuaEngineDebugger {
         }
     }
 
-    void DisassemblyWindow::onPaused(LuaEngineDebug::BreakReason, uint32_t address) {
+    void DisassemblyWindow::pushNavHistory(uint32_t addr) {
+        if(!nav_back_stack_.empty() && nav_back_stack_.back() == addr) return;
+        nav_back_stack_.push_back(addr);
+        if(nav_back_stack_.size() > NAV_HISTORY_CAP) {
+            nav_back_stack_.erase(nav_back_stack_.begin());
+        }
+        nav_forward_stack_.clear();
+    }
+
+    void DisassemblyWindow::navigateBack() {
+        if(nav_back_stack_.empty()) return;
+        nav_forward_stack_.push_back(current_address_);
+        if(nav_forward_stack_.size() > NAV_HISTORY_CAP) {
+            nav_forward_stack_.erase(nav_forward_stack_.begin());
+        }
+        current_address_ = nav_back_stack_.back();
+        nav_back_stack_.pop_back();
+        user_navigated_ = true;
+        refreshCachedLines();
+    }
+
+    void DisassemblyWindow::navigateForward() {
+        if(nav_forward_stack_.empty()) return;
+        nav_back_stack_.push_back(current_address_);
+        if(nav_back_stack_.size() > NAV_HISTORY_CAP) {
+            nav_back_stack_.erase(nav_back_stack_.begin());
+        }
+        current_address_ = nav_forward_stack_.back();
+        nav_forward_stack_.pop_back();
+        user_navigated_ = true;
+        refreshCachedLines();
+    }
+
+    void DisassemblyWindow::onPaused(LuaEngineDebug::BreakReason reason, uint32_t address) {
+        // Auto-remove run-to-cursor temp breakpoint when hit
+        if(run_to_cursor_active_ && address == run_to_cursor_addr_) {
+            run_to_cursor_active_ = false;
+            if(debug_interface_) {
+                debug_interface_->removeBreakpoint(run_to_cursor_addr_);
+            }
+        }
         updateCurrentAddress(address);
     }
 
@@ -318,7 +359,7 @@ namespace LuaEngineDebugger {
                 ImGui::EndMenuBar();
             }
 
-            renderToolbar();
+            renderTraceRangeControls();
 
             // ===== UNIFIED 3-PANEL LAYOUT =====
 
@@ -349,44 +390,13 @@ namespace LuaEngineDebugger {
         }
     }
 
-    void DisassemblyWindow::renderToolbar() {
+    void DisassemblyWindow::renderTraceRangeControls() {
         if(!debug_interface_) return;
 
-        bool paused = debug_interface_->isPaused();
-
-        ImGui::PushID("Toolbar");
+        ImGui::PushID("TraceRange");
         ImGui::AlignTextToFramePadding();
-        ImVec4 status_color = paused ? ImVec4(1.0f, 0.5f, 0.0f, 1.0f) : ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
-        ImGui::TextColored(status_color, paused ? "[PAUSED]" : "[RUNNING]");
-        ImGui::SameLine();
-        ImGui::TextUnformatted("|");
-        ImGui::SameLine();
 
-        if(ImGui::Button("Resume (F5)"))   debug_interface_->resume();
-        ImGui::SameLine();
-        if(ImGui::Button("Step Into (F11)")) debug_interface_->stepInto();
-        ImGui::SameLine();
-        if(ImGui::Button("Step Over (F10)")) debug_interface_->stepOver();
-        ImGui::SameLine();
-        if(ImGui::Button("Pause"))         debug_interface_->pause();
-        ImGui::SameLine();
-
-        // Run until return button
-        auto ret_addr = getCurrentReturnAddress();
-        bool can_run_until_ret = ret_addr.has_value();
-        if(!can_run_until_ret) ImGui::BeginDisabled();
-        if(ImGui::Button("Run Until Return")) {
-            if(ret_addr && debug_interface_) {
-                debug_interface_->runToCursor(*ret_addr);
-            }
-        }
-        if(ImGui::IsItemHovered() && can_run_until_ret) {
-            ImGui::SetTooltip("Run until current function returns (to 0x%08X)", *ret_addr);
-        }
-        if(!can_run_until_ret) ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::TextUnformatted("|");
-        ImGui::SameLine();
+        // MemRef toggle
         ImGui::Checkbox("MemRef", &show_memrefs_);
         if(ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Show memory reference column");
@@ -920,6 +930,7 @@ namespace LuaEngineDebugger {
         std::snprintf(table_id, sizeof(table_id), "DisasmTable##code_%p", this);
         int num_columns = show_memrefs_ ? 5 : 4;
         if(ImGui::BeginTable(table_id, num_columns, ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+        if(ImGui::BeginTable(table_id, num_columns, ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {        if(ImGui::BeginTable(table_id, num_columns, ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
             ImGui::TableSetupColumn("Addr", ImGuiTableColumnFlags_WidthFixed, 80.0f);
             ImGui::TableSetupColumn("Bytes", ImGuiTableColumnFlags_WidthFixed, 120.0f);
             ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 160.0f);
@@ -972,12 +983,18 @@ namespace LuaEngineDebugger {
                         ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, IM_COL32(120, 40, 40, 200));
                     }
 
-                    // Display as CS:Offset
+                    // Display address based on address-space mode
                     char addr_buf[32] = {};
-                    format_hex4(addr_buf, cs);
-                    addr_buf[4] = ':';
-                    format_hex4(addr_buf + 5, static_cast<uint16_t>((line.address - seg_base) & 0xFFFF));
-                    addr_buf[9] = '\0';
+                    if(address_space_mode_ == AddressSpaceMode::Logical) {
+                        // Logical: CS:Offset format
+                        format_hex4(addr_buf, cs);
+                        addr_buf[4] = ':';
+                        format_hex4(addr_buf + 5, static_cast<uint16_t>((line.address - seg_base) & 0xFFFF));
+                        addr_buf[9] = '\0';
+                    } else {
+                        // Linear or Physical (Physical = Linear when paging off)
+                        std::snprintf(addr_buf, sizeof(addr_buf), "%08X", line.address);
+                    }
 
                     if(ImGui::Selectable(addr_buf, selected_address_ == line.address, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap)) {
                         selected_address_ = line.address;
@@ -996,7 +1013,11 @@ namespace LuaEngineDebugger {
                     char context_id[64];
                     std::snprintf(context_id, sizeof(context_id), "LineContext##Disasm_%p_%08X", this, line.address);
                     if(ImGui::BeginPopupContextItem(context_id)) {
-                        if(ImGui::MenuItem("Run to Cursor (F4)")) debug_interface_->runToCursor(line.address);
+                        if(ImGui::MenuItem("Run to Cursor (F4)")) {
+                            run_to_cursor_addr_ = line.address;
+                            run_to_cursor_active_ = true;
+                            debug_interface_->runToCursor(line.address);
+                        }
 
                         // Run until return menu item
                         auto ret_addr = getCurrentReturnAddress();
@@ -1380,6 +1401,51 @@ namespace LuaEngineDebugger {
         }
     }
 
+    uint32_t DisassemblyWindow::resolveAddressExpression(const std::string& expr) {
+        using LuaEngineSymbols::SymbolManager;
+        if(expr.empty()) return SymbolManager::INVALID_ADDRESS;
+
+        // Try hex literal (0x1234 or 1234h or plain hex)
+        try {
+            // 0x prefix
+            if(expr.find("0x") == 0 || expr.find("0X") == 0) {
+                return static_cast<uint32_t>(std::stoul(expr, nullptr, 16));
+            }
+        } catch(...) {}
+
+        // Try segment:offset (0x1234:0x5678 or 1234:5678)
+        const char* colon = std::strchr(expr.c_str(), ':');
+        if(colon) {
+            try {
+                std::string seg_str = expr.substr(0, colon - expr.c_str());
+                std::string off_str = std::string(colon + 1);
+                uint16_t segment = static_cast<uint16_t>(std::stoul(seg_str, nullptr, 0));
+                uint16_t offset = static_cast<uint16_t>(std::stoul(off_str, nullptr, 0));
+                return (static_cast<uint32_t>(segment) << 4) + offset;
+            } catch(...) {}
+        }
+
+        // Try plain hex number (no prefix)
+        try {
+            // Check if it looks like hex (all hex digits)
+            bool all_hex = true;
+            for(char c : expr) {
+                if(!std::isxdigit(static_cast<unsigned char>(c))) { all_hex = false; break; }
+            }
+            if(all_hex && !expr.empty()) {
+                return static_cast<uint32_t>(std::stoul(expr, nullptr, 16));
+            }
+        } catch(...) {}
+
+        // Try symbol lookup
+        if(symbol_manager_) {
+            uint32_t addr = symbol_manager_->getSymbolAddress(expr);
+            if(addr != SymbolManager::INVALID_ADDRESS) return addr;
+        }
+
+        return SymbolManager::INVALID_ADDRESS;
+    }
+
     // -----------------------------------------------------------------------------
     // Navigation Controls
     // -----------------------------------------------------------------------------
@@ -1396,11 +1462,34 @@ namespace LuaEngineDebugger {
         ImGui::TextUnformatted("Navigation:");
         ImGui::SameLine();
 
+        // Back/Forward navigation buttons
+        if(nav_back_stack_.empty()) ImGui::BeginDisabled();
+        if(ImGui::ArrowButton("##NavBack", ImGuiDir_Left)) {
+            navigateBack();
+        }
+        if(nav_back_stack_.empty()) ImGui::EndDisabled();
+        if(ImGui::IsItemHovered() && !nav_back_stack_.empty()) {
+            ImGui::SetTooltip("Back to 0x%08X", nav_back_stack_.back());
+        }
+        ImGui::SameLine();
+
+        if(nav_forward_stack_.empty()) ImGui::BeginDisabled();
+        if(ImGui::ArrowButton("##NavForward", ImGuiDir_Right)) {
+            navigateForward();
+        }
+        if(nav_forward_stack_.empty()) ImGui::EndDisabled();
+        if(ImGui::IsItemHovered() && !nav_forward_stack_.empty()) {
+            ImGui::SetTooltip("Forward to 0x%08X", nav_forward_stack_.back());
+        }
+        ImGui::SameLine();
+
         // Jump to CS:IP button
         if(ImGui::Button("Jump to CS:IP")) {
             uint32_t cs = debug_interface_->getCurrentCS();
             uint32_t ip = debug_interface_->getCurrentEIP();
-            current_address_ = (cs << 4) + ip;
+            uint32_t new_addr = (cs << 4) + ip;
+            pushNavHistory(current_address_);
+            current_address_ = new_addr;
             refreshCachedLines();
             std::snprintf(segment_input_, sizeof(segment_input_), "%04X", cs);
             std::snprintf(offset_input_, sizeof(offset_input_), "%04X", ip);
@@ -1419,36 +1508,39 @@ namespace LuaEngineDebugger {
 
         ImGui::Spacing();
 
-        // Segment:Offset input
-        ImGui::TextUnformatted("Segment:Offset:");
-        ImGui::SameLine();
+        // Segment:Offset input (Logical mode only)
+        if(address_space_mode_ == AddressSpaceMode::Logical) {
+            ImGui::TextUnformatted("Segment:Offset:");
+            ImGui::SameLine();
 
-        ImGui::SetNextItemWidth(60);
-        ImGui::InputText("##segment", segment_input_, sizeof(segment_input_), ImGuiInputTextFlags_CharsHexadecimal);
-        ImGui::SameLine();
+            ImGui::SetNextItemWidth(60);
+            ImGui::InputText("##segment", segment_input_, sizeof(segment_input_), ImGuiInputTextFlags_CharsHexadecimal);
+            ImGui::SameLine();
 
-        ImGui::TextUnformatted(":");
-        ImGui::SameLine();
+            ImGui::TextUnformatted(":");
+            ImGui::SameLine();
 
-        ImGui::SetNextItemWidth(60);
-        ImGui::InputText("##offset", offset_input_, sizeof(offset_input_), ImGuiInputTextFlags_CharsHexadecimal);
-        ImGui::SameLine();
+            ImGui::SetNextItemWidth(60);
+            ImGui::InputText("##offset", offset_input_, sizeof(offset_input_), ImGuiInputTextFlags_CharsHexadecimal);
+            ImGui::SameLine();
 
-        if(ImGui::Button("Go##goto_segment_offset")) {
-            try {
-                uint16_t segment = static_cast<uint16_t>(std::stoul(segment_input_, nullptr, 16));
-                uint16_t offset = static_cast<uint16_t>(std::stoul(offset_input_, nullptr, 16));
-                current_address_ = (segment << 4) + offset;
-                user_navigated_ = true;  // Mark that user manually navigated
-                refreshCachedLines();
-                std::snprintf(address_input_, sizeof(address_input_), "%08X", current_address_);
+            if(ImGui::Button("Go##goto_segment_offset")) {
+                try {
+                    uint16_t segment = static_cast<uint16_t>(std::stoul(segment_input_, nullptr, 16));
+                    uint16_t offset = static_cast<uint16_t>(std::stoul(offset_input_, nullptr, 16));
+                    pushNavHistory(current_address_);
+                    current_address_ = (segment << 4) + offset;
+                    user_navigated_ = true;  // Mark that user manually navigated
+                    refreshCachedLines();
+                    std::snprintf(address_input_, sizeof(address_input_), "%08X", current_address_);
+                }
+                catch(...) {
+                    // Invalid input - ignore
+                }
             }
-            catch(...) {
-                // Invalid input - ignore
-            }
+
+            ImGui::SameLine();
         }
-
-        ImGui::SameLine();
 
         // Linear address input
         ImGui::TextUnformatted("Linear:");
@@ -1461,6 +1553,7 @@ namespace LuaEngineDebugger {
         if(ImGui::Button("Go##goto_linear")) {
             try {
                 uint32_t linear_addr = static_cast<uint32_t>(std::stoul(address_input_, nullptr, 16));
+                pushNavHistory(current_address_);
                 current_address_ = linear_addr;
                 user_navigated_ = true;  // Mark that user manually navigated
                 refreshCachedLines();
@@ -1473,6 +1566,55 @@ namespace LuaEngineDebugger {
             }
             catch(...) {
                 // Invalid input - ignore
+            }
+        }
+
+        // Go-to expression input
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Go to:");
+        ImGui::SameLine();
+
+        // Error highlight: red border for 2 seconds
+        if(goto_error_) {
+            goto_error_timer_ -= ImGui::GetIO().DeltaTime;
+            if(goto_error_timer_ <= 0.0f) goto_error_ = false;
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
+        }
+        ImGui::SetNextItemWidth(150);
+        if(ImGui::InputText("##goto_expr", goto_input_, sizeof(goto_input_),
+                            ImGuiInputTextFlags_EnterReturnsTrue)) {
+            uint32_t addr = resolveAddressExpression(std::string(goto_input_));
+            if(addr != LuaEngineSymbols::SymbolManager::INVALID_ADDRESS) {
+                pushNavHistory(current_address_);
+                current_address_ = addr;
+                user_navigated_ = true;
+                refreshCachedLines();
+                std::snprintf(address_input_, sizeof(address_input_), "%08X", current_address_);
+                goto_error_ = false;
+            } else {
+                goto_error_ = true;
+                goto_error_timer_ = 2.0f;
+            }
+        }
+        if(goto_error_) {
+            ImGui::PopStyleColor();
+            if(ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Invalid expression. Try hex (0x1234), segment:offset (1234:5678), or symbol name.");
+            }
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("Go##goto_expr")) {
+            uint32_t addr = resolveAddressExpression(std::string(goto_input_));
+            if(addr != LuaEngineSymbols::SymbolManager::INVALID_ADDRESS) {
+                pushNavHistory(current_address_);
+                current_address_ = addr;
+                user_navigated_ = true;
+                refreshCachedLines();
+                std::snprintf(address_input_, sizeof(address_input_), "%08X", current_address_);
+                goto_error_ = false;
+            } else {
+                goto_error_ = true;
+                goto_error_timer_ = 2.0f;
             }
         }
 
@@ -1517,6 +1659,7 @@ namespace LuaEngineDebugger {
         if(ImGui::Button("Go##goto_symbol") && !selected_symbol.empty() && symbol_manager_) {
             uint32_t symbol_addr = symbol_manager_->getSymbolAddress(selected_symbol);
             if(symbol_addr != LuaEngineSymbols::SymbolManager::INVALID_ADDRESS) {
+                pushNavHistory(current_address_);
                 current_address_ = symbol_addr;
                 user_navigated_ = true;  // Mark that user manually navigated
                 refreshCachedLines();
@@ -1565,6 +1708,7 @@ namespace LuaEngineDebugger {
                 // DS, ES, SS would need to be implemented in CoreDebugInterface
                 // For now, using fixed segment values
 
+                pushNavHistory(current_address_);
                 current_address_ = (segment << 4); // Jump to segment base
                 user_navigated_ = true;  // Mark that user manually navigated
                 refreshCachedLines();
@@ -1580,7 +1724,23 @@ namespace LuaEngineDebugger {
         ImGui::Spacing();
         uint16_t current_seg = static_cast<uint16_t>(current_address_ >> 4);
         uint16_t current_off = static_cast<uint16_t>(current_address_ & 0xFFFF);
-        ImGui::Text("Current: %04X:%04X (%08X)", current_seg, current_off, current_address_);
+        if(address_space_mode_ == AddressSpaceMode::Logical) {
+            ImGui::Text("Current: %04X:%04X (%08X)", current_seg, current_off, current_address_);
+        } else {
+            ImGui::Text("Current: %08X", current_address_);
+        }
+
+        ImGui::SameLine();
+        ImGui::TextUnformatted("|");
+        ImGui::SameLine();
+
+        // Address-space mode selector
+        const char* mode_names[] = {"Logical", "Linear", "Physical"};
+        int current_mode = static_cast<int>(address_space_mode_);
+        ImGui::SetNextItemWidth(80);
+        if(ImGui::Combo("Addr Mode", &current_mode, mode_names, 3)) {
+            address_space_mode_ = static_cast<AddressSpaceMode>(current_mode);
+        }
 
         ImGui::Separator();
     }

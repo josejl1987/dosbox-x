@@ -163,6 +163,7 @@ public:
                    int key_code, bool ctrl = false, bool alt = false, bool shift = false);
     void setHotkeyCallback(const std::string& name, std::function<void()> callback);
     void processHotkeys();
+    const std::map<std::string, HotkeyConfig>& getHotkeys() const { return hotkeys_; }
     
     // UI
     void render();
