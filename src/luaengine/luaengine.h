@@ -413,6 +413,7 @@ struct LuaEngine
     void registerBreakpointAPI();
     void registerReHooksAPI();
     void registerCDLAPI();
+    void registerReverseEngineeringAPI();  // ponytail: PR6
 
     // Reverse-engineering execution control
     void setRunUntilTarget(uint16_t seg, uint32_t off, sol::protected_function callback);

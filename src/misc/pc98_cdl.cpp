@@ -33,7 +33,7 @@ namespace PC98CDL {
 namespace {
 
 constexpr char kMagic[7] = {'P', '9', '8', 'C', 'D', 'L', '\0'};
-constexpr uint16_t kVersion = 1;
+constexpr uint16_t kVersion = 2;
 
 template <typename T>
 inline void writeRaw(std::ofstream& f, const T& v) {
@@ -71,8 +71,16 @@ Module::Module(const ModuleInfo& info)
     , base(info.base)
     , size(info.size)
     , source_file(info.source_file)
-    , source_offset(info.source_offset) {
+    , source_offset(info.source_offset)
+    , enable_last_writer(info.enable_last_writer)
+    , enable_coverage(info.enable_coverage) {
     evidence.resize(size);
+    if (enable_last_writer) last_writer_pc_.resize(size, 0);
+    if (enable_coverage) {
+        // ponytail: each uint64_t covers 64 pages (256KB), page_index = offset >> 12
+        uint32_t max_page_index = (size + 0xFFFu) >> 12;
+        coverage_bitmap_.resize((max_page_index + 63) / 64, 0);
+    }
 }
 
 int64_t Module::relativeOffset(uint32_t linear) const {
@@ -97,6 +105,45 @@ void Module::markAnalysis(uint32_t offset, uint16_t flag) {
 
 void Module::addEntryPoint(uint32_t module_offset) {
     if (module_offset < size) entry_points.insert(module_offset);
+}
+
+void Module::setLastWriterPc(uint32_t offset, uint32_t pc) {
+    if (!enable_last_writer || offset >= last_writer_pc_.size()) return;
+    last_writer_pc_[offset] = pc;
+}
+
+uint32_t Module::lastWriterPc(uint32_t offset) const {
+    if (!enable_last_writer || offset >= last_writer_pc_.size()) return 0;
+    return last_writer_pc_[offset];
+}
+
+void Module::markCoveragePage(uint32_t linear) {
+    if (!enable_coverage || coverage_bitmap_.empty()) return;
+    uint32_t page_index = (linear - base) >> 12;
+    uint32_t word_index = page_index / 64;
+    uint32_t bit_index = page_index % 64;
+    if (word_index < coverage_bitmap_.size()) {
+        coverage_bitmap_[word_index] |= (1ULL << bit_index);
+    }
+}
+
+std::string Module::coverageJson() const {
+    std::ostringstream out;
+    out << "{\"base\":" << base << ",\"size\":" << size << ",\"pages\":[";
+    if (enable_coverage && !coverage_bitmap_.empty()) {
+        uint32_t max_page = (size + 0xFFFu) >> 12;
+        bool first = true;
+        for (uint32_t p = 0; p < max_page; ++p) {
+            uint32_t word = p / 64;
+            uint32_t bit = p % 64;
+            bool covered = (coverage_bitmap_[word] >> bit) & 1;
+            if (!first) out << ",";
+            first = false;
+            out << (covered ? 1 : 0);
+        }
+    }
+    out << "]}";
+    return out.str();
 }
 
 Module::Stats Module::computeStats() const {
@@ -185,6 +232,11 @@ void CDL::recordInsnFetch(uint16_t cs, uint32_t ip) {
     }
     m->addEntryPoint(start_off);
 
+    // ponytail: PR6 — mark coverage page if enabled
+    if (m->enable_coverage) {
+        m->markCoveragePage(linear);
+    }
+
 #if PC98CDL_STACK_TRACKING
     // Stack access tracking: check raw opcode bytes for PUSH/POP/CALL/RET
     // and record stack reads/writes at SS:SP.
@@ -226,9 +278,9 @@ void CDL::recordDataRead(uint32_t linear, uint32_t len) {
     recordAccess(linear, len, DataRead);
 }
 
-void CDL::recordDataWrite(uint32_t linear, uint32_t len) {
+void CDL::recordDataWrite(uint32_t linear, uint32_t len, uint32_t writer_pc) {
     if (!active_) return;
-    recordAccess(linear, len, DataWrite);
+    recordAccess(linear, len, DataWrite, writer_pc);
 }
 
 void CDL::recordStackRead(uint32_t linear, uint32_t len) {
@@ -251,7 +303,7 @@ void CDL::recordDataPointer(uint32_t linear, uint32_t len) {
     recordAccess(linear, len, DataPtrRead);
 }
 
-void CDL::recordAccess(uint32_t linear, uint32_t len, uint32_t flag) {
+void CDL::recordAccess(uint32_t linear, uint32_t len, uint32_t flag, uint32_t writer_pc) {
     Module* m = findModuleForLinear(linear);
     if (m == nullptr) return;
     uint32_t max = static_cast<uint32_t>(m->size);
@@ -259,6 +311,10 @@ void CDL::recordAccess(uint32_t linear, uint32_t len, uint32_t flag) {
     uint32_t end = std::min(off + len, max);
     for (uint32_t i = off; i < end; ++i) {
         m->markAccess(i, flag);
+        // ponytail: PR6 — set last_writer_pc on DataWrite when enabled
+        if (flag == DataWrite && m->enable_last_writer && writer_pc != 0) {
+            m->setLastWriterPc(i, writer_pc);
+        }
     }
 }
 
@@ -310,6 +366,12 @@ void CDL::save(const std::string& path) const {
         writeString(f, m.source_file);
         writeRaw(f, m.source_offset);
 
+        // ponytail: PR6 — write feature flags so merge knows what's present
+        uint8_t mod_flags = 0;
+        if (m.enable_last_writer) mod_flags |= 1;
+        if (m.enable_coverage) mod_flags |= 2;
+        writeRaw(f, mod_flags);
+
         uint32_t entry_count = static_cast<uint32_t>(m.entry_points.size());
         writeRaw(f, entry_count);
         for (uint32_t ep : m.entry_points) writeRaw(f, ep);
@@ -317,16 +379,19 @@ void CDL::save(const std::string& path) const {
         // Count non-zero evidence bytes.
         uint32_t ev_count = 0;
         for (const auto& e : m.evidence) {
-            if (e.access || e.origin || e.analysis) ++ev_count;
+            if (e.access || e.origin || e.analysis || e.last_writer_pc) ++ev_count;
         }
         writeRaw(f, ev_count);
         for (uint32_t i = 0; i < static_cast<uint32_t>(m.evidence.size()); ++i) {
             const ByteEvidence& e = m.evidence[i];
-            if (!e.access && !e.origin && !e.analysis) continue;
+            if (!e.access && !e.origin && !e.analysis && !e.last_writer_pc) continue;
             writeRaw(f, i);
             writeRaw(f, e.access);
             writeRaw(f, e.origin);
             writeRaw(f, e.analysis);
+            if (m.enable_last_writer) {
+                writeRaw(f, e.last_writer_pc);
+            }
         }
     }
 
@@ -345,7 +410,7 @@ void CDL::merge(const std::string& path) {
 
     uint16_t version = 0;
     readRaw(f, version);
-    if (version != kVersion) return;
+    if (version < 1 || version > kVersion) return;
 
     std::string session = readString(f);
     (void)session;
@@ -361,6 +426,12 @@ void CDL::merge(const std::string& path) {
         std::string src_file = readString(f);
         readRaw(f, src_off);
 
+        // ponytail: PR6 — v2 has module flags byte, v1 does not
+        uint8_t mod_flags = 0;
+        if (version >= 2) {
+            readRaw(f, mod_flags);
+        }
+
         Module* m = getModule(id);
         if (m == nullptr) {
             ModuleInfo info;
@@ -369,6 +440,8 @@ void CDL::merge(const std::string& path) {
             info.size = size;
             info.source_file = src_file;
             info.source_offset = src_off;
+            info.enable_last_writer = (mod_flags & 1) != 0;
+            info.enable_coverage = (mod_flags & 2) != 0;
             m = registerModule(info);
         }
 
@@ -382,6 +455,7 @@ void CDL::merge(const std::string& path) {
 
         uint32_t ev_count = 0;
         readRaw(f, ev_count);
+        bool has_last_writer = (m != nullptr && m->enable_last_writer) || (version >= 2 && (mod_flags & 1));
         for (uint32_t i = 0; i < ev_count; ++i) {
             uint32_t off = 0;
             uint32_t access = 0;
@@ -394,6 +468,14 @@ void CDL::merge(const std::string& path) {
                 m->evidence[off].access |= access;
                 m->evidence[off].origin |= origin;
                 m->evidence[off].analysis |= analysis;
+            }
+            // ponytail: PR6 — v2 may have last_writer_pc per entry
+            if (version >= 2 && has_last_writer) {
+                uint32_t lwpc = 0;
+                readRaw(f, lwpc);
+                if (m != nullptr && off < m->size && lwpc != 0) {
+                    m->setLastWriterPc(off, lwpc);
+                }
             }
         }
     }
@@ -438,6 +520,96 @@ std::string CDL::statsJson() const {
     }
     out << "}";
     return out.str();
+}
+
+// ponytail: PR6 — JSON export for coverage + last-writer provenance
+std::string CDL::exportCoverageJson() const {
+    std::ostringstream out;
+    out << "{\"modules\":{";
+    bool first_mod = true;
+    for (const auto& kv : modules_) {
+        const Module& m = kv.second;
+        if (!first_mod) out << ",";
+        first_mod = false;
+        out << "\"" << m.id << "\":{";
+        out << "\"base\":" << m.base << ",\"size\":" << m.size << ",";
+        // Coverage
+        if (m.enable_coverage && !m.coverage_bitmap_.empty()) {
+            out << "\"coverage\":" << m.coverageJson() << ",";
+        } else {
+            // Compute coverage from InsnStart bits
+            uint32_t max_page = (m.size + 0xFFFu) >> 12;
+            out << "\"coverage\":{\"base\":" << m.base << ",\"size\":" << m.size << ",\"pages\":[";
+            for (uint32_t p = 0; p < max_page; ++p) {
+                if (p > 0) out << ",";
+                uint32_t page_start = p << 12;
+                uint32_t page_end = std::min(page_start + 0x1000u, m.size);
+                bool covered = false;
+                for (uint32_t i = page_start; i < page_end; ++i) {
+                    if (m.evidence[i].access & InsnStart) { covered = true; break; }
+                }
+                out << (covered ? 1 : 0);
+            }
+            out << "]},";
+        }
+        // Last-writer provenance
+        out << "\"last_writer\":{";
+        if (m.enable_last_writer && !m.last_writer_pc_.empty()) {
+            bool first_lw = true;
+            for (uint32_t i = 0; i < m.size; ++i) {
+                if (m.last_writer_pc_[i] != 0) {
+                    if (!first_lw) out << ",";
+                    first_lw = false;
+                    out << "\"" << i << "\":" << m.last_writer_pc_[i];
+                }
+            }
+        }
+        out << "}}";
+    }
+    out << "}}";
+    return out.str();
+}
+
+std::string CDL::exportJsonl() const {
+    std::ostringstream out;
+    for (const auto& kv : modules_) {
+        const Module& m = kv.second;
+        out << "{\"module\":\"" << m.id << "\",\"base\":" << m.base
+            << ",\"size\":" << m.size;
+        // Coverage
+        if (m.enable_coverage && !m.coverage_bitmap_.empty()) {
+            out << ",\"coverage\":" << m.coverageJson();
+        }
+        // Last-writer (only non-zero entries)
+        if (m.enable_last_writer && !m.last_writer_pc_.empty()) {
+            out << ",\"last_writer\":{";
+            bool first_lw = true;
+            for (uint32_t i = 0; i < m.size; ++i) {
+                if (m.last_writer_pc_[i] != 0) {
+                    if (!first_lw) out << ",";
+                    first_lw = false;
+                    out << "\"" << i << "\":" << m.last_writer_pc_[i];
+                }
+            }
+            out << "}";
+        }
+        out << "}\n";
+    }
+    return out.str();
+}
+
+void CDL::exportCoverageToFile(const std::string& path) const {
+    std::ofstream f(path, std::ios::out | std::ios::trunc);
+    if (!f) return;
+    f << exportCoverageJson();
+    f.flush();
+}
+
+void CDL::exportJsonlToFile(const std::string& path) const {
+    std::ofstream f(path, std::ios::out | std::ios::trunc);
+    if (!f) return;
+    f << exportJsonl();
+    f.flush();
 }
 
 // ------------------------------------------------------------------

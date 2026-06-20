@@ -1908,6 +1908,17 @@
         // Write to ring buffer — O(1), zero heap allocs on the hot path
         ring_buf_->push(entry);
 
+        // ponytail: PR6 — push register snapshot to reverse-step ring if enabled
+        if(reverse_step_enabled_ && debug_interface_) {
+            FastRegisterSnapshot snap;
+            debug_interface_->getCpuRegistersFast(snap);
+            std::lock_guard<std::mutex> rlock(reverse_ring_mutex_);
+            reverse_ring_.push_back(snap);
+            while(reverse_ring_.size() > reverse_ring_size_) {
+                reverse_ring_.pop_front();
+            }
+        }
+
         // Update lightweight stats (no string operations)
         // ponytail: stats_ updates are not under trace_mutex_ here; 
         // integer counters are fine for best-effort display, address_frequency map
@@ -1957,6 +1968,28 @@
             snap.frame_number = current_frame_;
             current_snapshot_index_ = snapshot_store_->push(snap);
         }
+    }
+
+    //=============================================================================
+    // PR6: Register-only reverse-step
+    //=============================================================================
+
+    bool TraceLogger::reverseStep() {
+        std::lock_guard<std::mutex> lock(reverse_ring_mutex_);
+        if(reverse_ring_.empty()) return false;
+        FastRegisterSnapshot snap = reverse_ring_.back();
+        reverse_ring_.pop_back();
+
+        // ponytail: PR6 — restore CPU registers via debug interface
+        if(debug_interface_) {
+            debug_interface_->setCpuRegistersFast(snap);
+        }
+        return true;
+    }
+
+    bool TraceLogger::isReverseStepAvailable() const {
+        std::lock_guard<std::mutex> lock(reverse_ring_mutex_);
+        return !reverse_ring_.empty();
     }
 
     } // namespace LuaEngineTraceLogger

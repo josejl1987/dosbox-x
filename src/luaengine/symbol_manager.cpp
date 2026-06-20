@@ -449,4 +449,125 @@ void SymbolManager::updateSymbolAddress(Symbol& symbol) {
     symbol.address = mapAddressToMemory(symbol.segment, symbol.offset, symbol.segment_name);
 }
 
+//=============================================================================
+// PR6: Annotation management
+//=============================================================================
+
+void SymbolManager::addAnnotation(const Annotation& ann) {
+    annotations_by_addr_.insert({ann.address, ann});
+    // ponytail: simple text index — lowercase key for case-insensitive search
+    std::string key = ann.comment;
+    std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+    annotations_by_text_[key].push_back(ann.address);
+}
+
+std::vector<Annotation> SymbolManager::getAnnotationsByAddress(uint32_t address) const {
+    std::vector<Annotation> result;
+    auto range = annotations_by_addr_.equal_range(address);
+    for (auto it = range.first; it != range.second; ++it) {
+        result.push_back(it->second);
+    }
+    return result;
+}
+
+std::vector<Annotation> SymbolManager::getAnnotationsByText(const std::string& substring) const {
+    std::vector<Annotation> result;
+    std::string key = substring;
+    std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+    for (const auto& kv : annotations_by_text_) {
+        if (kv.first.find(key) != std::string::npos) {
+            for (uint32_t addr : kv.second) {
+                auto range = annotations_by_addr_.equal_range(addr);
+                for (auto it = range.first; it != range.second; ++it) {
+                    // Only include annotations whose comment matches the substring
+                    std::string cmt = it->second.comment;
+                    std::transform(cmt.begin(), cmt.end(), cmt.begin(), ::tolower);
+                    if (cmt.find(key) != std::string::npos) {
+                        result.push_back(it->second);
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
+
+bool SymbolManager::removeAnnotation(uint32_t address, const std::string& comment) {
+    auto range = annotations_by_addr_.equal_range(address);
+    for (auto it = range.first; it != range.second; ++it) {
+        if (it->second.comment == comment) {
+            // Remove from text index
+            std::string key = it->second.comment;
+            std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+            auto idx_it = annotations_by_text_.find(key);
+            if (idx_it != annotations_by_text_.end()) {
+                auto& vec = idx_it->second;
+                vec.erase(std::remove(vec.begin(), vec.end(), address), vec.end());
+                if (vec.empty()) annotations_by_text_.erase(idx_it);
+            }
+            annotations_by_addr_.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+void SymbolManager::clearAnnotations() {
+    annotations_by_addr_.clear();
+    annotations_by_text_.clear();
+}
+
+//=============================================================================
+// PR6: Typed data range management
+//=============================================================================
+
+bool SymbolManager::addTypedDataRange(const TypedDataRange& range) {
+    // Validate no overlap within same module
+    for (const auto& existing : typed_ranges_) {
+        if (existing.module == range.module) {
+            uint32_t ex_end = existing.start_address + existing.length;
+            uint32_t new_end = range.start_address + range.length;
+            if (range.start_address < ex_end && new_end > existing.start_address) {
+                return false;  // Overlap detected
+            }
+        }
+    }
+    typed_ranges_.push_back(range);
+    return true;
+}
+
+std::vector<TypedDataRange> SymbolManager::getTypedDataRangesAt(uint32_t address) const {
+    std::vector<TypedDataRange> result;
+    for (const auto& r : typed_ranges_) {
+        if (address >= r.start_address && address < r.start_address + r.length) {
+            result.push_back(r);
+        }
+    }
+    return result;
+}
+
+std::vector<TypedDataRange> SymbolManager::getAllTypedDataRanges(const std::string& module) const {
+    std::vector<TypedDataRange> result;
+    for (const auto& r : typed_ranges_) {
+        if (module.empty() || r.module == module) {
+            result.push_back(r);
+        }
+    }
+    return result;
+}
+
+bool SymbolManager::removeTypedDataRange(uint32_t start_address) {
+    for (auto it = typed_ranges_.begin(); it != typed_ranges_.end(); ++it) {
+        if (it->start_address == start_address) {
+            typed_ranges_.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+void SymbolManager::clearTypedDataRanges() {
+    typed_ranges_.clear();
+}
+
 } // namespace LuaEngineSymbols

@@ -67,6 +67,7 @@ struct ByteEvidence {
     uint32_t access = 0;
     uint16_t origin = 0;
     uint16_t analysis = 0;
+    uint32_t last_writer_pc = 0;  // ponytail: PR6 — CS:IP of last guest write; 0 when feature disabled
 };
 
 struct TransformMapping {
@@ -93,6 +94,8 @@ struct ModuleInfo {
     uint32_t size = 0;
     std::string source_file;    // optional original file name
     uint32_t source_offset = 0; // optional offset inside source_file
+    bool enable_last_writer = false;  // ponytail: PR6 — opt-in per module
+    bool enable_coverage = false;     // ponytail: PR6 — opt-in per module
 };
 
 class Module {
@@ -103,8 +106,19 @@ public:
     std::string source_file;
     uint32_t source_offset = 0;
 
+    // ponytail: PR6 — opt-in feature flags (copied from ModuleInfo)
+    bool enable_last_writer = false;
+    bool enable_coverage = false;
+
     std::vector<ByteEvidence> evidence;
     std::unordered_set<uint32_t> entry_points;   // module-relative offsets
+
+    // ponytail: PR6 — last_writer_pc per byte, allocated only when enable_last_writer
+    std::vector<uint32_t> last_writer_pc_;
+
+    // ponytail: PR6 — page-granularity coverage bitmap, allocated only when enable_coverage
+    // page_index = (addr - base) >> 12, bit = page_index % 64, word = page_index / 64
+    std::vector<uint64_t> coverage_bitmap_;
 
     explicit Module() = default;
     explicit Module(const ModuleInfo& info);
@@ -116,6 +130,14 @@ public:
     void markOrigin(uint32_t offset, uint16_t flag);
     void markAnalysis(uint32_t offset, uint16_t flag);
     void addEntryPoint(uint32_t module_offset);
+
+    // ponytail: PR6 — last_writer_pc accessors
+    void setLastWriterPc(uint32_t offset, uint32_t pc);
+    uint32_t lastWriterPc(uint32_t offset) const;
+
+    // ponytail: PR6 — coverage bitmap accessor
+    void markCoveragePage(uint32_t linear);
+    std::string coverageJson() const;
 
     // stats used by consumers
     struct Stats {
@@ -156,7 +178,7 @@ public:
     // Runtime access recording (called from CPU hooks)
     void recordInsnFetch(uint16_t cs, uint32_t ip);
     void recordDataRead(uint32_t linear, uint32_t len);
-    void recordDataWrite(uint32_t linear, uint32_t len);
+    void recordDataWrite(uint32_t linear, uint32_t len, uint32_t writer_pc = 0);
     void recordStackRead(uint32_t linear, uint32_t len);
     void recordStackWrite(uint32_t linear, uint32_t len);
     void recordCodePointer(uint32_t linear, uint32_t len);
@@ -172,6 +194,12 @@ public:
     std::vector<std::string> moduleIds() const;
     std::string statsJson() const;
 
+    // ponytail: PR6 — JSON export for coverage and last-writer
+    std::string exportCoverageJson() const;
+    std::string exportJsonl() const;
+    void exportCoverageToFile(const std::string& path) const;
+    void exportJsonlToFile(const std::string& path) const;
+
 private:
     bool active_ = false;
     std::string session_name_;
@@ -182,7 +210,7 @@ private:
 
     // helpers
     Module* findModuleForLinear(uint32_t linear);
-    void recordAccess(uint32_t linear, uint32_t len, uint32_t flag);
+    void recordAccess(uint32_t linear, uint32_t len, uint32_t flag, uint32_t writer_pc = 0);
 };
 
 // Singleton accessor used by Lua/CPU hooks.

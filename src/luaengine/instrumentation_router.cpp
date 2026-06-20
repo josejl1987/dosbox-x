@@ -22,6 +22,7 @@
 #include "paging.h"
 #include "debug.h"
 #include "../debug/debug_inc.h"
+#include "pc98_cdl.h"
 
 #include <algorithm>
 #include <cctype>
@@ -197,6 +198,13 @@ void InstrumentationRouter::onMemoryWrite(uint32_t linear_addr, uint32_t value,
 		}
 	}
 
+	// ponytail: PR6 — CDL recording on guest memory write
+	if (PC98CDL::GetCDL().active()) {
+		DebugAddress addr = DebugAddress::fromCSIP();
+		uint32_t writer_pc = (static_cast<uint32_t>(addr.segment) << 4) + addr.offset;
+		PC98CDL::GetCDL().recordDataWrite(linear_addr, size, writer_pc);
+	}
+
 	// Watchpoint check
 	if (feature_mask & INSTR_MEMORY_WATCHPOINT) {
 		for (const auto& wp : watchpoints_) {
@@ -229,6 +237,11 @@ void InstrumentationRouter::onMemoryRead(uint32_t linear_addr, uint32_t value,
 				tap.callback(linear_addr, value, size, false);
 			}
 		}
+	}
+
+	// ponytail: PR6 — CDL recording on guest memory read
+	if (PC98CDL::GetCDL().active()) {
+		PC98CDL::GetCDL().recordDataRead(linear_addr, size);
 	}
 }
 

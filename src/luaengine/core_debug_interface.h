@@ -131,6 +131,9 @@ public:
     // OPTIMIZATION: Fast register snapshot (zero allocations, cache-friendly)
     virtual void getCpuRegistersFast(LuaEngineTraceLogger::FastRegisterSnapshot& snapshot) = 0;
 
+    // ponytail: PR6 — bulk register restore for reverse-step
+    virtual void setCpuRegistersFast(const LuaEngineTraceLogger::FastRegisterSnapshot& snapshot) = 0;
+
     virtual CPUState getCpuState() = 0;
     virtual void setCpuRegister(const std::string& name, uint32_t value) = 0;
     virtual uint32_t getCurrentEIP() = 0;
@@ -317,6 +320,9 @@ public:
 
     // OPTIMIZATION: Fast register snapshot (zero allocations, cache-friendly)
     void getCpuRegistersFast(LuaEngineTraceLogger::FastRegisterSnapshot& snapshot) override;
+
+    // ponytail: PR6 — bulk register restore for reverse-step
+    void setCpuRegistersFast(const LuaEngineTraceLogger::FastRegisterSnapshot& snapshot) override;
 
     CPUState getCpuState() override;
     void setCpuRegister(const std::string& name, uint32_t value) override;

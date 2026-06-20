@@ -395,6 +395,12 @@ private:
     mutable std::recursive_mutex call_stack_mutex_;
     bool track_call_stack_ = true;
 
+    // ponytail: PR6 — register-only reverse-step ring buffer
+    bool reverse_step_enabled_ = false;
+    uint32_t reverse_ring_size_ = 64;
+    std::deque<FastRegisterSnapshot> reverse_ring_;
+    mutable std::mutex reverse_ring_mutex_;
+
     // Export settings
     std::string export_format_;        // Format for export (csv, txt, xml, json)
 
@@ -461,6 +467,12 @@ public:
     bool isCallStackTrackingEnabled() const { return track_call_stack_; }
     std::vector<uint32_t> getCallStack() const;
     void clearCallStack();
+
+    // ponytail: PR6 — register-only reverse-step
+    void setReverseStepEnabled(bool enabled) { reverse_step_enabled_ = enabled; }
+    bool isReverseStepEnabled() const { return reverse_step_enabled_; }
+    bool reverseStep();       // pop ring, restore registers; returns false if ring empty
+    bool isReverseStepAvailable() const;
 
     // Filtering
     void setFilter(const TraceFilter& filter) { filter_ = filter; }

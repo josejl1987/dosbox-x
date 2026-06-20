@@ -287,6 +287,17 @@ void RegisterLuaReHooksAPI(LuaEngine& engine) {
         return result;
     };
 
+    // ponytail: PR6 — coverage and provenance export
+    re["export_coverage"] = [](const std::string& path) -> bool {
+        PC98CDL::GetCDL().exportCoverageToFile(path);
+        return true;
+    };
+
+    re["export_provenance"] = [](const std::string& path) -> bool {
+        PC98CDL::GetCDL().exportJsonlToFile(path);
+        return true;
+    };
+
     SetEngine(&engine);
 }
 

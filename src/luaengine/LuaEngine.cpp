@@ -915,6 +915,7 @@ void LuaEngine::LUAENGINE_Init(Section* section) {
     registerBreakpointAPI();
     registerReHooksAPI();
     registerCDLAPI();
+    registerReverseEngineeringAPI();
     registerSaveStateAPI();
     registerHotReloadAPI();
     registerEventAPI();
@@ -3024,6 +3025,8 @@ void LuaEngine::registerCDLAPI() {
         mi.size = info.get_or<uint32_t>("size", 0);
         mi.source_file = info.get_or<std::string>("source_file", "");
         mi.source_offset = info.get_or<uint32_t>("source_offset", 0);
+        mi.enable_last_writer = info.get_or<bool>("enable_last_writer", false);
+        mi.enable_coverage = info.get_or<bool>("enable_coverage", false);
         if (mi.id.empty() || mi.size == 0) return false;
         return PC98CDL::GetCDL().registerModule(mi) != nullptr;
     };
@@ -3081,6 +3084,171 @@ void LuaEngine::registerCDLAPI() {
 
     cdl["stats"] = []() -> std::string {
         return PC98CDL::GetCDL().statsJson();
+    };
+
+    // ponytail: PR6 — coverage + last-writer export APIs
+    cdl["coverage"] = [](const std::string& module_id) -> std::string {
+        PC98CDL::CDL& cdl = PC98CDL::GetCDL();
+        PC98CDL::Module* m = cdl.getModule(module_id);
+        if (!m) return "{}";
+        return m->coverageJson();
+    };
+
+    cdl["last_writer"] = [](const std::string& module_id) -> std::string {
+        PC98CDL::CDL& cdl = PC98CDL::GetCDL();
+        PC98CDL::Module* m = cdl.getModule(module_id);
+        if (!m || !m->enable_last_writer) return "{}";
+        std::ostringstream out;
+        out << "{";
+        bool first = true;
+        for (uint32_t i = 0; i < m->size; ++i) {
+            uint32_t lwpc = m->lastWriterPc(i);
+            if (lwpc != 0) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << i << "\":" << lwpc;
+            }
+        }
+        out << "}";
+        return out.str();
+    };
+
+    cdl["export_json"] = [](const std::string& path) -> bool {
+        PC98CDL::GetCDL().exportCoverageToFile(path);
+        return true;
+    };
+
+    cdl["export_jsonl"] = [](const std::string& path) -> bool {
+        PC98CDL::GetCDL().exportJsonlToFile(path);
+        return true;
+    };
+#endif
+}
+
+
+// ponytail: PR6 — Reverse-step + annotations + typed-data Lua API
+void LuaEngine::registerReverseEngineeringAPI() {
+#ifdef C_LUA_RE_HOOKS
+    // --- Reverse-step namespace ---
+    sol::table re = lua["re"];
+
+    re["reverse_step"] = [this]() -> bool {
+        auto* wm = window_manager.get();
+        if (!wm) return false;
+        auto* tl = wm->getTraceLogger();
+        if (!tl || !tl->isReverseStepEnabled()) return false;
+        return tl->reverseStep();
+    };
+
+    re["set_reverse_step_enabled"] = [this](bool enabled) {
+        auto* wm = window_manager.get();
+        if (!wm) return;
+        auto* tl = wm->getTraceLogger();
+        if (tl) tl->setReverseStepEnabled(enabled);
+    };
+
+    re["is_reverse_step_available"] = [this]() -> bool {
+        auto* wm = window_manager.get();
+        if (!wm) return false;
+        auto* tl = wm->getTraceLogger();
+        return tl && tl->isReverseStepAvailable();
+    };
+
+    // --- Annotation namespace ---
+    sol::table annotation = lua.create_named_table("annotation");
+
+    annotation["add"] = [this](uint32_t address, const std::string& comment, sol::optional<std::string> module) {
+        if (!symbol_manager) return;
+        LuaEngineSymbols::Annotation ann;
+        ann.address = address;
+        ann.comment = comment;
+        ann.module = module.value_or("");
+        symbol_manager->addAnnotation(ann);
+    };
+
+    annotation["get_by_address"] = [this](uint32_t address) -> sol::table {
+        if (!symbol_manager) return sol::nil;
+        auto annots = symbol_manager->getAnnotationsByAddress(address);
+        sol::table result = lua.create_table();
+        for (size_t i = 0; i < annots.size(); ++i) {
+            sol::table entry = lua.create_table();
+            entry["address"] = annots[i].address;
+            entry["comment"] = annots[i].comment;
+            entry["module"] = annots[i].module;
+            result[i + 1] = entry;
+        }
+        return result;
+    };
+
+    annotation["search"] = [this](const std::string& substring) -> sol::table {
+        if (!symbol_manager) return sol::nil;
+        auto annots = symbol_manager->getAnnotationsByText(substring);
+        sol::table result = lua.create_table();
+        for (size_t i = 0; i < annots.size(); ++i) {
+            sol::table entry = lua.create_table();
+            entry["address"] = annots[i].address;
+            entry["comment"] = annots[i].comment;
+            entry["module"] = annots[i].module;
+            result[i + 1] = entry;
+        }
+        return result;
+    };
+
+    annotation["remove"] = [this](uint32_t address, const std::string& comment) -> bool {
+        if (!symbol_manager) return false;
+        return symbol_manager->removeAnnotation(address, comment);
+    };
+
+    // --- Typed data namespace ---
+    sol::table typed_data = lua.create_named_table("typed_data");
+
+    typed_data["define"] = [this](uint32_t address, uint32_t length, const std::string& type,
+                                    uint32_t element_size, sol::optional<std::string> module) -> bool {
+        if (!symbol_manager) return false;
+        LuaEngineSymbols::TypedDataRange range;
+        range.start_address = address;
+        range.length = length;
+        range.data_type = type;
+        range.element_size = element_size;
+        range.module = module.value_or("");
+        return symbol_manager->addTypedDataRange(range);
+    };
+
+    typed_data["get"] = [this](uint32_t address) -> sol::table {
+        if (!symbol_manager) return sol::nil;
+        auto ranges = symbol_manager->getTypedDataRangesAt(address);
+        sol::table result = lua.create_table();
+        for (size_t i = 0; i < ranges.size(); ++i) {
+            sol::table entry = lua.create_table();
+            entry["start_address"] = ranges[i].start_address;
+            entry["length"] = ranges[i].length;
+            entry["data_type"] = ranges[i].data_type;
+            entry["element_size"] = ranges[i].element_size;
+            entry["module"] = ranges[i].module;
+            result[i + 1] = entry;
+        }
+        return result;
+    };
+
+    typed_data["list"] = [this](sol::optional<std::string> module) -> sol::table {
+        if (!symbol_manager) return sol::nil;
+        auto ranges = symbol_manager->getAllTypedDataRanges(module.value_or(""));
+        sol::table result = lua.create_table();
+        for (size_t i = 0; i < ranges.size(); ++i) {
+            sol::table entry = lua.create_table();
+            entry["start_address"] = ranges[i].start_address;
+            entry["length"] = ranges[i].length;
+            entry["data_type"] = ranges[i].data_type;
+            entry["element_size"] = ranges[i].element_size;
+            entry["module"] = ranges[i].module;
+            result[i + 1] = entry;
+        }
+        return result;
+    };
+
+    typed_data["remove"] = [this](uint32_t start_address) -> bool {
+        if (!symbol_manager) return false;
+        return symbol_manager->removeTypedDataRange(start_address);
     };
 #endif
 }

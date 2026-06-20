@@ -205,6 +205,27 @@ namespace LuaEngineDebug {
         snapshot.valid_mask = 0xFFFFFFFF;  // All registers valid
     }
 
+    // ponytail: PR6 — bulk register restore for reverse-step
+    void DosBoxCoreDebugger::setCpuRegistersFast(const LuaEngineTraceLogger::FastRegisterSnapshot& snapshot) {
+        reg_eax = snapshot.eax;
+        reg_ebx = snapshot.ebx;
+        reg_ecx = snapshot.ecx;
+        reg_edx = snapshot.edx;
+        reg_esi = snapshot.esi;
+        reg_edi = snapshot.edi;
+        reg_esp = snapshot.esp;
+        reg_ebp = snapshot.ebp;
+        reg_eip = snapshot.eip;
+        reg_flags = snapshot.eflags;
+        // ponytail: segment registers restored via SegSet16; only set non-zero values
+        if (snapshot.cs) SegSet16(cs, snapshot.cs);
+        if (snapshot.ds) SegSet16(ds, snapshot.ds);
+        if (snapshot.es) SegSet16(es, snapshot.es);
+        if (snapshot.fs) SegSet16(fs, snapshot.fs);
+        if (snapshot.gs) SegSet16(gs, snapshot.gs);
+        if (snapshot.ss) SegSet16(ss, snapshot.ss);
+    }
+
     CPUState DosBoxCoreDebugger::getCpuState() {
         CPUState state;
 

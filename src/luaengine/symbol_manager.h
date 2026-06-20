@@ -7,6 +7,7 @@
 #include <memory>
 #include <cstdint>
 #include <functional>
+#include <unordered_map>
 
 namespace LuaEngineSymbols {
 
@@ -39,6 +40,22 @@ struct SegmentMapping {
     SegmentMapping() : file_segment(0), memory_base(0), size(0), enabled(true) {}
     SegmentMapping(const std::string& name, uint16_t seg, uint32_t base, uint32_t sz = 0x10000) 
         : segment_name(name), file_segment(seg), memory_base(base), size(sz), enabled(true) {}
+};
+
+// ponytail: PR6 — user annotation at an address
+struct Annotation {
+    uint32_t address;
+    std::string comment;
+    std::string module;  // optional
+};
+
+// ponytail: PR6 — typed data range
+struct TypedDataRange {
+    uint32_t start_address;
+    uint32_t length;
+    std::string data_type;    // "word_array", "string", "struct", etc.
+    uint32_t element_size;
+    std::string module;       // optional
 };
 
 // Symbol file format types
@@ -105,6 +122,20 @@ public:
     void remapAllSymbols();
     void recalculateAllSymbols(); // Alias for remapAllSymbols
     
+    // ponytail: PR6 — Annotation management
+    void addAnnotation(const Annotation& ann);
+    std::vector<Annotation> getAnnotationsByAddress(uint32_t address) const;
+    std::vector<Annotation> getAnnotationsByText(const std::string& substring) const;
+    bool removeAnnotation(uint32_t address, const std::string& comment);
+    void clearAnnotations();
+    
+    // ponytail: PR6 — Typed data range management
+    bool addTypedDataRange(const TypedDataRange& range);
+    std::vector<TypedDataRange> getTypedDataRangesAt(uint32_t address) const;
+    std::vector<TypedDataRange> getAllTypedDataRanges(const std::string& module = "") const;
+    bool removeTypedDataRange(uint32_t start_address);
+    void clearTypedDataRanges();
+    
 private:
     // Symbol storage
     std::map<uint32_t, Symbol> symbols_by_address_;
@@ -113,6 +144,11 @@ private:
     // Segment mapping storage
     std::map<std::string, SegmentMapping> segment_mappings_;
     std::map<uint16_t, std::string> segment_by_number_;
+    
+    // ponytail: PR6 — annotation/typed-data storage
+    std::multimap<uint32_t, Annotation> annotations_by_addr_;
+    std::unordered_map<std::string, std::vector<uint32_t>> annotations_by_text_;
+    std::vector<TypedDataRange> typed_ranges_;
     
     // File info
     std::string loaded_filename_;
