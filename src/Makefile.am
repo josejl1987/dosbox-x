@@ -47,6 +47,11 @@ if !EMSCRIPTEN
 dosbox_x_LDADD += aviwriter/libaviwriter.a
 endif
 
+if C_LUA
+SUBDIRS += luaengine
+dosbox_x_LDADD += luaengine/libluaengine.a luaengine/liblua.a
+endif
+
 if C_GAMELINK
 if !EMSCRIPTEN
 SUBDIRS += gamelink

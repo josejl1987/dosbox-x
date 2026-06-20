@@ -1580,6 +1580,7 @@ src/output/direct3d/Makefile
 src/builtin/Makefile
 src/misc/Makefile
 src/shell/Makefile
+src/luaengine/Makefile
 src/platform/Makefile
 include/Makefile
 contrib/macos/dosbox-x.plist
