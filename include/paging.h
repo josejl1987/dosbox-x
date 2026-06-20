@@ -438,32 +438,62 @@ static INLINE PhysPt64 PAGING_GetPhysicalAddress64(const LinearPt linAddr) {
 
 /* Special inlined memory reading/writing */
 
+#if C_LUA
+#include "instrumentation_router.h"
+#endif
+
 static INLINE uint8_t mem_readb_inline(const LinearPt address) {
 	const HostPt tlb_addr=get_tlb_read(address);
-	if (tlb_addr) return host_readb(tlb_addr+address);
-	else return (uint8_t)(get_tlb_readhandler(address))->readb(address);
+	uint8_t result;
+	if (tlb_addr) result=host_readb(tlb_addr+address);
+	else result=(uint8_t)(get_tlb_readhandler(address))->readb(address);
+#if C_LUA
+	if (auto _instr_ft_ = g_instrumentation_features.load(std::memory_order_relaxed); _instr_ft_ & INSTR_MEMORY_READ_TAP) {
+		if (g_instrumentation) g_instrumentation->onMemoryRead(address, result, 1, _instr_ft_);
+	}
+#endif
+	return result;
 }
 
 static INLINE uint16_t mem_readw_inline(const LinearPt address) {
+	uint16_t result;
 	if ((address & 0xfff)<0xfff) {
 		const HostPt tlb_addr=get_tlb_read(address);
-		if (tlb_addr) return host_readw(tlb_addr+address);
-		else return (uint16_t)(get_tlb_readhandler(address))->readw(address);
-	} else return mem_unalignedreadw(address);
+		if (tlb_addr) result=host_readw(tlb_addr+address);
+		else result=(uint16_t)(get_tlb_readhandler(address))->readw(address);
+	} else result=mem_unalignedreadw(address);
+#if C_LUA
+	if (auto _instr_ft_ = g_instrumentation_features.load(std::memory_order_relaxed); _instr_ft_ & INSTR_MEMORY_READ_TAP) {
+		if (g_instrumentation) g_instrumentation->onMemoryRead(address, result, 2, _instr_ft_);
+	}
+#endif
+	return result;
 }
 
 static INLINE uint32_t mem_readd_inline(const LinearPt address) {
+	uint32_t result;
 	if ((address & 0xfff)<0xffd) {
 		const HostPt tlb_addr=get_tlb_read(address);
-		if (tlb_addr) return host_readd(tlb_addr+address);
-		else return (uint32_t)(get_tlb_readhandler(address))->readd(address);
-	} else return mem_unalignedreadd(address);
+		if (tlb_addr) result=host_readd(tlb_addr+address);
+		else result=(uint32_t)(get_tlb_readhandler(address))->readd(address);
+	} else result=mem_unalignedreadd(address);
+#if C_LUA
+	if (auto _instr_ft_ = g_instrumentation_features.load(std::memory_order_relaxed); _instr_ft_ & INSTR_MEMORY_READ_TAP) {
+		if (g_instrumentation) g_instrumentation->onMemoryRead(address, result, 4, _instr_ft_);
+	}
+#endif
+	return result;
 }
 
 static INLINE void mem_writeb_inline(const LinearPt address,const uint8_t val) {
 	const HostPt tlb_addr=get_tlb_write(address);
 	if (tlb_addr) host_writeb(tlb_addr+address,val);
 	else (get_tlb_writehandler(address))->writeb(address,val);
+#if C_LUA
+	if (auto _instr_ft_ = g_instrumentation_features.load(std::memory_order_relaxed); _instr_ft_ & INSTR_MEMORY_WRITE_TAP) {
+		if (g_instrumentation) g_instrumentation->onMemoryWrite(address, val, 1, _instr_ft_);
+	}
+#endif
 }
 
 static INLINE void mem_writew_inline(const LinearPt address,const uint16_t val) {
@@ -472,6 +502,11 @@ static INLINE void mem_writew_inline(const LinearPt address,const uint16_t val) 
 		if (tlb_addr) host_writew(tlb_addr+address,val);
 		else (get_tlb_writehandler(address))->writew(address,val);
 	} else mem_unalignedwritew(address,val);
+#if C_LUA
+	if (auto _instr_ft_ = g_instrumentation_features.load(std::memory_order_relaxed); _instr_ft_ & INSTR_MEMORY_WRITE_TAP) {
+		if (g_instrumentation) g_instrumentation->onMemoryWrite(address, val, 2, _instr_ft_);
+	}
+#endif
 }
 
 static INLINE void mem_writed_inline(const LinearPt address,const uint32_t val) {
@@ -480,6 +515,11 @@ static INLINE void mem_writed_inline(const LinearPt address,const uint32_t val) 
 		if (tlb_addr) host_writed(tlb_addr+address,val);
 		else (get_tlb_writehandler(address))->writed(address,val);
 	} else mem_unalignedwrited(address,val);
+#if C_LUA
+	if (auto _instr_ft_ = g_instrumentation_features.load(std::memory_order_relaxed); _instr_ft_ & INSTR_MEMORY_WRITE_TAP) {
+		if (g_instrumentation) g_instrumentation->onMemoryWrite(address, val, 4, _instr_ft_);
+	}
+#endif
 }
 
 

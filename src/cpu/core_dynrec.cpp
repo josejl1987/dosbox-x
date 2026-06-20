@@ -40,6 +40,9 @@
 #include "mem.h"
 #include "cpu.h"
 #include "debug.h"
+#if C_LUA
+#include "instrumentation_router.h"
+#endif
 #include "paging.h"
 #include "inout.h"
 #include "lazyflags.h"
@@ -264,7 +267,9 @@ Bits CPU_Core_Dynrec_Run(void) {
 		dosbox_allow_nonrecursive_page_fault = false;
 		// Determine the linear address of CS:EIP
 		PhysPt ip_point=SegPhys(cs)+reg_eip;
-		#if C_HEAVY_DEBUG
+		#if C_LUA
+			INSTRUMENT_CHECK();
+		#elif C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
 		#endif
 
@@ -325,7 +330,9 @@ run_block:
 		switch (ret) {
 		case BR_Iret:
 #if C_DEBUG
-#if C_HEAVY_DEBUG
+#if C_LUA
+			INSTRUMENT_CHECK();
+#elif C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
 #endif
 #endif
@@ -343,7 +350,9 @@ run_block:
 			// changing instruction (for example switch to/from pmode),
 			// or the maximum number of instructions to translate was reached
 #if C_DEBUG
-#if C_HEAVY_DEBUG
+#if C_LUA
+			INSTRUMENT_CHECK();
+#elif C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
 #endif
 #endif
@@ -353,7 +362,9 @@ run_block:
 			// cycles went negative, return from the core to handle
 			// external events, schedule the pic...
 #if C_DEBUG
-#if C_HEAVY_DEBUG
+#if C_LUA
+			INSTRUMENT_CHECK();
+#elif C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
 #endif
 #endif
@@ -389,7 +400,9 @@ run_block:
 		case BR_Trap:
 			// trapflag is set, switch to the trap-aware decoder
 	#if C_DEBUG
-	#if C_HEAVY_DEBUG
+	#if C_LUA
+			INSTRUMENT_CHECK();
+	#elif C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) {
 				return debugCallback;
 			}

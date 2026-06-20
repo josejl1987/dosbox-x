@@ -37,6 +37,9 @@ extern bool ignore_opcode_63;
 #if C_DEBUG
 #include "debug.h"
 #endif
+#if C_LUA
+#include "instrumentation_router.h"
+#endif
 
 #include "paging.h"
 #define SegBase(c)  SegPhys(c)
@@ -191,7 +194,9 @@ Bits CPU_Core_Simple_Run(void) {
         BaseSS=SegBase(ss);
         core.base_val_ds=ds;
 #if C_DEBUG
-#if C_HEAVY_DEBUG
+#if C_LUA
+        INSTRUMENT_CHECK();
+#elif C_HEAVY_DEBUG
         if (DEBUG_HeavyIsBreakpoint()) {
             FillFlags();
             return (Bits)debugCallback;

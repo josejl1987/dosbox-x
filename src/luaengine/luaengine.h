@@ -42,6 +42,7 @@
 #include "gui_windows.h"
 #include "symbol_manager.h"
 #include "debug_logger.h"
+#include "instrumentation_router.h"
 
 // Forward declarations
 class Section;
@@ -234,17 +235,10 @@ struct LuaEngine
     // Debug symbol management for enhanced disassembly
     std::map<uint32_t, std::string> debug_symbols;
     
-    // Memory watchpoint system for detecting memory access
-    struct MemoryWatchpoint {
-        enum Type { read, write, execute, read_WRITE };
-        uint32_t address;
-        int size;
-        Type type;
-        bool enabled;
-        int hit_count;
-        std::string description;
-    };
-    std::vector<MemoryWatchpoint> memory_watchpoints;
+    // Memory watchpoint system is now managed by InstrumentationRouter
+    // (instrumentation_router.h) — the old MemoryWatchpoint struct was dead code
+    // RAII handles for Lua API watchpoints (address → handle)
+    std::unordered_map<uint32_t, WatchpointHandle> router_watchpoints_;
 
     // =========================================================================
     // MANAGER LIFECYCLE AND OWNERSHIP PATTERN

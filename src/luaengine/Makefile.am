@@ -27,6 +27,7 @@ libluaengine_a_SOURCES = LuaEngine.cpp luaengine.h event_manager.cpp event_manag
 	watch_window.cpp watch_window.h \
 	cheat_engine.cpp cheat_engine.h \
 	cheat_window.cpp cheat_window.h \
+	instrumentation_router.cpp instrumentation_router.h \
 	else
 noinst_LIBRARIES = 
 endif

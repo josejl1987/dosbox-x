@@ -225,42 +225,27 @@ void LuaEngine::registerDebugAPI() {
         return true;
         };
 
-    // Memory watchpoint system
+    // Memory watchpoint system — redirected to InstrumentationRouter
     debug_table["add_memory_watchpoint"] = [this](uint32_t address, int size, const std::string& type) -> bool {
         try {
-            // Create watchpoint structure
-            MemoryWatchpoint wp;
-            wp.address = address;
-            wp.size = size;
-            wp.enabled = true;
-            wp.hit_count = 0;
+            // Only write watchpoints are supported by the router for now
+            // ponytail: read/execute watchpoints need PageHandler interception, deferred
+            if (type != "write" && type != "w" && type != "readwrite" && type != "rw") {
+                luaEngine.log_warning("Only write watchpoints currently supported via instrumentation router");
+            }
 
-            // Parse watchpoint type
-            if(type == "read" || type == "r") {
-                wp.type = MemoryWatchpoint::read;
-            }
-            else if(type == "write" || type == "w") {
-                wp.type = MemoryWatchpoint::write;
-            }
-            else if(type == "execute" || type == "x") {
-                wp.type = MemoryWatchpoint::execute;
-            }
-            else if(type == "readwrite" || type == "rw") {
-                wp.type = MemoryWatchpoint::read_WRITE;
-            }
-            else {
-                luaEngine.log_error("Invalid watchpoint type: " + type + " (use: read, write, execute, readwrite)");
+            if (!g_instrumentation) {
+                luaEngine.log_error("InstrumentationRouter not initialized");
                 return false;
             }
 
-            // Check for overlapping watchpoints
-            for(const auto& existing : memory_watchpoints) {
-                if(existing.address <= address + size && address <= existing.address + existing.size) {
-                    luaEngine.log_warning("Watchpoint overlaps with existing watchpoint at " + std::to_string(existing.address));
-                }
-            }
+            auto handle = g_instrumentation->addWatchpoint(address, static_cast<uint8_t>(size),
+                [this, address](uint32_t addr, uint32_t value, uint8_t sz, bool is_write) {
+                    luaEngine.log_info("Watchpoint hit at 0x" + std::to_string(addr) +
+                        " value=0x" + std::to_string(value) + " size=" + std::to_string(sz));
+                });
 
-            memory_watchpoints.push_back(wp);
+            router_watchpoints_[address] = std::move(handle);
 
             luaEngine.log_info("Memory watchpoint added at 0x" + std::to_string(address) +
                 " size=" + std::to_string(size) + " type=" + type);
@@ -274,11 +259,10 @@ void LuaEngine::registerDebugAPI() {
         };
 
     debug_table["remove_memory_watchpoint"] = [this](uint32_t address) -> bool {
-        auto it = std::find_if(memory_watchpoints.begin(), memory_watchpoints.end(),
-            [address](const MemoryWatchpoint& wp) { return wp.address == address; });
+        auto it = router_watchpoints_.find(address);
 
-        if(it != memory_watchpoints.end()) {
-            memory_watchpoints.erase(it);
+        if(it != router_watchpoints_.end()) {
+            router_watchpoints_.erase(it);  // RAII handle auto-deregisters
             luaEngine.log_info("Memory watchpoint removed at 0x" + std::to_string(address));
             return true;
         }

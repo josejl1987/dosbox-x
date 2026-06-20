@@ -25,6 +25,9 @@
 #include "paging.h"
 #include "fpu.h"
 #include "debug.h"
+#if C_LUA
+#include "instrumentation_router.h"
+#endif
 #include "inout.h"
 #include "callback.h"
 
@@ -95,7 +98,9 @@ Bits CPU_Core_Full_Run(void) {
 		}
 
 #if C_DEBUG		
-#if C_HEAVY_DEBUG
+#if C_LUA
+		INSTRUMENT_CHECK();
+#elif C_HEAVY_DEBUG
 		if (DEBUG_HeavyIsBreakpoint()) {
 			FillFlags();
 			return (Bits)debugCallback;

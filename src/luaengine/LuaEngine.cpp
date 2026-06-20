@@ -710,6 +710,14 @@ void LuaEngine::LuaFrameBoundary() {
         event_manager->fireFrameEvent(LuaEngineEvents::EventType::FRAME_END);
     }
 
+    // PR3-004: dispatch frame boundary to InstrumentationRouter
+    // (exact watchpoints, deferred callbacks, step control)
+#if C_LUA
+    if(g_instrumentation) {
+        g_instrumentation->onFrameBoundary(false);
+    }
+#endif
+
     LuaReHooks::OnFrame();
 
     last_true_frame_time = frame_start;
