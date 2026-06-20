@@ -45,7 +45,7 @@ static void CleanupRenderTarget();
 #endif
 
 #if C_DEBUG
-#include "../luaengine/debug_tools_manager.h"
+#include "../luaengine/debugger_session.h"
 #endif
 
 bool InitImGui(SDL_Window * window) {
@@ -117,22 +117,54 @@ void ProcessImGuiEvents(SDL_Event& event) {
 #if C_DEBUG
     // Handle debug tools keyboard shortcuts
     if (event.type == SDL_KEYDOWN) {
-        LuaEngineDebugTools::DebugToolsManager* debug_tools = ::GetDebugToolsManager();
-        if (debug_tools && debug_tools->isInitialized()) {
+        auto* session = ::GetDebuggerSession();
+        if (session && session->isInitialized()) {
             // Check for Ctrl+Shift combinations
             if ((event.key.keysym.mod & KMOD_CTRL) && (event.key.keysym.mod & KMOD_SHIFT)) {
                 switch (event.key.keysym.sym) {
                     case SDLK_s:
-                        debug_tools->toggleRamSearch();
+#if C_LUA
+                        if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                            if (window_manager->isMemorySearchVisible()) {
+                                window_manager->hideMemorySearch();
+                            } else {
+                                window_manager->showMemorySearch();
+                            }
+                        }
+#endif
                         return; // Don't pass to ImGui
                     case SDLK_w:
-                        debug_tools->toggleWatchList();
+#if C_LUA
+                        if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                            if (window_manager->isWatchListVisible()) {
+                                window_manager->hideWatchList();
+                            } else {
+                                window_manager->showWatchList();
+                            }
+                        }
+#endif
                         return; // Don't pass to ImGui
                     case SDLK_h:
-                        debug_tools->toggleHexEditor();
+#if C_LUA
+                        if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                            if (window_manager->isHexEditorVisible()) {
+                                window_manager->hideHexEditor();
+                            } else {
+                                window_manager->showHexEditor();
+                            }
+                        }
+#endif
                         return; // Don't pass to ImGui
                     case SDLK_t:
-                        debug_tools->toggleTraceLogger();
+#if C_LUA
+                        if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                            if (window_manager->isTraceLoggerVisible()) {
+                                window_manager->hideTraceLogger();
+                            } else {
+                                window_manager->showTraceLogger();
+                            }
+                        }
+#endif
                         return; // Don't pass to ImGui
                     case SDLK_d:
 #if C_LUA
@@ -195,9 +227,34 @@ void RenderImGuiFrame() {
 
 #if C_DEBUG
         // Debug tools menu integration
-        LuaEngineDebugTools::DebugToolsManager* debug_tools = ::GetDebugToolsManager();
-        if (debug_tools && debug_tools->isInitialized()) {
-            debug_tools->renderDebugToolsMenu();
+        auto* session_menu = ::GetDebuggerSession();
+        if (session_menu && session_menu->isInitialized()) {
+            // ponytail: simplified menu — direct window toggles via WindowManager
+            if (ImGui::BeginMenu("Debug Tools")) {
+#if C_LUA
+                if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                    if (ImGui::MenuItem("RAM Search", "Ctrl+Shift+S")) {
+                        window_manager->showMemorySearch();
+                    }
+                    if (ImGui::MenuItem("Watch List", "Ctrl+Shift+W")) {
+                        window_manager->showWatchList();
+                    }
+                    if (ImGui::MenuItem("Hex Editor", "Ctrl+Shift+H")) {
+                        window_manager->showHexEditor();
+                    }
+                    if (ImGui::MenuItem("Disassembly", "Ctrl+Shift+D")) {
+                        window_manager->showDisassembly();
+                    }
+                    if (ImGui::MenuItem("Trace Logger", "Ctrl+Shift+T")) {
+                        window_manager->showTraceLogger();
+                    }
+                    if (ImGui::MenuItem("Cheat Engine")) {
+                        window_manager->showCheatEngine();
+                    }
+                }
+#endif
+                ImGui::EndMenu();
+            }
         }
 #endif // C_DEBUG
 
@@ -212,10 +269,10 @@ void RenderImGuiFrame() {
 
 #if C_DEBUG
             // Add debug tools help
-            LuaEngineDebugTools::DebugToolsManager* debug_tools_help = ::GetDebugToolsManager();
-            if (debug_tools_help && debug_tools_help->isInitialized()) {
+            auto* session_help = ::GetDebuggerSession();
+            if (session_help && session_help->isInitialized()) {
                 ImGui::Separator();
-                debug_tools_help->renderDebugToolsHelp();
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "Debug tools are hidden by default");
             }
 #endif // C_DEBUG
             ImGui::EndMenu();
@@ -225,17 +282,17 @@ void RenderImGuiFrame() {
 #endif // C_LUA
 
 #if C_DEBUG
-    // Ensure debug tools are initialized
-    static bool debug_tools_initialized = false;
-    if (!debug_tools_initialized) {
-        ::InitializeDebugTools();
-        debug_tools_initialized = true;
+    // Ensure debug session is initialized
+    static bool debug_session_initialized = false;
+    if (!debug_session_initialized) {
+        ::InitializeDebugSession();
+        debug_session_initialized = true;
     }
 
-    // Main debug tools render call (handles setup)
-    if (auto* tools = ::GetDebugToolsManager()) {
-        if (tools->isInitialized()) {
-            tools->render();
+    // Update session (watch values, hotkeys)
+    if (auto* session = ::GetDebuggerSession()) {
+        if (session->isInitialized()) {
+            session->update();
         }
     }
 #endif

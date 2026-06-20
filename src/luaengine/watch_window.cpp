@@ -1,4 +1,5 @@
 #include "watch_window.h"
+#include "debugger_session.h"
 #include "debug_utils.h"
 #include "imgui.h"
 #include <algorithm>
@@ -11,8 +12,9 @@ namespace LuaEngineWatchList {
 // WatchWindow Implementation
 //=============================================================================
 
-WatchWindow::WatchWindow() 
-    : show_window_(true), show_add_dialog_(false), show_edit_dialog_(false), 
+WatchWindow::WatchWindow(LuaEngineDebugTools::DebuggerSession* session) 
+    : watch_list_(session ? session->watches() : nullptr),
+      show_window_(false), show_add_dialog_(false), show_edit_dialog_(false), 
       show_poke_dialog_(false), selected_watch_index_(-1), 
       size_combo_index_(0), display_type_combo_index_(0),
       poke_address_(0), poke_size_(LuaEngineRamSearch::WatchSize::BYTE_1) {
@@ -28,11 +30,14 @@ WatchWindow::~WatchWindow() {
 }
 
 void WatchWindow::initialize(LuaEngineMemoryDomains::MemoryDomainManager* memory_mgr) {
-    watch_list_.initialize(memory_mgr);
+    // ponytail: watch_list_ is now owned by DebuggerSession; this method is a no-op
+    // for backward compat.
+    (void)memory_mgr;
 }
 
 void WatchWindow::render() {
     if (!show_window_) return;
+    if (!watch_list_) return; // null-guard: session not initialized
     
     if (ImGui::Begin("Watch List", &show_window_, ImGuiWindowFlags_MenuBar)) {
         renderMenuBar();
@@ -135,7 +140,7 @@ void WatchWindow::renderWatchTable() {
         ImGui::TableSetupColumn("Notes", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
         
-        const auto& watches = watch_list_.getWatches();
+        const auto& watches = watch_list_->getWatches();
         for (size_t i = 0; i < watches.size(); ++i) {
             const auto& watch = watches[i];
             
@@ -247,7 +252,7 @@ void WatchWindow::renderAddDialog() {
             auto watch = std::make_unique<Watch>(address, domain, size);
             watch->setDisplayType(static_cast<LuaEngineWatchList::WatchDisplayType>(display_type));
             watch->setNotes(notes_input_);
-            watch_list_.addWatch(std::move(watch));
+            watch_list_->addWatch(std::move(watch));
             
             show_add_dialog_ = false;
             resetAddDialog();
@@ -265,8 +270,8 @@ void WatchWindow::renderAddDialog() {
 
 void WatchWindow::renderEditDialog() {
     if (ImGui::BeginPopupModal("Edit Watch", &show_edit_dialog_)) {
-        if (selected_watch_index_ >= 0 && selected_watch_index_ < static_cast<int>(watch_list_.getWatchCount())) {
-            auto* watch = watch_list_.getWatch(selected_watch_index_);
+        if (selected_watch_index_ >= 0 && selected_watch_index_ < static_cast<int>(watch_list_->getWatchCount())) {
+            auto* watch = watch_list_->getWatch(selected_watch_index_);
             
             ImGui::Text("Address:");
             ImGui::InputText("##Address", address_input_, sizeof(address_input_));
@@ -328,7 +333,7 @@ void WatchWindow::renderPokeDialog() {
             uint64_t value = parseValue(poke_value_input_);
             
             // Find the watch and poke it
-            auto* watch = watch_list_.findWatch(poke_address_, poke_domain_);
+            auto* watch = watch_list_->findWatch(poke_address_, poke_domain_);
             if (watch) {
                 watch->poke(value);
             }
@@ -396,8 +401,8 @@ void WatchWindow::openAddDialog() {
 }
 
 void WatchWindow::openEditDialog(int watch_index) {
-    if (watch_index >= 0 && watch_index < static_cast<int>(watch_list_.getWatchCount())) {
-        auto* watch = watch_list_.getWatch(watch_index);
+    if (watch_index >= 0 && watch_index < static_cast<int>(watch_list_->getWatchCount())) {
+        auto* watch = watch_list_->getWatch(watch_index);
         
         // Fill dialog with current values
         snprintf(address_input_, sizeof(address_input_), "0x%08X", watch->getAddress());
@@ -431,19 +436,19 @@ void WatchWindow::onEditWatch(int index) {
 }
 
 void WatchWindow::onRemoveWatch(int index) {
-    watch_list_.removeWatch(index);
+    watch_list_->removeWatch(index);
 }
 
 void WatchWindow::onPokeWatch(int index) {
-    if (index >= 0 && index < static_cast<int>(watch_list_.getWatchCount())) {
-        auto* watch = watch_list_.getWatch(index);
+    if (index >= 0 && index < static_cast<int>(watch_list_->getWatchCount())) {
+        auto* watch = watch_list_->getWatch(index);
         openPokeDialog(watch->getAddress(), watch->getDomain(), watch->getSize());
     }
 }
 
 void WatchWindow::onFreezeWatch(int index) {
-    if (index >= 0 && index < static_cast<int>(watch_list_.getWatchCount())) {
-        auto* watch = watch_list_.getWatch(index);
+    if (index >= 0 && index < static_cast<int>(watch_list_->getWatchCount())) {
+        auto* watch = watch_list_->getWatch(index);
         watch->freeze();
         
         if (onFreezeValueCallback) {
@@ -454,8 +459,8 @@ void WatchWindow::onFreezeWatch(int index) {
 }
 
 void WatchWindow::onUnfreezeWatch(int index) {
-    if (index >= 0 && index < static_cast<int>(watch_list_.getWatchCount())) {
-        auto* watch = watch_list_.getWatch(index);
+    if (index >= 0 && index < static_cast<int>(watch_list_->getWatchCount())) {
+        auto* watch = watch_list_->getWatch(index);
         watch->unfreeze();
         
         if (onUnfreezeValueCallback) {
@@ -465,12 +470,12 @@ void WatchWindow::onUnfreezeWatch(int index) {
 }
 
 void WatchWindow::onDuplicateWatch(int index) {
-    if (index >= 0 && index < static_cast<int>(watch_list_.getWatchCount())) {
-        auto* original = watch_list_.getWatch(index);
+    if (index >= 0 && index < static_cast<int>(watch_list_->getWatchCount())) {
+        auto* original = watch_list_->getWatch(index);
         auto duplicate = std::make_unique<Watch>(original->getAddress(), original->getDomain(), original->getSize());
         duplicate->setDisplayType(original->getDisplayType());
         duplicate->setNotes(original->getNotes() + " (Copy)");
-        watch_list_.addWatch(std::move(duplicate));
+        watch_list_->addWatch(std::move(duplicate));
     }
 }
 
@@ -491,41 +496,50 @@ bool WatchWindow::isVisible() const {
 }
 
 void WatchWindow::addWatch(uint32_t address, const std::string& domain, LuaEngineRamSearch::WatchSize size) {
-    watch_list_.addWatch(address, domain, size);
+    if (!watch_list_) return;
+    watch_list_->addWatch(address, domain, size);
 }
 
 void WatchWindow::addWatch(const LuaEngineRamSearch::SearchResult& result, const std::string& domain) {
+    if (!watch_list_) return;
     auto watch = std::make_unique<Watch>(result.address, domain, result.size);
     watch->setInitialValue(result.initial_value);
-    watch_list_.addWatch(std::move(watch));
+    watch_list_->addWatch(std::move(watch));
 }
 
 void WatchWindow::removeWatch(uint32_t address, const std::string& domain) {
-    watch_list_.removeWatch(address, domain);
+    if (!watch_list_) return;
+    watch_list_->removeWatch(address, domain);
 }
 
 void WatchWindow::clearWatches() {
-    watch_list_.clearWatches();
+    if (!watch_list_) return;
+    watch_list_->clearWatches();
 }
 
 bool WatchWindow::saveWatchList(const std::string& filename) {
-    return watch_list_.saveToFile(filename);
+    if (!watch_list_) return false;
+    return watch_list_->saveToFile(filename);
 }
 
 bool WatchWindow::loadWatchList(const std::string& filename) {
-    return watch_list_.loadFromFile(filename);
+    if (!watch_list_) return false;
+    return watch_list_->loadFromFile(filename);
 }
 
 void WatchWindow::updateAllWatches() {
-    watch_list_.updateAllValues();
+    if (!watch_list_) return;
+    watch_list_->updateAllValues();
 }
 
 void WatchWindow::applyAllFrozenValues() {
-    watch_list_.applyAllFrozenValues();
+    if (!watch_list_) return;
+    watch_list_->applyAllFrozenValues();
 }
 
 void WatchWindow::unfreezeAllWatches() {
-    watch_list_.unfreezeAll();
+    if (!watch_list_) return;
+    watch_list_->unfreezeAll();
 }
 
 } // namespace LuaEngineWatchList

@@ -7,9 +7,8 @@ AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/vs -I$(top_srcdir)/vs/lua 
 if C_LUA
 noinst_LIBRARIES = libluaengine.a
 libluaengine_a_SOURCES = LuaEngine.cpp luaengine.h event_manager.cpp event_manager.h lua_memory_domains.cpp lua_memory_domains.h debug_utils.h debug_window_base.h savestate_manager.cpp savestate_manager.h savestate_shim.cpp frame_control.cpp frame_control.h gui_windows.cpp gui_windows.h lua_api_memory.cpp lua_api_cpu.cpp lua_api_debug.cpp lua_re_hooks.cpp lua_re_hooks.h \
-	debug_tools_manager.cpp debug_tools_manager.h \
+	debugger_session.cpp debugger_session.h \
 	watch_list.cpp watch_list.h \
-	hex_editor.cpp hex_editor.h \
 	hex_editor_window.cpp hex_editor_window.h \
 	trace_logger.cpp trace_logger.h \
 	trace_logger_window.cpp trace_logger_window.h \

@@ -20,7 +20,7 @@ protected:
     bool show_window_;
 
 public:
-    DebugWindowBase() : show_window_(true) {}
+    DebugWindowBase() : show_window_(false) {}
     virtual ~DebugWindowBase() = default;
 
     // Standard window control interface

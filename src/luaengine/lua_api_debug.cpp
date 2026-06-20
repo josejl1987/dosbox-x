@@ -18,7 +18,7 @@
 #include <iomanip>       // For hex formatting
 
 // Debug tools integration
-#include "debug_tools_manager.h"  // For DebugToolsManager access
+#include "debugger_session.h"  // For DebuggerSession access
 
 // Forward declarations
 extern LuaEngine luaEngine;
@@ -400,13 +400,20 @@ void LuaEngine::registerDebugAPI() {
         luaEngine.log_info("All symbols cleared");
         };
 
-    // Window management function (now uses DebugToolsManager)
+    // Window management function (now uses DebuggerSession)
     debug_table["show_all_windows"] = [this]() {
         // Show all new debug tools instead of old windows
-        InitializeDebugTools();
-        auto* debug_tools = GetDebugToolsManager();
-        if (debug_tools && debug_tools->isInitialized()) {
-            debug_tools->showAllTools();
+        ::InitializeDebugSession();
+        auto* session = ::GetDebuggerSession();
+        if (session && session->isInitialized()) {
+            if (auto* window_manager = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+                window_manager->showMemorySearch();
+                window_manager->showWatchList();
+                window_manager->showHexEditor();
+                window_manager->showTraceLogger();
+                window_manager->showCheatEngine();
+                window_manager->showDisassembly();
+            }
             luaEngine.log_info("All debug tools are now visible!");
             luaEngine.log_info("Keyboard shortcuts:");
             luaEngine.log_info("  Ctrl+Shift+S - RAM Search");

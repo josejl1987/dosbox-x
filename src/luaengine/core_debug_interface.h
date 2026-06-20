@@ -403,4 +403,9 @@ extern DosBoxCoreDebugger* g_core_debugger;
 
 } // namespace LuaEngineDebug
 
+// Forward declaration — defined in debugger_session.h
+// Must be outside LuaEngineDebug namespace to match global scope in debugger_session.cpp
+namespace LuaEngineDebugTools { class DebuggerSession; }
+extern LuaEngineDebugTools::DebuggerSession* g_debugger_session;
+
 #endif // CORE_DEBUG_INTERFACE_H

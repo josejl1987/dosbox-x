@@ -5,12 +5,15 @@
 #include <string>
 #include <functional>
 
+// Forward declaration
+namespace LuaEngineDebugTools { class DebuggerSession; }
+
 namespace LuaEngineRamSearch {
 
 class RamSearchWindow {
 private:
-    // Core engine
-    RamSearchEngine engine_;
+    // Core engine — pointer to session-owned instance
+    RamSearchEngine* engine_;
     
     // UI state
     SearchOperator selected_operator_;
@@ -43,7 +46,7 @@ private:
     uint64_t parseSearchValue(const std::string& input);
     
 public:
-    RamSearchWindow();
+    RamSearchWindow(LuaEngineDebugTools::DebuggerSession* session = nullptr);
     ~RamSearchWindow();
     
     // Initialization
@@ -58,8 +61,8 @@ public:
     bool isVisible() const;
     
     // Accessors
-    RamSearchEngine& getEngine() { return engine_; }
-    const RamSearchEngine& getEngine() const { return engine_; }
+    RamSearchEngine* getEngine() { return engine_; }
+    const RamSearchEngine* getEngine() const { return engine_; }
     
     // Configuration methods called by DebugToolsManager
     void setResultsPerPage(size_t results_per_page);

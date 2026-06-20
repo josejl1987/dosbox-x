@@ -4,11 +4,14 @@
 #include "watch_list.h"
 #include <functional>
 
+// Forward declaration
+namespace LuaEngineDebugTools { class DebuggerSession; }
+
 namespace LuaEngineWatchList {
 
 class WatchWindow {
 private:
-    WatchList watch_list_;
+    WatchList* watch_list_;
     
     // UI state
     bool show_window_;
@@ -56,7 +59,7 @@ private:
     void onDuplicateWatch(int index);
     
 public:
-    WatchWindow();
+    WatchWindow(LuaEngineDebugTools::DebuggerSession* session = nullptr);
     ~WatchWindow();
     
     // Initialization
@@ -86,13 +89,13 @@ public:
     void unfreezeAllWatches();
     
     // Accessors
-    WatchList& getWatchList() { return watch_list_; }
-    const WatchList& getWatchList() const { return watch_list_; }
+    WatchList* getWatchList() { return watch_list_; }
+    const WatchList* getWatchList() const { return watch_list_; }
     
     // Statistics
-    size_t getWatchCount() const { return watch_list_.getWatchCount(); }
-    size_t getFrozenCount() const { return watch_list_.getFrozenCount(); }
-    size_t getChangedCount() const { return watch_list_.getChangedCount(); }
+    size_t getWatchCount() const { return watch_list_ ? watch_list_->getWatchCount() : 0; }
+    size_t getFrozenCount() const { return watch_list_ ? watch_list_->getFrozenCount() : 0; }
+    size_t getChangedCount() const { return watch_list_ ? watch_list_->getChangedCount() : 0; }
     
     // Callbacks for integration
     std::function<void(uint32_t address)> onEditAddressCallback;

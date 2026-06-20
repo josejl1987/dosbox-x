@@ -4,11 +4,14 @@
 #include "cheat_engine.h"
 #include <functional>
 
+// Forward declaration
+namespace LuaEngineDebugTools { class DebuggerSession; }
+
 namespace LuaEngineCheatEngine {
 
 class CheatWindow {
 private:
-    CheatEngine cheat_engine_;
+    CheatEngine* cheat_engine_;
     
     // UI state
     bool show_window_;
@@ -78,7 +81,7 @@ private:
     void fillDialogFromCheat(const Cheat* cheat);
     
 public:
-    CheatWindow();
+    CheatWindow(LuaEngineDebugTools::DebuggerSession* session = nullptr);
     ~CheatWindow();
     
     // Initialization
@@ -122,13 +125,13 @@ public:
                             const std::vector<uint8_t>& original, const std::vector<uint8_t>& modified);
     
     // Accessors
-    CheatEngine& getCheatEngine() { return cheat_engine_; }
-    const CheatEngine& getCheatEngine() const { return cheat_engine_; }
+    CheatEngine* getCheatEngine() { return cheat_engine_; }
+    const CheatEngine* getCheatEngine() const { return cheat_engine_; }
     
     // Statistics
-    size_t getCheatCount() const { return cheat_engine_.getCheatCount(); }
-    size_t getEnabledCheatCount() const { return cheat_engine_.getEnabledCheatCount(); }
-    bool isCheatEngineEnabled() const { return cheat_engine_.isEnabled(); }
+    size_t getCheatCount() const { return cheat_engine_ ? cheat_engine_->getCheatCount() : 0; }
+    size_t getEnabledCheatCount() const { return cheat_engine_ ? cheat_engine_->getEnabledCheatCount() : 0; }
+    bool isCheatEngineEnabled() const { return cheat_engine_ && cheat_engine_->isEnabled(); }
     
     // Callbacks for integration
     std::function<void(uint32_t address, uint64_t value, LuaEngineRamSearch::WatchSize size, const std::string& domain)> onFreezeAddressCallback;

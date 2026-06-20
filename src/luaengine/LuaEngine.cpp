@@ -739,8 +739,8 @@ void LuaEngine::Shutdown() {
     // 1. Shutdown worker threads for performance optimization
     shutdownWorkerThreads();
 
-    // 2. Window thread management is now handled by the DebugToolsManager
-    // (window thread functionality has been moved to DebugToolsManager)
+    // 2. Window thread management is now handled by DebuggerSession
+    // (window thread functionality has been moved to DebuggerSession)
     // }
 
     // 3. Fire reverse-engineering exit hooks while the Lua state is still valid.
@@ -1000,8 +1000,8 @@ void LuaEngine::LUAENGINE_Init(Section* section) {
     }
     if(console) {
         log_info("LuaEngine console enabled");
-        // Console window functionality is now integrated with DebugToolsManager
-        // (createWindow functionality has been moved to DebugToolsManager)
+        // Console window functionality is now integrated with DebuggerSession
+        // (createWindow functionality has been moved to DebuggerSession)
     }
     snprintf(log_buffer, sizeof(log_buffer), "LuaEngine initialization complete - hooks: %d, running: %d", hooks, luaRunning.load(std::memory_order_acquire));
     log_info(log_buffer);

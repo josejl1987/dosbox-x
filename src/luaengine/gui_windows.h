@@ -20,6 +20,9 @@
 // Forward declaration for debugger UI
 namespace LuaEngineDebugger { class DisassemblyWindow; }
 
+// Forward declaration for debugger session
+namespace LuaEngineDebugTools { class DebuggerSession; }
+
 namespace LuaEngineGUIWindows {
 
 // Forward declarations
@@ -221,39 +224,27 @@ private:
 // Variable watch list window
 class WatchListWindow : public ToolWindow {
 private:
-    struct WatchEntry {
-        std::string name;
-        uint32_t address;
-        std::string data_type;
-        std::string current_value;
-        std::string previous_value;
-        bool changed;
-        bool enabled;
-        
-        WatchEntry(const std::string& n, uint32_t addr, const std::string& type) :
-            name(n), address(addr), data_type(type), changed(false), enabled(true) {}
-    };
-    
-    std::vector<WatchEntry> watch_entries_;
-    std::string add_name_;
-    uint32_t add_address_;
+    // PR2-002: No more embedded WatchEntry vector — uses session's WatchList via pointer
+    DebuggerSession* session_ = nullptr;
     int add_type_index_;
     std::vector<std::string> data_types_;
+    std::string add_name_;
+    uint32_t add_address_ = 0;
     
 public:
-    WatchListWindow(const std::string& id);
+    WatchListWindow(const std::string& id, DebuggerSession* session = nullptr);
     
     void renderContent() override;
     void update() override;
     
-    // Watch list specific methods
+    // Watch list specific methods (delegate to session's WatchList)
     void addWatch(const std::string& name, uint32_t address, const std::string& data_type);
     void removeWatch(int index);
     void clearWatches();
     void updateValues();
     
 private:
-    std::string formatValue(const WatchEntry& entry);
+    std::string formatValue(size_t watch_index);
     void renderAddWatchSection();
     void renderWatchTable();
 };
@@ -261,15 +252,8 @@ private:
 // Memory search window  
 class MemorySearchWindow : public ToolWindow {
 private:
-    struct SearchResult {
-        uint32_t address;
-        std::string value;
-        std::string previous_value;
-        bool changed;
-    };
-    
-    std::vector<SearchResult> search_results_;
-    std::string search_value_;
+    // PR2-002: No more embedded SearchResult vector — uses session's RamSearchEngine via pointer
+    DebuggerSession* session_ = nullptr;
     int search_type_index_;
     int search_comparison_index_;
     std::vector<std::string> search_types_;
@@ -277,14 +261,15 @@ private:
     bool first_search_;
     uint32_t search_start_address_;
     uint32_t search_end_address_;
+    std::string search_value_;
     
 public:
-    MemorySearchWindow(const std::string& id);
+    MemorySearchWindow(const std::string& id, DebuggerSession* session = nullptr);
     
     void renderContent() override;
     void update() override;
     
-    // Memory search specific methods
+    // Memory search specific methods (delegate to session's RamSearchEngine)
     void performSearch();
     void performNextSearch();
     void resetSearch();
@@ -293,7 +278,6 @@ public:
 private:
     void renderSearchControls();
     void renderSearchResults();
-    bool matchesSearch(uint32_t address, const std::string& value);
 };
 
 // Window docking and layout management
@@ -334,17 +318,20 @@ private:
     std::unique_ptr<WatchListWindow> watch_list_;
     std::unique_ptr<MemorySearchWindow> memory_search_;
     std::unique_ptr<LuaEngineDebugger::DisassemblyWindow> disassembly_window_;
-    std::unique_ptr<LuaEngineTraceLogger::TraceLogger> trace_logger_;
+    // TraceLogger is now owned by DebuggerSession — not here
     std::unique_ptr<LuaEngineTraceLogger::TraceLoggerWindow> trace_logger_window_;
     std::unique_ptr<LuaEngineCheatEngine::CheatWindow> cheat_window_;
     std::unique_ptr<ToolWindow> console_window_;
+
+    // Session provides all backend pointers
+    LuaEngineDebugTools::DebuggerSession* session_;
     
 public:
     WindowManager();
     ~WindowManager();
     
     // Initialization and cleanup
-    bool initialize(sol::state* lua_state);
+    bool initialize(sol::state* lua_state, LuaEngineDebugTools::DebuggerSession* session = nullptr);
     void shutdown();
     
     // Window management

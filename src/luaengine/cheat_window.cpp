@@ -1,4 +1,5 @@
 #include "cheat_window.h"
+#include "debugger_session.h"
 #include "debug_utils.h"
 #include "imgui.h"
 #include <algorithm>
@@ -11,8 +12,9 @@ namespace LuaEngineCheatEngine {
 // CheatWindow Implementation
 //=============================================================================
 
-CheatWindow::CheatWindow() 
-    : show_window_(true), show_add_dialog_(false), show_edit_dialog_(false),
+CheatWindow::CheatWindow(LuaEngineDebugTools::DebuggerSession* session) 
+    : cheat_engine_(session ? session->cheats() : nullptr),
+      show_window_(false), show_add_dialog_(false), show_edit_dialog_(false),
       show_code_dialog_(false), show_pointer_dialog_(false), selected_cheat_index_(-1),
       size_combo_index_(0), type_combo_index_(0), trigger_combo_index_(0) {
     
@@ -34,11 +36,14 @@ CheatWindow::~CheatWindow() {
 }
 
 void CheatWindow::initialize(LuaEngineMemoryDomains::MemoryDomainManager* memory_mgr) {
-    cheat_engine_.initialize(memory_mgr);
+    // ponytail: cheat_engine_ is now owned by DebuggerSession; this method is a no-op
+    // for backward compat.
+    (void)memory_mgr;
 }
 
 void CheatWindow::render() {
     if (!show_window_) return;
+    if (!cheat_engine_) return; // null-guard: session not initialized
     
     if (ImGui::Begin("Cheat Engine", &show_window_, ImGuiWindowFlags_MenuBar)) {
         renderMenuBar();
@@ -124,9 +129,9 @@ void CheatWindow::renderMenuBar() {
 
 void CheatWindow::renderToolbar() {
     // Engine toggle
-    bool engine_enabled = cheat_engine_.isEnabled();
+    bool engine_enabled = cheat_engine_->isEnabled();
     if (ImGui::Checkbox("Engine Enabled", &engine_enabled)) {
-        cheat_engine_.setEnabled(engine_enabled);
+        cheat_engine_->setEnabled(engine_enabled);
     }
     
     ImGui::SameLine();
@@ -153,7 +158,7 @@ void CheatWindow::renderToolbar() {
     // Status information
     ImGui::Text("Cheats: %zu | Enabled: %zu | Frame: %u | Applied: %u", 
                 getCheatCount(), getEnabledCheatCount(), 
-                cheat_engine_.getFrameCount(), cheat_engine_.getCheatsAppliedThisFrame());
+                cheat_engine_->getFrameCount(), cheat_engine_->getCheatsAppliedThisFrame());
 }
 
 void CheatWindow::renderCheatTable() {
@@ -172,7 +177,7 @@ void CheatWindow::renderCheatTable() {
         ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 100.0f);
         ImGui::TableHeadersRow();
         
-        const auto& cheats = cheat_engine_.getCheats();
+        const auto& cheats = cheat_engine_->getCheats();
         size_t visible_count = 0;
         
         for (size_t i = 0; i < cheats.size(); ++i) {
@@ -192,7 +197,7 @@ void CheatWindow::renderCheatTable() {
             ImGui::TableNextColumn();
             bool enabled = cheat->isEnabled();
             if (ImGui::Checkbox("##Enabled", &enabled)) {
-                cheat_engine_.enableCheat(cheat->getId(), enabled);
+                cheat_engine_->enableCheat(cheat->getId(), enabled);
             }
             
             // Name (with search highlighting)
@@ -348,8 +353,8 @@ void CheatWindow::renderAddDialog() {
             std::string domain = domain_input_;
             auto size = static_cast<LuaEngineRamSearch::WatchSize>(size_combo_index_ + 1);
             
-            uint32_t id = cheat_engine_.addCheat(name_input_, address, domain, size);
-            auto* cheat = cheat_engine_.findCheat(id);
+            uint32_t id = cheat_engine_->addCheat(name_input_, address, domain, size);
+            auto* cheat = cheat_engine_->findCheat(id);
             if (cheat) {
                 updateCheatFromDialog(cheat);
             }
@@ -370,8 +375,8 @@ void CheatWindow::renderAddDialog() {
 
 void CheatWindow::renderEditDialog() {
     if (ImGui::BeginPopupModal("Edit Cheat", &show_edit_dialog_, ImGuiWindowFlags_AlwaysAutoResize)) {
-        if (selected_cheat_index_ >= 0 && selected_cheat_index_ < static_cast<int>(cheat_engine_.getCheatCount())) {
-            auto* cheat = cheat_engine_.getCheat(selected_cheat_index_);
+        if (selected_cheat_index_ >= 0 && selected_cheat_index_ < static_cast<int>(cheat_engine_->getCheatCount())) {
+            auto* cheat = cheat_engine_->getCheat(selected_cheat_index_);
             
             ImGui::Text("Name:");
             ImGui::InputText("##Name", name_input_, sizeof(name_input_));
@@ -589,8 +594,8 @@ void CheatWindow::openAddDialog() {
 }
 
 void CheatWindow::openEditDialog(int cheat_index) {
-    if (cheat_index >= 0 && cheat_index < static_cast<int>(cheat_engine_.getCheatCount())) {
-        auto* cheat = cheat_engine_.getCheat(cheat_index);
+    if (cheat_index >= 0 && cheat_index < static_cast<int>(cheat_engine_->getCheatCount())) {
+        auto* cheat = cheat_engine_->getCheat(cheat_index);
         fillDialogFromCheat(cheat);
         selected_cheat_index_ = cheat_index;
         show_edit_dialog_ = true;
@@ -615,27 +620,27 @@ void CheatWindow::onEditCheat(int index) {
 }
 
 void CheatWindow::onRemoveCheat(int index) {
-    if (index >= 0 && index < static_cast<int>(cheat_engine_.getCheatCount())) {
-        auto* cheat = cheat_engine_.getCheat(index);
-        cheat_engine_.removeCheat(cheat->getId());
+    if (index >= 0 && index < static_cast<int>(cheat_engine_->getCheatCount())) {
+        auto* cheat = cheat_engine_->getCheat(index);
+        cheat_engine_->removeCheat(cheat->getId());
     }
 }
 
 void CheatWindow::onToggleCheat(int index) {
-    if (index >= 0 && index < static_cast<int>(cheat_engine_.getCheatCount())) {
-        auto* cheat = cheat_engine_.getCheat(index);
-        cheat_engine_.toggleCheat(cheat->getId());
+    if (index >= 0 && index < static_cast<int>(cheat_engine_->getCheatCount())) {
+        auto* cheat = cheat_engine_->getCheat(index);
+        cheat_engine_->toggleCheat(cheat->getId());
     }
 }
 
 void CheatWindow::onDuplicateCheat(int index) {
-    if (index >= 0 && index < static_cast<int>(cheat_engine_.getCheatCount())) {
-        auto* original = cheat_engine_.getCheat(index);
+    if (index >= 0 && index < static_cast<int>(cheat_engine_->getCheatCount())) {
+        auto* original = cheat_engine_->getCheat(index);
         std::string new_name = original->getName() + " (Copy)";
         
-        uint32_t id = cheat_engine_.addCheat(new_name, original->getAddress(), 
+        uint32_t id = cheat_engine_->addCheat(new_name, original->getAddress(), 
                                            original->getDomain(), original->getSize());
-        auto* duplicate = cheat_engine_.findCheat(id);
+        auto* duplicate = cheat_engine_->findCheat(id);
         if (duplicate) {
             duplicate->setDescription(original->getDescription());
             duplicate->setType(original->getType());
@@ -646,8 +651,8 @@ void CheatWindow::onDuplicateCheat(int index) {
 }
 
 void CheatWindow::onResetCheat(int index) {
-    if (index >= 0 && index < static_cast<int>(cheat_engine_.getCheatCount())) {
-        auto* cheat = cheat_engine_.getCheat(index);
+    if (index >= 0 && index < static_cast<int>(cheat_engine_->getCheatCount())) {
+        auto* cheat = cheat_engine_->getCheat(index);
         cheat->reset();
     }
 }
@@ -733,44 +738,54 @@ bool CheatWindow::isVisible() const {
 
 uint32_t CheatWindow::addCheat(const std::string& name, uint32_t address, const std::string& domain, 
                               LuaEngineRamSearch::WatchSize size) {
-    return cheat_engine_.addCheat(name, address, domain, size);
+    if (!cheat_engine_) return 0;
+    return cheat_engine_->addCheat(name, address, domain, size);
 }
 
 void CheatWindow::removeCheat(uint32_t id) {
-    cheat_engine_.removeCheat(id);
+    if (!cheat_engine_) return;
+    cheat_engine_->removeCheat(id);
 }
 
 void CheatWindow::toggleCheat(uint32_t id) {
-    cheat_engine_.toggleCheat(id);
+    if (!cheat_engine_) return;
+    cheat_engine_->toggleCheat(id);
 }
 
 void CheatWindow::clearCheats() {
-    cheat_engine_.removeAllCheats();
+    if (!cheat_engine_) return;
+    cheat_engine_->removeAllCheats();
 }
 
 bool CheatWindow::saveCheatFile(const std::string& filename) {
-    return cheat_engine_.saveCheatFile(filename);
+    if (!cheat_engine_) return false;
+    return cheat_engine_->saveCheatFile(filename);
 }
 
 bool CheatWindow::loadCheatFile(const std::string& filename) {
-    return cheat_engine_.loadCheatFile(filename);
+    if (!cheat_engine_) return false;
+    return cheat_engine_->loadCheatFile(filename);
 }
 
 void CheatWindow::enableAllCheats(bool enabled) {
-    cheat_engine_.enableAllCheats(enabled);
+    if (!cheat_engine_) return;
+    cheat_engine_->enableAllCheats(enabled);
 }
 
 void CheatWindow::resetAllCheats() {
-    cheat_engine_.resetAllCheats();
+    if (!cheat_engine_) return;
+    cheat_engine_->resetAllCheats();
 }
 
 void CheatWindow::applyCheats() {
-    cheat_engine_.applyCheats();
+    if (!cheat_engine_) return;
+    cheat_engine_->applyCheats();
 }
 
 void CheatWindow::freezeAddress(uint32_t address, uint64_t value, const std::string& domain, 
-                               LuaEngineRamSearch::WatchSize size) {
-    cheat_engine_.freezeAddress(address, value, domain, size);
+                              LuaEngineRamSearch::WatchSize size) {
+    if (!cheat_engine_) return;
+    cheat_engine_->freezeAddress(address, value, domain, size);
     
     if (onFreezeAddressCallback) {
         onFreezeAddressCallback(address, value, size, domain);
@@ -778,7 +793,8 @@ void CheatWindow::freezeAddress(uint32_t address, uint64_t value, const std::str
 }
 
 void CheatWindow::unfreezeAddress(uint32_t address, const std::string& domain) {
-    cheat_engine_.unfreezeAddress(address, domain);
+    if (!cheat_engine_) return;
+    cheat_engine_->unfreezeAddress(address, domain);
     
     if (onUnfreezeAddressCallback) {
         onUnfreezeAddressCallback(address, domain);
@@ -787,17 +803,20 @@ void CheatWindow::unfreezeAddress(uint32_t address, const std::string& domain) {
 
 uint32_t CheatWindow::createStaticCheat(const std::string& name, uint32_t address, const std::string& domain,
                                        LuaEngineRamSearch::WatchSize size, uint64_t value) {
-    return cheat_engine_.createStaticCheat(name, address, domain, size, value);
+    if (!cheat_engine_) return 0;
+    return cheat_engine_->createStaticCheat(name, address, domain, size, value);
 }
 
 uint32_t CheatWindow::createPointerCheat(const std::string& name, const std::vector<uint32_t>& pointer_path,
                                         const std::string& domain, LuaEngineRamSearch::WatchSize size, uint64_t value) {
-    return cheat_engine_.createPointerCheat(name, pointer_path, domain, size, value);
+    if (!cheat_engine_) return 0;
+    return cheat_engine_->createPointerCheat(name, pointer_path, domain, size, value);
 }
 
 uint32_t CheatWindow::createCodeCheat(const std::string& name, uint32_t address, const std::string& domain,
                                      const std::vector<uint8_t>& original, const std::vector<uint8_t>& modified) {
-    return cheat_engine_.createCodeCheat(name, address, domain, original, modified);
+    if (!cheat_engine_) return 0;
+    return cheat_engine_->createCodeCheat(name, address, domain, original, modified);
 }
 
 } // namespace LuaEngineCheatEngine

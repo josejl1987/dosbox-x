@@ -1,4 +1,5 @@
 #include "gui_windows.h"
+#include "debugger_session.h"
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -578,8 +579,8 @@ void HexEditorWindow::writeMemoryByte(uint32_t address, uint8_t value) {
 }
 
 // WatchListWindow implementation
-WatchListWindow::WatchListWindow(const std::string& id)
-    : ToolWindow(id, WindowProperties{}), add_address_(0), add_type_index_(0) {
+WatchListWindow::WatchListWindow(const std::string& id, DebuggerSession* session)
+    : ToolWindow(id, WindowProperties{}), session_(session), add_address_(0), add_type_index_(0) {
     
     properties_.title = "Watch List";
     properties_.type = WindowType::WATCH_LIST;
@@ -602,61 +603,40 @@ void WatchListWindow::update() {
 }
 
 void WatchListWindow::addWatch(const std::string& name, uint32_t address, const std::string& data_type) {
-    watch_entries_.emplace_back(name, address, data_type);
+    // PR2-002: delegate to session's WatchList
+    if (session_ && session_->watches()) {
+        session_->watches()->addWatch(name, address, data_type);
+    }
 }
 
 void WatchListWindow::removeWatch(int index) {
-    if (index >= 0 && index < watch_entries_.size()) {
-        watch_entries_.erase(watch_entries_.begin() + index);
+    // PR2-002: delegate to session's WatchList
+    if (session_ && session_->watches()) {
+        session_->watches()->removeWatch(index);
     }
 }
 
 void WatchListWindow::clearWatches() {
-    watch_entries_.clear();
+    // PR2-002: delegate to session's WatchList
+    if (session_ && session_->watches()) {
+        session_->watches()->clear();
+    }
 }
 
 void WatchListWindow::updateValues() {
-    for (auto& entry : watch_entries_) {
-        if (entry.enabled) {
-            entry.previous_value = entry.current_value;
-            entry.current_value = formatValue(entry);
-            entry.changed = (entry.current_value != entry.previous_value);
-        }
+    // PR2-002: update through session's WatchList
+    if (session_ && session_->watches()) {
+        session_->watches()->updateAllValues();
     }
 }
 
-std::string WatchListWindow::formatValue(const WatchEntry& entry) {
-    std::ostringstream oss;
-    
-    if (entry.data_type == "uint8") {
-        uint8_t value = readMemoryByte(entry.address);
-        oss << static_cast<unsigned>(value);
-    } else if (entry.data_type == "int8") {
-        int8_t value = static_cast<int8_t>(readMemoryByte(entry.address));
-        oss << static_cast<int>(value);
-    } else if (entry.data_type == "uint16") {
-        uint16_t value = readMemoryByte(entry.address) | (readMemoryByte(entry.address + 1) << 8);
-        oss << value;
-    } else if (entry.data_type == "int16") {
-        int16_t value = static_cast<int16_t>(readMemoryByte(entry.address) | (readMemoryByte(entry.address + 1) << 8));
-        oss << value;
-    } else if (entry.data_type == "uint32") {
-        uint32_t value = readMemoryByte(entry.address) | 
-                        (readMemoryByte(entry.address + 1) << 8) |
-                        (readMemoryByte(entry.address + 2) << 16) |
-                        (readMemoryByte(entry.address + 3) << 24);
-        oss << value;
-    } else if (entry.data_type == "int32") {
-        int32_t value = static_cast<int32_t>(readMemoryByte(entry.address) | 
-                                           (readMemoryByte(entry.address + 1) << 8) |
-                                           (readMemoryByte(entry.address + 2) << 16) |
-                                           (readMemoryByte(entry.address + 3) << 24));
-        oss << value;
-    } else {
-        oss << "Unknown type";
+std::string WatchListWindow::formatValue(size_t watch_index) {
+    // PR2-002: read from session's WatchList
+    if (session_ && session_->watches()) {
+        auto* watch = session_->watches()->getWatch(watch_index);
+        if (watch) return watch->current_value;
     }
-    
-    return oss.str();
+    return "N/A";
 }
 
 void WatchListWindow::renderAddWatchSection() {
@@ -712,50 +692,54 @@ void WatchListWindow::renderWatchTable() {
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 100);
         ImGui::TableHeadersRow();
         
-        for (int i = 0; i < watch_entries_.size(); i++) {
-            auto& entry = watch_entries_[i];
-            ImGui::TableNextRow();
-            
-            // Scope IDs per row to avoid collisions in interactive elements
-            ImGui::PushID(i);
-            
-            ImGui::TableSetColumnIndex(0);
-            ImGui::Checkbox(("##enabled" + std::to_string(i)).c_str(), &entry.enabled);
-            
-            ImGui::TableSetColumnIndex(1);
-            if (entry.changed) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f)); // Yellow for changed
-            }
-            ImGui::Text("%s", entry.name.c_str());
-            if (entry.changed) {
-                ImGui::PopStyleColor();
-            }
-            
-            ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%08X", entry.address);
-            
-            ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%s", entry.data_type.c_str());
-            
-            ImGui::TableSetColumnIndex(4);
-            if (entry.changed) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f)); // Yellow for changed
-            }
-            ImGui::Text("%s", entry.current_value.c_str());
-            if (entry.changed) {
-                ImGui::PopStyleColor();
-            }
-            
-            // Context menu for removing entries
-            if (ImGui::BeginPopupContextItem("GuiWindowsContextMenu")) {
-                if (ImGui::MenuItem("Remove")) {
-                    removeWatch(i);
-                    ImGui::CloseCurrentPopup();
+        // PR2-002: render from session's WatchList, not local vector
+        if (session_ && session_->watches()) {
+            auto& watches = session_->watches()->getWatches();
+            for (size_t i = 0; i < watches.size(); i++) {
+                const auto& watch = watches[i];
+                ImGui::TableNextRow();
+                ImGui::PushID(static_cast<int>(i));
+                
+                ImGui::TableSetColumnIndex(0);
+                bool enabled = watch->enabled;
+                if (ImGui::Checkbox(("##enabled" + std::to_string(i)).c_str(), &enabled)) {
+                    watch->enabled = enabled;
                 }
-                ImGui::EndPopup();
+                
+                ImGui::TableSetColumnIndex(1);
+                if (watch->changed) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
+                }
+                ImGui::Text("%s", watch->name.c_str());
+                if (watch->changed) {
+                    ImGui::PopStyleColor();
+                }
+                
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%08X", watch->address);
+                
+                ImGui::TableSetColumnIndex(3);
+                ImGui::Text("%s", watch->data_type.c_str());
+                
+                ImGui::TableSetColumnIndex(4);
+                if (watch->changed) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
+                }
+                ImGui::Text("%s", watch->current_value.c_str());
+                if (watch->changed) {
+                    ImGui::PopStyleColor();
+                }
+                
+                if (ImGui::BeginPopupContextItem("GuiWindowsContextMenu")) {
+                    if (ImGui::MenuItem("Remove")) {
+                        removeWatch(static_cast<int>(i));
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndPopup();
+                }
+                
+                ImGui::PopID();
             }
-            
-            ImGui::PopID();
         }
         
         ImGui::EndTable();
@@ -763,8 +747,8 @@ void WatchListWindow::renderWatchTable() {
 }
 
 // MemorySearchWindow implementation
-MemorySearchWindow::MemorySearchWindow(const std::string& id)
-    : ToolWindow(id, WindowProperties{}), search_type_index_(0), search_comparison_index_(0),
+MemorySearchWindow::MemorySearchWindow(const std::string& id, DebuggerSession* session)
+    : ToolWindow(id, WindowProperties{}), session_(session), search_type_index_(0), search_comparison_index_(0),
       first_search_(true), search_start_address_(0), search_end_address_(0x100000) {
     
     properties_.title = "Memory Search";
@@ -788,52 +772,36 @@ void MemorySearchWindow::update() {
 }
 
 void MemorySearchWindow::performSearch() {
-    search_results_.clear();
-    
-    // Perform initial search across entire memory range
-    for (uint32_t addr = search_start_address_; addr < search_end_address_; addr++) {
-        std::string current_value = "0"; // Would read actual memory value
-        
-        if (matchesSearch(addr, current_value)) {
-            SearchResult result;
-            result.address = addr;
-            result.value = current_value;
-            result.previous_value = current_value;
-            result.changed = false;
-            search_results_.push_back(result);
-        }
-        
-        // Limit results to prevent UI slowdown
-        if (search_results_.size() > 10000) break;
+    // PR2-002: delegate to session's RamSearchEngine
+    if (session_ && session_->ramSearch()) {
+        auto* engine = session_->ramSearch();
+        engine->setSearchRange(search_start_address_, search_end_address_);
+        // ponytail: simplified — map UI type index to engine's WatchSize
+        LuaEngineRamSearch::WatchSize size = LuaEngineRamSearch::WatchSize::BYTE;
+        if (search_type_index_ == 2 || search_type_index_ == 3) size = LuaEngineRamSearch::WatchSize::WORD;
+        else if (search_type_index_ == 4 || search_type_index_ == 5) size = LuaEngineRamSearch::WatchSize::DWORD;
+        engine->newSearch(size);
+        engine->searchExact(static_cast<uint64_t>(strtoull(search_value_.c_str(), nullptr, 0)));
     }
-    
-    first_search_ = false;
 }
 
 void MemorySearchWindow::performNextSearch() {
     if (first_search_) {
         performSearch();
+        first_search_ = false;
         return;
     }
-    
-    // Filter existing results
-    auto it = search_results_.begin();
-    while (it != search_results_.end()) {
-        std::string current_value = "0"; // Would read actual memory value
-        
-        if (matchesSearch(it->address, current_value)) {
-            it->previous_value = it->value;
-            it->value = current_value;
-            it->changed = (it->value != it->previous_value);
-            ++it;
-        } else {
-            it = search_results_.erase(it);
-        }
+    // PR2-002: delegate to session's RamSearchEngine
+    if (session_ && session_->ramSearch()) {
+        session_->ramSearch()->searchExact(static_cast<uint64_t>(strtoull(search_value_.c_str(), nullptr, 0)));
     }
 }
 
 void MemorySearchWindow::resetSearch() {
-    search_results_.clear();
+    // PR2-002: delegate to session's RamSearchEngine
+    if (session_ && session_->ramSearch()) {
+        session_->ramSearch()->reset();
+    }
     first_search_ = true;
 }
 
@@ -910,7 +878,7 @@ void MemorySearchWindow::renderSearchControls() {
         resetSearch();
     }
     
-    ImGui::Text("Results: %zu", search_results_.size());
+    ImGui::Text("Results: %zu", (session_ && session_->ramSearch()) ? session_->ramSearch()->getResultCount() : 0);
 }
 
 void MemorySearchWindow::renderSearchResults() {
@@ -921,41 +889,40 @@ void MemorySearchWindow::renderSearchResults() {
         ImGui::TableSetupColumn("Changed", ImGuiTableColumnFlags_WidthFixed, 60);
         ImGui::TableHeadersRow();
         
-        ImGuiListClipper clipper;
-        clipper.Begin(static_cast<int>(search_results_.size()));
-        
-        while (clipper.Step()) {
-            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
-                const auto& result = search_results_[i];
-                ImGui::TableNextRow();
-                
-                ImGui::TableSetColumnIndex(0);
-                ImGui::Text("%08X", result.address);
-                
-                ImGui::TableSetColumnIndex(1);
-                if (result.changed) {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
-                }
-                ImGui::Text("%s", result.value.c_str());
-                if (result.changed) {
-                    ImGui::PopStyleColor();
-                }
-                
-                ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%s", result.previous_value.c_str());
-                
-                ImGui::TableSetColumnIndex(3);
-                ImGui::Text("%s", result.changed ? "Yes" : "No");
-                
-                // Double-click to add to watch list
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-                    // Add to watch list if available
-                    if (g_window_manager) {
-                        auto* watch_window = dynamic_cast<WatchListWindow*>(g_window_manager->getWindow("watch_list"));
-                        if (watch_window) {
+        // PR2-002: render from session's RamSearchEngine results
+        if (session_ && session_->ramSearch()) {
+            auto& results = session_->ramSearch()->getResults();
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(results.size()));
+            
+            while (clipper.Step()) {
+                for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
+                    const auto& result = results[i];
+                    ImGui::TableNextRow();
+                    
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::Text("%08X", result.address);
+                    
+                    ImGui::TableSetColumnIndex(1);
+                    if (result.changed) {
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
+                    }
+                    ImGui::Text("%s", result.getFormattedValue().c_str());
+                    if (result.changed) {
+                        ImGui::PopStyleColor();
+                    }
+                    
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%s", result.getFormattedPreviousValue().c_str());
+                    
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::Text("%s", result.changed ? "Yes" : "No");
+                    
+                    // Double-click to add to watch list
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                        if (session_ && session_->watches()) {
                             std::string name = "Addr_" + std::to_string(result.address);
-                            watch_window->addWatch(name, result.address, search_types_[search_type_index_]);
-                            g_window_manager->showWatchList();
+                            session_->watches()->addWatch(name, result.address, search_types_[search_type_index_]);
                         }
                     }
                 }
@@ -964,12 +931,6 @@ void MemorySearchWindow::renderSearchResults() {
         
         ImGui::EndTable();
     }
-}
-
-bool MemorySearchWindow::matchesSearch(uint32_t address, const std::string& value) {
-    // Simplified matching logic - would need actual implementation
-    // based on search type and comparison
-    return true;
 }
 
 // DockingManager implementation
@@ -1019,14 +980,14 @@ void DockingManager::loadDockLayout(const std::string& filename) {
 }
 
 // WindowManager implementation
-WindowManager::WindowManager() : initialized_(false), lua_state_(nullptr) {
+WindowManager::WindowManager() : initialized_(false), lua_state_(nullptr), session_(nullptr) {
 }
 
 WindowManager::~WindowManager() {
     shutdown();
 }
 
-bool WindowManager::initialize(sol::state* lua_state) {
+bool WindowManager::initialize(sol::state* lua_state, LuaEngineDebugTools::DebuggerSession* session) {
     if (initialized_.load()) return true;
 
     if (!sdl.window) {
@@ -1044,6 +1005,7 @@ bool WindowManager::initialize(sol::state* lua_state) {
     }
 
     lua_state_ = lua_state;
+    session_ = session;
 
     // Setup built-in windows
     setupBuiltinWindows();
@@ -1067,7 +1029,7 @@ void WindowManager::shutdown() {
     memory_search_.reset();
     disassembly_window_.reset();
     trace_logger_window_.reset();
-    trace_logger_.reset();
+    // trace_logger_ is no longer owned here — it's in DebuggerSession
     cheat_window_.reset();
 
     CleanupImGui();
@@ -1127,14 +1089,14 @@ void WindowManager::showHexEditor(uint32_t base_address) {
 
 void WindowManager::showWatchList() {
     if (!watch_list_) {
-        watch_list_ = std::make_unique<WatchListWindow>("watch_list");
+        watch_list_ = std::make_unique<WatchListWindow>("watch_list", session_);
     }
     watch_list_->show();
 }
 
 void WindowManager::showMemorySearch() {
     if (!memory_search_) {
-        memory_search_ = std::make_unique<MemorySearchWindow>("memory_search");
+        memory_search_ = std::make_unique<MemorySearchWindow>("memory_search", session_);
     }
     memory_search_->show();
 }
@@ -1218,11 +1180,11 @@ bool WindowManager::isConsoleVisible() const {
 }
 
 LuaEngineTraceLogger::TraceLogger* WindowManager::getTraceLogger() {
-    if (!trace_logger_) {
-        trace_logger_ = std::make_unique<LuaEngineTraceLogger::TraceLogger>();
-        trace_logger_->initialize(LuaEngineDebug::g_core_debugger, LuaEngineSymbols::g_symbol_manager);
+    if (session_) {
+        return session_->tracer();
     }
-    return trace_logger_.get();
+    // Fallback: no session available — should not happen in normal flow
+    return nullptr;
 }
 
 void WindowManager::ensureDisassemblyWindow() {
@@ -1250,8 +1212,7 @@ void WindowManager::ensureTraceLoggerWindow() {
 void WindowManager::ensureCheatWindow() {
     if (cheat_window_) return;
 
-    cheat_window_ = std::make_unique<LuaEngineCheatEngine::CheatWindow>();
-    cheat_window_->initialize(LuaEngineMemoryDomains::GetGlobalMemoryDomainManager());
+    cheat_window_ = std::make_unique<LuaEngineCheatEngine::CheatWindow>(session_);
 }
 
 void WindowManager::ensureConsoleWindow() {

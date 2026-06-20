@@ -72,7 +72,7 @@ private:
     LuaEngineTraceLogger::TraceLoggerWindow* trace_logger_window_{nullptr};
 
     // State
-    bool show_window_{true};
+    bool show_window_{false};
     int active_tab_{0};
     uint32_t current_address_{0};
     uint32_t selected_address_{0};
