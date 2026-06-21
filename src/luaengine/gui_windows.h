@@ -337,6 +337,7 @@ public:
     // Initialization and cleanup
     bool initialize(sol::state* lua_state, LuaEngineDebugTools::DebuggerSession* session = nullptr);
     void shutdown();
+    bool isInitialized() const { return initialized_.load(); }
     
     // Window management
     std::string createWindow(const WindowProperties& props);

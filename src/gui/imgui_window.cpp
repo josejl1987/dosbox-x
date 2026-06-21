@@ -231,7 +231,7 @@ void RenderImGuiFrame() {
     // Deferred WindowManager init: LUA_Init runs before SDL window exists,
     // so we initialize WindowManager here on the first successful render call.
     if (auto* wm = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
-        if (!wm->initialized()) {
+        if (!wm->isInitialized()) {
             extern LuaEngine luaEngine;
             auto* session = ::GetDebuggerSession();
             if (wm->initialize(&luaEngine.lua, session)) {
