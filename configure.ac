@@ -1040,6 +1040,7 @@ dnl FEATURE: LUA engine
 AH_TEMPLATE(C_LUA,[Define to 1 to enable the Lua engine])
 AC_ARG_ENABLE(lua,AC_HELP_STRING([--disable-lua],[Disable the Lua engine]),enable_lua=$enableval,enable_lua=yes)
 AM_CONDITIONAL(C_LUA, test "x$enable_lua" = "xyes")
+AM_CONDITIONAL(C_SDL2, test "x$SDL_STRING" = "xSDL2")
 if test x$enable_lua = xyes; then
     AC_DEFINE(C_LUA,1)
 fi

@@ -314,8 +314,11 @@ void EventManager::fireMemoryEvent(const MemoryEventData& data) {
     }
 
     // Performance optimization: throttle high-frequency memory accesses
-    if (shouldThrottleMemoryAccess(data.physical_addr)) {
-        return;
+    // Exact-feature events (watchpoints, CDL) bypass throttle unconditionally
+    if (!(g_instrumentation_features.load(std::memory_order_relaxed) & INSTR_EXACT_MEMORY)) {
+        if (shouldThrottleMemoryAccess(data.physical_addr)) {
+            return;
+        }
     }
 
     // Use spatial indexing to get potentially matching filters (O(1) instead of O(n))
