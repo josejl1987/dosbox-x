@@ -520,6 +520,11 @@ bool InstrumentationRouter::removeBreakpointByAddr(uint32_t linear_addr) {
 	return false;
 }
 
+void InstrumentationRouter::clearAllBreakpoints() {
+	breakpoints_.clear();
+	updateFeatureMask();
+}
+
 // ============================================================================
 // Step control
 // ============================================================================

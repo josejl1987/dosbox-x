@@ -115,9 +115,7 @@ void DeleteAll() {
     CBreakpoint::DeleteAll();
 #else
     if (g_instrumentation) {
-        // ponytail: brute clear — DeleteAll is a rare operation
-        while (g_instrumentation->hasBreakpoints())
-            g_instrumentation->removeBreakpointByAddr(0);
+        g_instrumentation->clearAllBreakpoints();
     }
 #endif
 }

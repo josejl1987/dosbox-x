@@ -213,6 +213,7 @@ public:
 	bool hasBreakpoints() const { return !breakpoints_.empty(); }
 	bool checkBreakpointLinear(uint32_t linear_addr) const;
 	bool removeBreakpointByAddr(uint32_t linear_addr);
+	void clearAllBreakpoints();  // ponytail: O(n) clear + feature-mask update; DeleteAll is rare
 
 	// Step control
 	void enableStepping(int32_t count = 1);
