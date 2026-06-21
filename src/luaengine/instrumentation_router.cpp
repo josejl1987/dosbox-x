@@ -175,6 +175,11 @@ bool InstrumentationRouter::onInstruction(DebugAddress addr, uint32_t feature_ma
 		}
 	}
 
+	// CDL instruction fetch — record code coverage
+	if (feature_mask & INSTR_CDL_EXECUTION) {
+		PC98CDL::GetCDL().recordInsnFetch(addr.segment, addr.offset);
+	}
+
 	// Call stack tracking — placeholder for future PR
 	// if (feature_mask & INSTR_CALL_STACK) { ... }
 
@@ -480,7 +485,39 @@ void InstrumentationRouter::updateFeatureMask() {
 		}
 	}
 
+	// CDL feature bits — set when PC98CDL is active
+	if (PC98CDL::GetCDL().active()) {
+		mask |= INSTR_CDL_EXECUTION | INSTR_CDL_WRITE | INSTR_CDL_READ;
+	}
+
 	g_instrumentation_features.store(mask, std::memory_order_relaxed);
+}
+
+// ============================================================================
+// Breakpoint query — used by DebugBridge when C_DEBUG is not defined
+// ============================================================================
+
+bool InstrumentationRouter::checkBreakpointLinear(uint32_t linear_addr) const {
+	for (const auto& bp : breakpoints_) {
+		if (bp.active && bp.linear_addr == linear_addr) {
+			if (!bp.condition.empty()) {
+				if (!evaluateCondition(bp.condition)) continue;
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
+bool InstrumentationRouter::removeBreakpointByAddr(uint32_t linear_addr) {
+	auto it = std::find_if(breakpoints_.begin(), breakpoints_.end(),
+		[linear_addr](const BreakpointEntry& e) { return e.linear_addr == linear_addr; });
+	if (it != breakpoints_.end()) {
+		breakpoints_.erase(it);
+		updateFeatureMask();
+		return true;
+	}
+	return false;
 }
 
 // ============================================================================

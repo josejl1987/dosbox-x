@@ -382,12 +382,10 @@ Bits CPU_Core_Dyn_X86_Run(void) {
 restart_core:
 	if (!use_dynamic_core_with_paging) dosbox_allow_nonrecursive_page_fault = false;
 	PhysPt ip_point=SegPhys(cs)+reg_eip;
-#if C_DEBUG
 #if C_LUA
 		INSTRUMENT_CHECK();
 #elif C_HEAVY_DEBUG
 		if (DEBUG_HeavyIsBreakpoint()) return debugCallback;
-#endif
 #endif
 	CodePageHandler * chandler=nullptr;
 	if (GCC_UNLIKELY(MakeCodePage(ip_point,chandler))) {
@@ -451,14 +449,12 @@ run_block:
 #endif
 	switch (ret) {
 	case BR_Iret:
-#if C_DEBUG
 #if C_LUA
 		INSTRUMENT_CHECK();
 #elif C_HEAVY_DEBUG
 		if (DEBUG_HeavyIsBreakpoint()) {
 			return debugCallback;
 		}
-#endif
 #endif
 		if (!GETFLAG(TF)) {
 			if (GETFLAG(IF) && PIC_IRQCheck) {
@@ -470,21 +466,17 @@ run_block:
 		return CBRET_NONE;
 	case BR_Normal:
 		/* Maybe check if we staying in the same page? */
-#if C_DEBUG
 #if C_LUA
 		INSTRUMENT_CHECK();
 #elif C_HEAVY_DEBUG
 		if (DEBUG_HeavyIsBreakpoint()) return debugCallback;
 #endif
-#endif
 		goto restart_core;
 	case BR_Cycles:
-#if C_DEBUG
 #if C_LUA
 		INSTRUMENT_CHECK();
-#elif C_HEAVY_DEBUG			
+#elif C_HEAVY_DEBUG
 		if (DEBUG_HeavyIsBreakpoint()) return debugCallback;
-#endif
 #endif
 		return CBRET_NONE;
 	case BR_CallBack:
@@ -518,15 +510,13 @@ run_block:
 		goto restart_core;
 	case BR_Trap:
 			// trapflag is set, switch to the trap-aware decoder
-	#if C_DEBUG
-	#if C_LUA
+#if C_LUA
 			INSTRUMENT_CHECK();
-	#elif C_HEAVY_DEBUG
+#elif C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) {
 				return debugCallback;
 			}
-	#endif
-	#endif
+#endif
 			cpudecoder=CPU_Core_Dyn_X86_Trap_Run;
 			return CBRET_NONE;
 	}

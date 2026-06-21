@@ -209,6 +209,11 @@ public:
 	// Feature mask management — recalculates from current state
 	void updateFeatureMask();
 
+	// Breakpoint query — used by DebugBridge when C_DEBUG is not defined
+	bool hasBreakpoints() const { return !breakpoints_.empty(); }
+	bool checkBreakpointLinear(uint32_t linear_addr) const;
+	bool removeBreakpointByAddr(uint32_t linear_addr);
+
 	// Step control
 	void enableStepping(int32_t count = 1);
 	void disableStepping();

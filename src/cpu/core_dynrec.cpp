@@ -329,12 +329,10 @@ run_block:
 
 		switch (ret) {
 		case BR_Iret:
-#if C_DEBUG
 #if C_LUA
 			INSTRUMENT_CHECK();
 #elif C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
-#endif
 #endif
 			if (!GETFLAG(TF)) {
 				if (GETFLAG(IF) && PIC_IRQCheck) return CBRET_NONE;
@@ -349,24 +347,20 @@ run_block:
 			// modifying instruction (like ret) or some nontrivial cpu state
 			// changing instruction (for example switch to/from pmode),
 			// or the maximum number of instructions to translate was reached
-#if C_DEBUG
 #if C_LUA
 			INSTRUMENT_CHECK();
 #elif C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
-#endif
 #endif
 			break;
 
 		case BR_Cycles:
 			// cycles went negative, return from the core to handle
 			// external events, schedule the pic...
-#if C_DEBUG
 #if C_LUA
 			INSTRUMENT_CHECK();
 #elif C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) return (Bits)debugCallback;
-#endif
 #endif
 			return CBRET_NONE;
 
@@ -399,15 +393,13 @@ run_block:
 
 		case BR_Trap:
 			// trapflag is set, switch to the trap-aware decoder
-	#if C_DEBUG
-	#if C_LUA
+#if C_LUA
 			INSTRUMENT_CHECK();
-	#elif C_HEAVY_DEBUG
+#elif C_HEAVY_DEBUG
 			if (DEBUG_HeavyIsBreakpoint()) {
 				return debugCallback;
 			}
-	#endif
-	#endif
+#endif
 			cpudecoder=CPU_Core_Dynrec_Trap_Run;
 			return CBRET_NONE;
 
