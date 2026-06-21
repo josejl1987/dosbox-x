@@ -18,6 +18,11 @@ bool DebuggerSession::initialize() {
     }
 
     try {
+#if C_LUA
+        // InstrumentationRouter — MUST be constructed first; sets g_instrumentation
+        router_ = std::make_unique<InstrumentationRouter>();
+#endif
+
         // Core debug interface
         debug_interface_ = std::make_unique<LuaEngineDebug::DosBoxCoreDebugger>();
         debug_interface_->initialize(nullptr);
@@ -100,6 +105,11 @@ void DebuggerSession::shutdown() {
     // Clear global before resetting the unique_ptr
     LuaEngineDebug::g_core_debugger = nullptr;
     debug_interface_.reset();
+
+#if C_LUA
+    // InstrumentationRouter — MUST be destroyed last; clears g_instrumentation
+    router_.reset();
+#endif
 
     initialized_ = false;
 }

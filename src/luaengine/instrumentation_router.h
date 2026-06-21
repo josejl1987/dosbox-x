@@ -31,7 +31,19 @@ enum InstrumentationFeature : uint32_t {
 	INSTR_CALL_STACK        = 1u << 6,  // Call/return tracking
 	INSTR_STEP_CONTROL      = 1u << 7,  // Step-into/over/out
 	INSTR_CONDITION_EVAL    = 1u << 8,  // Breakpoint condition evaluation
+	INSTR_CDL_EXECUTION     = 1u << 9,  // CDL instruction fetch tracking
+	INSTR_CDL_WRITE         = 1u << 10, // CDL guest memory write tracking
+	INSTR_CDL_READ          = 1u << 11, // CDL guest memory read tracking
 };
+
+// Exact-instruction feature mask — when set, dynamic core must force normal
+constexpr uint32_t INSTR_EXACT_FEATURES =
+    INSTR_EXECUTION_BREAK | INSTR_EXECUTION_TRACE |
+    INSTR_STEP_CONTROL | INSTR_CDL_EXECUTION;
+
+// Exact-memory feature mask — bypasses EventManager throttling
+constexpr uint32_t INSTR_EXACT_MEMORY =
+    INSTR_MEMORY_WATCHPOINT | INSTR_CDL_WRITE | INSTR_CDL_READ;
 
 // ============================================================================
 // DebugAddress — segment:offset, linear, lazy physical

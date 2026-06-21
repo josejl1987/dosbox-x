@@ -1,7 +1,12 @@
 #ifndef DEBUGGER_SESSION_H
 #define DEBUGGER_SESSION_H
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include "core_debug_interface.h"
+#include "instrumentation_router.h"
 #include "lua_memory_domains.h"
 #include "ram_search_engine.h"
 #include "watch_list.h"
@@ -44,6 +49,9 @@ public:
     bool isInitialized() const { return initialized_; }
 
 private:
+#if C_LUA
+    std::unique_ptr<InstrumentationRouter> router_;
+#endif
     std::unique_ptr<LuaEngineDebug::DosBoxCoreDebugger> debug_interface_;
     std::unique_ptr<LuaEngineMemoryDomains::MemoryDomainManager> memory_manager_;
     std::unique_ptr<LuaEngineRamSearch::RamSearchEngine> ram_search_engine_;

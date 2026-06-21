@@ -88,8 +88,9 @@ void SafeLuaEngineAccessVoid(Func&& func) {
 #include "symbolic_breakpoints.h"
 
 // For disassembly functionality
-#define C_DEBUG 1        // Enable debug functionality for DasmI386
+#if C_DEBUG
 #include "debug.h"        // For DasmI386 function and debug utilities
+#endif
 // debug_inc.h already included at top of file — no include guards, cannot include twice
 
 // For path debugging
@@ -110,23 +111,17 @@ void SafeLuaEngineAccessVoid(Func&& func) {
 #include <cmath>          // For std::floor
 #include <thread>         // For sleep during debugger sync
 
-// External libraries (conditional compilation for when available)
-#define HAVE_IMGUI 1
-#define HAVE_SDL   1
-#define HAVE_OPENGL 1
-
-#ifdef HAVE_IMGUI
+// External libraries (conditional compilation — governed by C_LUA from config.h)
+#if C_LUA
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_sdl2.h>
 #include <imgui/backends/imgui_impl_opengl3.h>
 // Include an OpenGL header for functions like glViewport and glClear.
 // GL/gl.h is used here because the Visual Studio tree does not ship glew.
-#ifdef HAVE_OPENGL
 #include <GL/gl.h>
 #endif
-#endif
 
-#ifdef HAVE_SDL
+#if C_LUA
 // Use standard include path for portability. Ensure your build system can find SDL2.
 #include <SDL.h>
 #endif
@@ -278,7 +273,7 @@ std::vector<uint8_t> GetBytes(uint16_t seg, uint32_t ofs, size_t size) {
 }
 // --- ImGui Window Management ---
 void RenderLuaConsoleWindow(LuaEngineUIState& state) {
-#ifdef HAVE_IMGUI
+#if C_LUA
     ImGui::Begin("Lua Console");
 
     std::lock_guard<std::mutex> lock(state.console_mutex);
@@ -680,7 +675,7 @@ void LuaEngine::LuaFrameBoundary() {
     }
 
     // Update FPS (proper frame-based calculation)
-#ifdef HAVE_IMGUI
+#if C_LUA
     this->uiState.fps.store(ImGui::GetIO().Framerate, std::memory_order_relaxed);
 #else
     this->uiState.fps.store(60.0f, std::memory_order_relaxed);
