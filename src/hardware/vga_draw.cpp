@@ -42,6 +42,9 @@
 #include "config.h"
 #include "control.h"
 #include "sdlmain.h"
+#if C_LUA
+#include "instrumentation_router.h"
+#endif
 #include "shiftjis.h"
 #include "../ints/int10.h"
 #include "pc98_cg.h"
@@ -4148,6 +4151,14 @@ static void VGA_DisplayStartLatch(Bitu /*val*/) {
     const Bitu old_start = vga.config.real_start;
 
     if (!IS_PC98_ARCH) OnDemandCompleteFrame();
+
+#if C_LUA
+    // Frame boundary — fires at vertical retrace (emulated frame completion)
+    if (g_instrumentation) g_instrumentation->onFrameBoundary(false);
+    // ponytail: LuaFrameBoundary called via extern — full luaengine.h too heavy for hardware/
+    extern void LuaEngine_LuaFrameBoundary();  // thin wrapper in LuaEngine.cpp
+    LuaEngine_LuaFrameBoundary();
+#endif
 
     /* hretrace fx support: store the hretrace value at start of picture so we have
      * a point of reference how far to displace the scanline when wavy effects are

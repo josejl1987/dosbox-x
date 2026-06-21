@@ -379,7 +379,14 @@ Bits CPU_Core_Dyn_X86_Run(void) {
 	auto_dh_fpu fpu_saver;
 
     /* Determine the linear address of CS:EIP */
-restart_core:
+ restart_core:
+#if C_LUA
+    // Force normal core while exact-instruction features are active
+    if (auto _f_ = g_instrumentation_features.load(std::memory_order_relaxed);
+        _f_ & INSTR_EXACT_FEATURES) {
+        return Safe_CPU_Core_Normal_Run();
+    }
+#endif
 	if (!use_dynamic_core_with_paging) dosbox_allow_nonrecursive_page_fault = false;
 	PhysPt ip_point=SegPhys(cs)+reg_eip;
 #if C_LUA

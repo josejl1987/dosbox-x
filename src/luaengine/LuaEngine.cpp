@@ -524,6 +524,11 @@ void LuaEngine::LuaInstructionHook() {
     // InstrumentationRouter::onInstruction() from INSTRUMENT_CHECK()
 }
 
+// Thin wrapper for vga_draw.cpp frame boundary — avoids heavy luaengine.h include
+void LuaEngine_LuaFrameBoundary() {
+    luaEngine.LuaFrameBoundary();
+}
+
 void LuaEngine::LuaFrameBoundary() {
     if(!luaRunning.load(std::memory_order_acquire)) return;
 

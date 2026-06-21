@@ -263,6 +263,14 @@ Bits CPU_Core_Dynrec_Run(void) {
         return CPU_Core_Normal_Run();
     }
 
+#if C_LUA
+    // Force normal core while exact-instruction features are active
+    if (auto _f_ = g_instrumentation_features.load(std::memory_order_relaxed);
+        _f_ & INSTR_EXACT_FEATURES) {
+        return CPU_Core_Normal_Run();
+    }
+#endif
+
 	for (;;) {
 		dosbox_allow_nonrecursive_page_fault = false;
 		// Determine the linear address of CS:EIP
