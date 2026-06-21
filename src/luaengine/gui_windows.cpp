@@ -1682,6 +1682,21 @@ void WindowManager::setupBuiltinWindows() {
         execution_toolbar_ = std::make_unique<LuaEngineDebugger::ExecutionToolbar>(
             session_->debugger());
     }
+
+    // Connect watch list window to session backend
+    if (session_) {
+        watch_list_ = std::make_unique<WatchListWindow>("watch_list", session_);
+    }
+
+    // Connect RAM search window to session backend
+    if (session_) {
+        memory_search_ = std::make_unique<MemorySearchWindow>("ram_search", session_);
+    }
+
+    // Connect cheat window to session backend
+    if (session_) {
+        cheat_window_ = std::make_unique<LuaEngineCheatEngine::CheatWindow>(session_);
+    }
 }
 
 // Utility functions
