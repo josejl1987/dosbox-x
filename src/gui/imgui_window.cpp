@@ -215,6 +215,17 @@ void ProcessImGuiEvents(SDL_Event& event) {
     }
 }
 
+bool ImGuiWantsEvent(const SDL_Event& event) {
+    if (!ImGui::GetCurrentContext()) return false;
+    ImGuiIO& io = ImGui::GetIO();
+    if ((event.type == SDL_MOUSEMOTION || event.type == SDL_MOUSEBUTTONDOWN
+         || event.type == SDL_MOUSEBUTTONUP || event.type == SDL_MOUSEWHEEL)
+        && io.WantCaptureMouse) return true;
+    if ((event.type == SDL_KEYDOWN || event.type == SDL_KEYUP)
+        && io.WantCaptureKeyboard) return true;
+    return false;
+}
+
 void RenderImGuiFrame() {
 #if C_LUA
     // Deferred WindowManager init: LUA_Init runs before SDL window exists,

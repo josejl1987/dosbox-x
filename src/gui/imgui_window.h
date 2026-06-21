@@ -15,6 +15,9 @@ void ProcessImGuiEvents(SDL_Event& event);
 // Render ImGui frame
 void RenderImGuiFrame();
 
+// Check if ImGui wants to capture this event (for SDL event loop forwarding)
+bool ImGuiWantsEvent(const SDL_Event& event);
+
 #ifdef _WIN32
 // Present D3D11 frame (called by DOSBox-X rendering loop)
 void PresentDX11();

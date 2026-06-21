@@ -5961,15 +5961,8 @@ void GFX_Events() {
 #if C_LUA
         // Forward events to ImGui before DOSBox-X processes them
         ProcessImGuiEvents(event);
-        {
-            ImGuiIO& io = ImGui::GetIO();
-            // ponytail: WantCapture guards — skip DOSBox-X handler when ImGui wants the event
-            if ((event.type == SDL_MOUSEMOTION || event.type == SDL_MOUSEBUTTONDOWN
-                 || event.type == SDL_MOUSEBUTTONUP || event.type == SDL_MOUSEWHEEL)
-                && io.WantCaptureMouse) continue;
-            if ((event.type == SDL_KEYDOWN || event.type == SDL_KEYUP)
-                && io.WantCaptureKeyboard) continue;
-        }
+        // ponytail: WantCapture guards — skip DOSBox-X handler when ImGui wants the event
+        if (ImGuiWantsEvent(event)) continue;
 #endif
 #if defined(C_SDL2)
         /* SDL2 hack: There seems to be a problem where calling the SetWindowSize function,
