@@ -374,6 +374,9 @@ void                TIMER_Init(Section*);
 void                BIOS_Init(Section*);
 void                DEBUG_Init(Section*);
 void                CMOS_Init(Section*);
+#if C_LUA
+void                LUA_Init(Section*);
+#endif
 void                MSCDEX_Init(Section*);
 void                DRIVES_Init(Section*);
 void                CDROM_Image_Init(Section*);
@@ -3038,6 +3041,19 @@ void DOSBOX_SetupConfigSections(void) {
 
     Pstring = secprop->Add_string("startup.js",Property::Changeable::WhenIdle,"");
     Pstring->Set_help("script to run at startup");
+
+#if C_LUA
+    secprop=control->AddSection_prop("lua",&LUA_Init,true);//done
+
+    Pbool = secprop->Add_bool("enabled",Property::Changeable::WhenIdle,true);
+    Pbool->Set_help("Enable the Lua scripting engine (default true)");
+
+    Pstring = secprop->Add_string("autostart_script",Property::Changeable::WhenIdle,"");
+    Pstring->Set_help("Path to a Lua script to run automatically at startup");
+
+    Pbool = secprop->Add_bool("debugger",Property::Changeable::WhenIdle,false);
+    Pbool->Set_help("Enable the integrated Lua debugger UI (default false)");
+#endif
 
     secprop=control->AddSection_prop("vsync",&Null_Init,true);//done
 

@@ -142,6 +142,9 @@ char* revert_escape_newlines(const char* aMessage);
 #include "ptrop.h"
 #include "mapper.h"
 #include "sdlmain.h"
+#if C_LUA
+#include "imgui_window.h"
+#endif
 #include "zipfile.h"
 #include "glidedef.h"
 #include "bios_disk.h"
@@ -4795,6 +4798,9 @@ static void HandleMouseMotion(SDL_MouseMotionEvent * motion) {
             sdl_opengl.menudraw_countdown = 2; // two GL buffers
             GFX_OpenGLRedrawScreen();
             GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
+#if C_LUA
+            RenderImGuiFrame();
+#endif
 # if defined(C_SDL2)
             SDL_GL_SwapWindow(sdl.window);
 # else
@@ -4815,6 +4821,9 @@ static void HandleMouseMotion(SDL_MouseMotionEvent * motion) {
             sdl_opengl.menudraw_countdown = 2; // two GL buffers
             GFX_OpenGLRedrawScreen();
             GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
+#if C_LUA
+            RenderImGuiFrame();
+#endif
 # if defined(C_SDL2)
             SDL_GL_SwapWindow(sdl.window);
 # else
@@ -5047,6 +5056,9 @@ static void HandleMouseButton(SDL_MouseButtonEvent * button, SDL_MouseMotionEven
                         }
                     }
 
+#if C_LUA
+                    RenderImGuiFrame();
+#endif
 # if defined(C_SDL2)
                     SDL_GL_SwapWindow(sdl.window);
 # else
@@ -5373,6 +5385,9 @@ static void HandleMouseButton(SDL_MouseButtonEvent * button, SDL_MouseMotionEven
 
 #if C_OPENGL
                         if (OpenGL_using()) {
+#if C_LUA
+                            RenderImGuiFrame();
+#endif
 # if defined(C_SDL2)
                             SDL_GL_SwapWindow(sdl.window);
 # else
@@ -5424,6 +5439,9 @@ static void HandleMouseButton(SDL_MouseButtonEvent * button, SDL_MouseMotionEven
                     mainMenu.setRedraw();
                     GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
 
+#if C_LUA
+                    RenderImGuiFrame();
+#endif
 # if defined(C_SDL2)
                     SDL_GL_SwapWindow(sdl.window);
 # else
@@ -5940,6 +5958,19 @@ void GFX_Events() {
 #endif
 
     while (SDL_PollEvent(&event)) {
+#if C_LUA
+        // Forward events to ImGui before DOSBox-X processes them
+        ProcessImGuiEvents(event);
+        {
+            ImGuiIO& io = ImGui::GetIO();
+            // ponytail: WantCapture guards — skip DOSBox-X handler when ImGui wants the event
+            if ((event.type == SDL_MOUSEMOTION || event.type == SDL_MOUSEBUTTONDOWN
+                 || event.type == SDL_MOUSEBUTTONUP || event.type == SDL_MOUSEWHEEL)
+                && io.WantCaptureMouse) continue;
+            if ((event.type == SDL_KEYDOWN || event.type == SDL_KEYUP)
+                && io.WantCaptureKeyboard) continue;
+        }
+#endif
 #if defined(C_SDL2)
         /* SDL2 hack: There seems to be a problem where calling the SetWindowSize function,
            even for the same size, still causes a resize event, and sometimes for no apparent
