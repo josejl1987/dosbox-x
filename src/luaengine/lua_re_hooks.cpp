@@ -197,6 +197,7 @@ void OnExit() {
     sol::table ev = s_engine->lua.create_table();
     ev["type"] = "exit";
     fire_event("exit", ev);
+    s_engine = nullptr;
 }
 
 // Lua-facing registration API.

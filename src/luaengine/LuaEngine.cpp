@@ -601,6 +601,7 @@ void LuaEngine::LuaFrameBoundary() {
 }
 
 void LuaEngine::Shutdown() {
+    if (shutting_down_.exchange(true)) return; // prevent reentrancy
     log_info("Shutting down LuaEngine...");
 
     // Detach LRDB from the Lua state before tearing anything else down
@@ -624,9 +625,9 @@ void LuaEngine::Shutdown() {
     // 1. Shutdown worker threads for performance optimization
     shutdownWorkerThreads();
 
-    // 2. Window thread management is now handled by DebuggerSession
-    // (window thread functionality has been moved to DebuggerSession)
-    // }
+    // 2. Shutdown window system BEFORE closing Lua state to avoid use-after-free
+    //    ImGui windows may hold sol::function refs that become dangling after lua=sol::state()
+    LuaEngineGUIWindows::WindowUtils::shutdownWindowSystem();
 
     // 3. Fire reverse-engineering exit hooks while the Lua state is still valid.
     LuaReHooks::OnExit();
@@ -645,23 +646,28 @@ void LuaEngine::Shutdown() {
         breakpoint_actions_.clear();
     }
 
-    // 3. Reset event manager before closing the Lua state to avoid Lua unrefs on tear-down
+    // 5. Reset event manager before closing the Lua state to avoid Lua unrefs on tear-down
     event_manager.reset();
 
-    // 4. Close the Lua state to free all Lua-related memory
+    // 6. Close the Lua state to free all Lua-related memory
     if(lua.lua_state()) {
         lua = sol::state(); // Properly close and reset the Lua state
     }
 
-    // 5. Shutdown memory domains after Lua state is cleared to prevent use-after-free
+    // 7. Shutdown memory domains after Lua state is cleared to prevent use-after-free
     // This ensures Lua no longer holds references to domain objects before they're destroyed
     LuaEngineMemoryDomains::ShutdownMemoryDomains();
-    
-    // 6. Reset smart pointers and other state
-    // input_recorder.reset(); // Removed - input recorder system disabled
 
-    // Shutdown window system
-    LuaEngineGUIWindows::WindowUtils::shutdownWindowSystem();
+    // 8. Shutdown save state manager and null the global pointer
+    SaveStateManager::ShutdownSaveStateManager();
+
+    // 9. Reset stale global pointers
+    LuaEngineFrameControl::g_frame_controller = nullptr;
+    LuaEngineGUIWindows::g_window_manager = nullptr;
+    LuaEngineSymbols::g_symbol_manager = nullptr;
+    // Note: LuaReHooks::s_engine is reset to nullptr inside OnExit() above
+
+    // Reset smart pointers and other state
     game_templates.clear();
     active_game_hooks.clear();
     luaRunning.store(0, std::memory_order_release);
@@ -673,9 +679,9 @@ void LuaEngine::Shutdown() {
 
     // Clear symbol manager global and destroy instance to avoid dangling pointer
     symbol_manager.reset();
-    LuaEngineSymbols::g_symbol_manager = nullptr;
 
-    log_info("LuaEngine shutdown complete.");
+    log_info("Shutdown complete");
+    shutting_down_.store(false);
 }
 
 void LuaEngine::LUAENGINE_Init(Section* section) {
@@ -767,6 +773,7 @@ void LuaEngine::LUAENGINE_Init(Section* section) {
     // GUI overlay manager removed - system disabled
     window_manager = std::make_unique<LuaEngineGUIWindows::WindowManager>();
     LuaEngineGUIWindows::g_window_manager = window_manager.get();
+    log_info("WindowManager created (deferred ImGui init)");
 
     // Now retrieve TraceLogger from the constructed WindowManager and finalize event manager init
     // PR1-006 + PR1-008: moved here so trace_logger_ is non-null when TraceLogger is active
@@ -1355,57 +1362,52 @@ void LuaEngine::updateInstructionHookState() {
 
 void LuaEngine::registerSaveStateAPI() {
     auto savestate_table = lua.create_table();
-    char log_buffer[256];
-    savestate_table["save"] = [this, &log_buffer](sol::optional<int> slot) {
+    savestate_table["save"] = [this](sol::optional<int> slot) {
         if(slot) {
             int current_slot = GetGameState();
             SetGameState(slot.value()); SaveGameState(true); SetGameState(current_slot);
-            snprintf(log_buffer, sizeof(log_buffer), "Saved state to slot %d", slot.value());
-            log_info(log_buffer);
+            std::string msg = "Saved state to slot " + std::to_string(slot.value());
+            log_info(msg);
         }
         else {
             SaveGameState(true);
-            snprintf(log_buffer, sizeof(log_buffer), "Saved state to current slot %llu",
-                static_cast<unsigned long long>(GetGameState()));
-            log_info(log_buffer);
+            std::string msg = "Saved state to current slot " + std::to_string(GetGameState());
+            log_info(msg);
         }
         };
-    savestate_table["load"] = [this, &log_buffer](sol::optional<int> slot) {
+    savestate_table["load"] = [this](sol::optional<int> slot) {
         if(slot) {
             int current_slot = GetGameState();
             SetGameState(slot.value()); LoadGameState(true); SetGameState(current_slot);
-            snprintf(log_buffer, sizeof(log_buffer), "Loaded state from slot %d", slot.value());
-            log_info(log_buffer);
+            std::string msg = "Loaded state from slot " + std::to_string(slot.value());
+            log_info(msg);
         }
         else {
             LoadGameState(true);
-            snprintf(log_buffer, sizeof(log_buffer), "Loaded state from current slot %llu",
-                static_cast<unsigned long long>(GetGameState()));
-            log_info(log_buffer);
+            std::string msg = "Loaded state from current slot " + std::to_string(GetGameState());
+            log_info(msg);
         }
         };
     savestate_table["get_current_slot"] = []() -> int { return static_cast<int>(GetGameState()); };
-    savestate_table["set_current_slot"] = [this, &log_buffer](int slot) {
+    savestate_table["set_current_slot"] = [this](int slot) {
         SetGameState(slot);
-        snprintf(log_buffer, sizeof(log_buffer), "Set current savestate slot to %d", slot);
-        log_info(log_buffer);
+        std::string msg = "Set current savestate slot to " + std::to_string(slot);
+        log_info(msg);
         };
-    savestate_table["quick_save"] = [this, &log_buffer]() {
+    savestate_table["quick_save"] = [this]() {
         SaveGameState(true);
-        snprintf(log_buffer, sizeof(log_buffer), "Quick save to slot %llu",
-            static_cast<unsigned long long>(GetGameState()));
-        log_info(log_buffer);
+        std::string msg = "Quick save to slot " + std::to_string(GetGameState());
+        log_info(msg);
         };
-    savestate_table["quick_load"] = [this, &log_buffer]() {
+    savestate_table["quick_load"] = [this]() {
         LoadGameState(true);
-        snprintf(log_buffer, sizeof(log_buffer), "Quick load from slot %llu",
-            static_cast<unsigned long long>(GetGameState()));
-        log_info(log_buffer);
+        std::string msg = "Quick load from slot " + std::to_string(GetGameState());
+        log_info(msg);
         };
-    savestate_table["auto_save_on_breakpoint"] = [this, &log_buffer](bool enabled) {
+    savestate_table["auto_save_on_breakpoint"] = [this](bool enabled) {
         lua["_auto_save_on_breakpoint"] = enabled;
-        snprintf(log_buffer, sizeof(log_buffer), "%s auto-save on breakpoint", enabled ? "Enabled" : "Disabled");
-        log_info(log_buffer);
+        std::string msg = std::string(enabled ? "Enabled" : "Disabled") + " auto-save on breakpoint";
+        log_info(msg);
         };
 
     // Rich named savestate support via SaveStateManager
@@ -1438,12 +1440,11 @@ void LuaEngine::registerSaveStateAPI() {
 
 void LuaEngine::registerHotReloadAPI() {
     auto hotreload_table = lua.create_table();
-    char log_buffer[512];
-    hotreload_table["enable"] = [this, &log_buffer](const std::string& filename) {
+    hotreload_table["enable"] = [this](const std::string& filename) {
         autostart_script_path = filename;
         last_script_modified = getFileModificationTime(filename);
-        snprintf(log_buffer, sizeof(log_buffer), "Enabled hot-reload for script: %s", filename.c_str());
-        log_info(log_buffer);
+        std::string msg = "Enabled hot-reload for script: " + filename;
+        log_info(msg);
         };
     hotreload_table["disable"] = [this]() {
         autostart_script_path.clear();
@@ -1452,10 +1453,10 @@ void LuaEngine::registerHotReloadAPI() {
         };
     hotreload_table["check"] = [this]() { checkScriptHotReload(); };
     hotreload_table["get_script"] = [this]() -> std::string { return autostart_script_path; };
-    hotreload_table["reload"] = [this, &log_buffer]() {
+    hotreload_table["reload"] = [this]() {
         if(!autostart_script_path.empty()) {
-            snprintf(log_buffer, sizeof(log_buffer), "Manually reloading script: %s", autostart_script_path.c_str());
-            log_info(log_buffer);
+            std::string msg = "Manually reloading script: " + autostart_script_path;
+            log_info(msg);
             LoadCode(autostart_script_path.c_str(), nullptr);
             last_script_modified = getFileModificationTime(autostart_script_path);
         }
@@ -3143,6 +3144,7 @@ void LuaEngine::registerReverseEngineeringAPI() {
 
 // C-style wrapper function for DOSBox section system
 void LUA_Init(Section* section) {
+    luaEngine.log_info("LUA_Init: config section reached");
     luaEngine.LUAENGINE_Init(section);
 }
 

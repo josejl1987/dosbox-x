@@ -9,6 +9,11 @@ extern SDL_Block sdl;
 #include <imgui/imgui_internal.h>
 #include "imgui_window.h"
 #include "imgui_performance_config.h"
+#if C_LUA
+#include "debugger_session.h"
+#include "gui_windows.h"
+#include "luaengine.h"
+#endif
 #include <vector>
 #include <algorithm>
 #include <chrono>
@@ -211,6 +216,20 @@ void ProcessImGuiEvents(SDL_Event& event) {
 }
 
 void RenderImGuiFrame() {
+#if C_LUA
+    // Deferred WindowManager init: LUA_Init runs before SDL window exists,
+    // so we initialize WindowManager here on the first successful render call.
+    if (auto* wm = LuaEngineGUIWindows::WindowUtils::getWindowManager()) {
+        if (!wm->initialized()) {
+            extern LuaEngine luaEngine;
+            auto* session = ::GetDebuggerSession();
+            if (wm->initialize(&luaEngine.lua, session)) {
+                luaEngine.log_info("ImGui context created (deferred init)");
+            }
+        }
+    }
+#endif
+
     if (!ImGui::GetCurrentContext()) return;
 
 #if IMGUI_ENABLE_PERFORMANCE_LOGGING
@@ -295,13 +314,6 @@ void RenderImGuiFrame() {
 #endif // C_LUA
 
 #if C_DEBUG
-    // Ensure debug session is initialized
-    static bool debug_session_initialized = false;
-    if (!debug_session_initialized) {
-        ::InitializeDebugSession();
-        debug_session_initialized = true;
-    }
-
     // Update session (watch values, hotkeys)
     if (auto* session = ::GetDebuggerSession()) {
         if (session->isInitialized()) {

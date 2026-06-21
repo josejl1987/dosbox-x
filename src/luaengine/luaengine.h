@@ -501,6 +501,9 @@ struct LuaEngine
 
     // Global instance protection
     mutable std::mutex lua_state_mutex_; // Protects Lua state access across threads
+
+    // Shutdown reentrancy guard
+    std::atomic<bool> shutting_down_{false};
 };
 
 // Global instance protection

@@ -615,6 +615,7 @@ bool initializeFrameControl() {
 void shutdownFrameControl() {
     if (g_frame_controller) {
         g_frame_controller->shutdown();
+        g_frame_controller = nullptr;
     }
 }
 
