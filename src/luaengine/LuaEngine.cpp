@@ -2913,8 +2913,8 @@ void LuaEngine::registerCDLAPI() {
         mi.size = info.get_or<uint32_t>("size", 0);
         mi.source_file = info.get_or<std::string>("source_file", "");
         mi.source_offset = info.get_or<uint32_t>("source_offset", 0);
-        mi.enable_last_writer = info.get_or<bool>("enable_last_writer", false);
-        mi.enable_coverage = info.get_or<bool>("enable_coverage", false);
+        mi.enable_last_writer = info["enable_last_writer"].get_or(false);
+        mi.enable_coverage = info["enable_coverage"].get_or(false);
         if (mi.id.empty() || mi.size == 0) return false;
         return PC98CDL::GetCDL().registerModule(mi) != nullptr;
     };
