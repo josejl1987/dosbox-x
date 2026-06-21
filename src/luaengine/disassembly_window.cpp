@@ -8,10 +8,13 @@
 #include <sstream>
 #include <fstream>
 
+#include "dosbox.h"             // Bitu — must come before debug_inc.h
+#include "mem.h"                // PhysPt — must come before debug_inc.h
 #include "symbolic_breakpoints.h"
 #include "symbol_manager.h"
 #include "trace_logger.h"
 #include "trace_logger_window.h"
+#include "logging.h"            // DEBUG_ShowMsg
 #include "../debug/debug_inc.h"
 
 // Optimized Hex formatting helper
@@ -930,7 +933,6 @@ namespace LuaEngineDebugger {
         std::snprintf(table_id, sizeof(table_id), "DisasmTable##code_%p", this);
         int num_columns = show_memrefs_ ? 5 : 4;
         if(ImGui::BeginTable(table_id, num_columns, ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
-        if(ImGui::BeginTable(table_id, num_columns, ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {        if(ImGui::BeginTable(table_id, num_columns, ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
             ImGui::TableSetupColumn("Addr", ImGuiTableColumnFlags_WidthFixed, 80.0f);
             ImGui::TableSetupColumn("Bytes", ImGuiTableColumnFlags_WidthFixed, 120.0f);
             ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 160.0f);

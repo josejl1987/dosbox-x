@@ -18,6 +18,7 @@
 #include "cheat_window.h"
 #include "lua_memory_domains.h"
 #include "../gui/imgui_window.h"
+#include "debug_bridge.h"
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h> // DockBuilder API
 
@@ -32,8 +33,7 @@ extern SDL_Block sdl;
 #include <SDL.h>
 #endif
 
-// Global Lua engine instance (declared in LuaEngine.cpp)
-extern LuaEngine luaEngine;
+// Global Lua engine instance — now provided by debug_bridge.h
 
 // Add this function to read a byte from memory
 uint8_t readMemoryByte(uint32_t address) {
@@ -607,7 +607,12 @@ void WatchListWindow::update() {
 void WatchListWindow::addWatch(const std::string& name, uint32_t address, const std::string& data_type) {
     // PR2-002: delegate to session's WatchList
     if (session_ && session_->watches()) {
-        session_->watches()->addWatch(name, address, data_type);
+        auto* wl = session_->watches();
+        // ponytail: map data_type string to WatchSize, use name as notes
+        LuaEngineWatchList::WatchSize size = wl->stringToSize(data_type);
+        size_t idx = wl->addWatch(address, "", size);
+        auto* w = wl->getWatch(idx);
+        if (w) w->setNotes(name);
     }
 }
 
@@ -621,7 +626,7 @@ void WatchListWindow::removeWatch(int index) {
 void WatchListWindow::clearWatches() {
     // PR2-002: delegate to session's WatchList
     if (session_ && session_->watches()) {
-        session_->watches()->clear();
+        session_->watches()->clearWatches();
     }
 }
 
@@ -636,7 +641,7 @@ std::string WatchListWindow::formatValue(size_t watch_index) {
     // PR2-002: read from session's WatchList
     if (session_ && session_->watches()) {
         auto* watch = session_->watches()->getWatch(watch_index);
-        if (watch) return watch->current_value;
+        if (watch) return watch->getCurrentValueString();
     }
     return "N/A";
 }
@@ -703,32 +708,33 @@ void WatchListWindow::renderWatchTable() {
                 ImGui::PushID(static_cast<int>(i));
                 
                 ImGui::TableSetColumnIndex(0);
-                bool enabled = watch->enabled;
+                // ponytail: Watch has no enabled field; using frozen as closest proxy
+                bool enabled = watch->isFrozen();
                 if (ImGui::Checkbox(("##enabled" + std::to_string(i)).c_str(), &enabled)) {
-                    watch->enabled = enabled;
+                    if (enabled) watch->freeze(); else watch->unfreeze();
                 }
                 
                 ImGui::TableSetColumnIndex(1);
-                if (watch->changed) {
+                if (watch->hasValueChanged()) {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
                 }
-                ImGui::Text("%s", watch->name.c_str());
-                if (watch->changed) {
+                ImGui::Text("%s", watch->getNotes().c_str());
+                if (watch->hasValueChanged()) {
                     ImGui::PopStyleColor();
                 }
                 
                 ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%08X", watch->address);
+                ImGui::Text("%08X", watch->getAddress());
                 
                 ImGui::TableSetColumnIndex(3);
-                ImGui::Text("%s", watch->data_type.c_str());
+                ImGui::Text("%s", session_->watches()->getSizeString(watch->getSize()).c_str());
                 
                 ImGui::TableSetColumnIndex(4);
-                if (watch->changed) {
+                if (watch->hasValueChanged()) {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
                 }
-                ImGui::Text("%s", watch->current_value.c_str());
-                if (watch->changed) {
+                ImGui::Text("%s", watch->getCurrentValueString().c_str());
+                if (watch->hasValueChanged()) {
                     ImGui::PopStyleColor();
                 }
                 
@@ -777,13 +783,15 @@ void MemorySearchWindow::performSearch() {
     // PR2-002: delegate to session's RamSearchEngine
     if (session_ && session_->ramSearch()) {
         auto* engine = session_->ramSearch();
-        engine->setSearchRange(search_start_address_, search_end_address_);
-        // ponytail: simplified — map UI type index to engine's WatchSize
-        LuaEngineRamSearch::WatchSize size = LuaEngineRamSearch::WatchSize::BYTE;
-        if (search_type_index_ == 2 || search_type_index_ == 3) size = LuaEngineRamSearch::WatchSize::WORD;
-        else if (search_type_index_ == 4 || search_type_index_ == 5) size = LuaEngineRamSearch::WatchSize::DWORD;
-        engine->newSearch(size);
-        engine->searchExact(static_cast<uint64_t>(strtoull(search_value_.c_str(), nullptr, 0)));
+        // ponytail: no setSearchRange in API — range stored locally only
+        LuaEngineRamSearch::WatchSize size = LuaEngineRamSearch::WatchSize::BYTE_1;
+        if (search_type_index_ == 2 || search_type_index_ == 3) size = LuaEngineRamSearch::WatchSize::BYTE_2;
+        else if (search_type_index_ == 4 || search_type_index_ == 5) size = LuaEngineRamSearch::WatchSize::BYTE_4;
+        engine->setSize(size);
+        engine->startNewSearch();
+        engine->doSearch(LuaEngineRamSearch::SearchOperator::EQUAL,
+                         LuaEngineRamSearch::CompareType::SPECIFIC_VALUE,
+                         static_cast<uint64_t>(strtoull(search_value_.c_str(), nullptr, 0)));
     }
 }
 
@@ -795,14 +803,16 @@ void MemorySearchWindow::performNextSearch() {
     }
     // PR2-002: delegate to session's RamSearchEngine
     if (session_ && session_->ramSearch()) {
-        session_->ramSearch()->searchExact(static_cast<uint64_t>(strtoull(search_value_.c_str(), nullptr, 0)));
+        session_->ramSearch()->doSearch(LuaEngineRamSearch::SearchOperator::EQUAL,
+                                        LuaEngineRamSearch::CompareType::SPECIFIC_VALUE,
+                                        static_cast<uint64_t>(strtoull(search_value_.c_str(), nullptr, 0)));
     }
 }
 
 void MemorySearchWindow::resetSearch() {
     // PR2-002: delegate to session's RamSearchEngine
     if (session_ && session_->ramSearch()) {
-        session_->ramSearch()->reset();
+        session_->ramSearch()->clearResults();
     }
     first_search_ = true;
 }
@@ -906,11 +916,11 @@ void MemorySearchWindow::renderSearchResults() {
                     ImGui::Text("%08X", result.address);
                     
                     ImGui::TableSetColumnIndex(1);
-                    if (result.changed) {
+                    if (result.current_value != result.previous_value) {
                         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
                     }
                     ImGui::Text("%s", result.getFormattedValue().c_str());
-                    if (result.changed) {
+                    if (result.current_value != result.previous_value) {
                         ImGui::PopStyleColor();
                     }
                     
@@ -918,13 +928,18 @@ void MemorySearchWindow::renderSearchResults() {
                     ImGui::Text("%s", result.getFormattedPreviousValue().c_str());
                     
                     ImGui::TableSetColumnIndex(3);
-                    ImGui::Text("%s", result.changed ? "Yes" : "No");
+                    ImGui::Text("%s", result.current_value != result.previous_value ? "Yes" : "No");
                     
                     // Double-click to add to watch list
                     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
                         if (session_ && session_->watches()) {
                             std::string name = "Addr_" + std::to_string(result.address);
-                            session_->watches()->addWatch(name, result.address, search_types_[search_type_index_]);
+                            auto* wl = session_->watches();
+                            // ponytail: map search type to WatchSize for watch creation
+                            LuaEngineWatchList::WatchSize wsize = wl->stringToSize(search_types_[search_type_index_]);
+                            size_t idx = wl->addWatch(result.address, "", wsize);
+                            auto* w = wl->getWatch(idx);
+                            if (w) w->setNotes(name);
                         }
                     }
                 }

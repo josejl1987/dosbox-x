@@ -6,6 +6,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cstdio>
+#include <climits> // PATH_MAX
 
 namespace LuaEngineTraceLogger {
 

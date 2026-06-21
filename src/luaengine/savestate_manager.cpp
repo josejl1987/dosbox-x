@@ -620,8 +620,7 @@ void Manager::TriggerLoadCallback(SaveStateResult result, int slot, const std::s
 }
 
 std::string Manager::GetDefaultSaveDirectory() {
-    std::string config_dir;
-    Cross::GetPlatformConfigDir(config_dir);
+    std::string config_dir = Cross::GetPlatformConfigDir();
     return config_dir + "/dosbox-x/saves";
 }
 

@@ -47,5 +47,5 @@ fi
 echo "Compiling DOSBox-X"
 chmod +x configure
 ./configure --enable-debug=heavy --prefix=/usr --enable-sdl2 "${@}" "${opt}" || exit 1
-make -j3 || exit 1
+make -j$(nproc) || exit 1
 

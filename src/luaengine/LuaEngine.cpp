@@ -8,9 +8,11 @@
 #include "cpu.h"          // For SegValue and GetAddress functions/macros
 #include "setup.h"        // For Section configuration system
 #include "control.h"      // For accessing control->GetSection()
+#include "logging.h"      // For DEBUG_ShowMsg
 #include <cctype>         // For std::tolower
 #include <cstdint>
 #include "../debug/debug_inc.h" // For ParseCommand bridge and debugger callbacks
+#include "debug_bridge.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -88,7 +90,7 @@ void SafeLuaEngineAccessVoid(Func&& func) {
 // For disassembly functionality
 #define C_DEBUG 1        // Enable debug functionality for DasmI386
 #include "debug.h"        // For DasmI386 function and debug utilities
-#include "../debug/debug_inc.h"  // For DasmI386 function declaration
+// debug_inc.h already included at top of file — no include guards, cannot include twice
 
 // For path debugging
 #ifdef _WIN32
@@ -163,7 +165,7 @@ bool WriteBytes(uint16_t seg, uint32_t ofs, const std::vector<uint8_t>& data) {
             size_t chunk_size = std::min(CHUNK_SIZE, data.size() - chunk_start);
 
             // Calculate physical address for this chunk
-            PhysPt chunk_phys = static_cast<PhysPt>(::GetAddress(seg, ofs + chunk_start));
+            PhysPt chunk_phys = static_cast<PhysPt>(GetAddress(seg, ofs + chunk_start));
 
             // Write chunk directly
             for(size_t i = 0; i < chunk_size; ++i) {
@@ -174,7 +176,7 @@ bool WriteBytes(uint16_t seg, uint32_t ofs, const std::vector<uint8_t>& data) {
     else {
         // Standard path with full error checking and events
         for(size_t i = 0; i < data.size(); ++i) {
-            PhysPt phys = static_cast<PhysPt>(::GetAddress(seg, ofs + i));
+            PhysPt phys = static_cast<PhysPt>(GetAddress(seg, ofs + i));
 
             if(!use_fast_path) {
                 // Verify we can read the location first
@@ -220,7 +222,7 @@ std::vector<uint8_t> GetBytes(uint16_t seg, uint32_t ofs, size_t size) {
 
     if(use_fast_path && size > 16) {
         // Fast bulk read for large requests
-        PhysPt base_phys = static_cast<PhysPt>(::GetAddress(seg, ofs));
+        PhysPt base_phys = static_cast<PhysPt>(GetAddress(seg, ofs));
 
         // Try to read in chunks to minimize address translation overhead
         const size_t CHUNK_SIZE = 256;
@@ -228,7 +230,7 @@ std::vector<uint8_t> GetBytes(uint16_t seg, uint32_t ofs, size_t size) {
             size_t chunk_size = std::min(CHUNK_SIZE, size - chunk_start);
 
             // Calculate physical address for this chunk
-            PhysPt chunk_phys = static_cast<PhysPt>(::GetAddress(seg, ofs + chunk_start));
+            PhysPt chunk_phys = static_cast<PhysPt>(GetAddress(seg, ofs + chunk_start));
 
             // Read chunk directly if memory is contiguous
             for(size_t i = 0; i < chunk_size; ++i) {
@@ -240,7 +242,7 @@ std::vector<uint8_t> GetBytes(uint16_t seg, uint32_t ofs, size_t size) {
     else {
         // Standard path with full error checking and events
         for(size_t i = 0; i < size; ++i) {
-            PhysPt phys = static_cast<PhysPt>(::GetAddress(seg, ofs + i));
+            PhysPt phys = static_cast<PhysPt>(GetAddress(seg, ofs + i));
             uint8_t value;
 
             if(use_fast_path) {
@@ -1688,7 +1690,9 @@ std::string LuaEngine::executeLuaConsoleCommand(const std::string& command) {
 
     // First try legacy debugger commands so they don't trip Lua parser on non-Lua syntax
 #if C_DEBUG
-    if (ParseCommand(command.c_str())) {
+    // ponytail: ParseCommand takes char* not const char* — make a mutable copy
+    std::string cmd_buf = command;
+    if (ParseCommand(&cmd_buf[0])) {
         return "Debugger command executed";
     }
 #else
@@ -1712,7 +1716,7 @@ std::string LuaEngine::executeLuaConsoleCommand(const std::string& command) {
     catch(const std::exception& e) {
         // If Lua execution failed (likely due to legacy debugger syntax), try the old debugger command parser.
 #if C_DEBUG
-        if (ParseCommand(command.c_str())) {
+        if (ParseCommand(&cmd_buf[0])) {
             return "Debugger command executed";
         }
 #endif
@@ -3510,7 +3514,7 @@ void LuaEngine::cacheFrequentFunctions() {
                 // Benchmark memory read operations
                 for(int i = 0; i < iterations; ++i) {
                     uint8_t value;
-                    PhysPt phys = static_cast<PhysPt>(::GetAddress(0x0040, i % 256));
+                    PhysPt phys = static_cast<PhysPt>(GetAddress(0x0040, i % 256));
                     mem_readb_checked(phys, &value);
                 }
             }

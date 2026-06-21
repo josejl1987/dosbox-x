@@ -6,10 +6,8 @@
 // Required includes for CPU operations
 #include "regs.h"        // For register access macros
 #include "cpu.h"         // For SegValue and CPU state functions
-#include "debug.h"       // For DEBUG_ShowMsg
-
-// Forward declarations
-extern LuaEngine luaEngine;
+#include "logging.h"     // For DEBUG_ShowMsg
+#include "debug_bridge.h"
 
 #ifdef C_LUA
 

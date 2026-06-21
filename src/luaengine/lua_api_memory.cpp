@@ -7,8 +7,10 @@
 // Required includes for memory operations
 #include "mem.h"
 #include "paging.h"
-#include "cpu.h"         // For ::GetAddress function
-#include "debug.h"       // For DEBUG_ShowMsg
+#include "cpu.h"         // For SegValue
+#include "logging.h"     // For DEBUG_ShowMsg
+#include "../debug/debug_inc.h" // For GetAddress
+#include "debug_bridge.h"
 
 // Standard library includes
 #include <vector>        // For std::vector
@@ -16,7 +18,7 @@
 #include <cctype>        // For std::toupper
 
 // Forward declarations
-extern LuaEngine luaEngine;
+// (luaEngine and utility functions now provided by debug_bridge.h)
 
 // Memory operation result structure for better error reporting
 struct MemoryOperationResult {

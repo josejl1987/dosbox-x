@@ -1,6 +1,7 @@
 #ifndef DISASSEMBLY_WINDOW_H
 #define DISASSEMBLY_WINDOW_H
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -198,6 +199,7 @@ private:
     void unregisterListener();
     bool listener_registered_{false};
     bool code_view_callback_registered_{false};
+    std::function<void(uint16_t, uint32_t)> debug_on_code_view_update; // ponytail: callback for code view updates
 
     void applyTraceRangeFilter();
 };

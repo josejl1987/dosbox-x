@@ -3,6 +3,8 @@ AM_CPPFLAGS = -I$(top_srcdir)/include "-DRESDIR=\"$(resdir)\""
 if EMSCRIPTEN
 # fix https://github.com/emscripten-core/emscripten/issues/10061
 dosbox_x_LDFLAGS = -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE=['$$ERRNO_CODES']
+else
+dosbox_x_LDFLAGS =
 endif
 
 SUBDIRS = cpu debug dos fpu gui hardware libs ints misc shell builtin platform aviwriter output
@@ -31,9 +33,9 @@ endif
 dosbox_x_SOURCES = dosbox.cpp $(ico_stuff)
 dosbox_x_LDADD = debug/libdebug.a dos/libdos.a shell/libshell.a builtin/libbuiltin.a \
                ints/libints.a hardware/serialport/libserial.a hardware/parport/libparallel.a \
-               libs/passthroughio/libpassthroughio.a gui/libgui.a libs/gui_tk/libgui_tk.a hardware/libhardware.a \
-	       cpu/libcpu.a hardware/reSID/libresid.a fpu/libfpu.a gui/libgui.a \
-		   misc/libmisc.a output/liboutput.a hardware/mame/libmame.a libs/zmbv/libzmbv.a libs/decoders/internal/libopusint.a dos/libdos.a
+               libs/passthroughio/libpassthroughio.a gui/libgui.a libs/gui_tk/libgui_tk.a \
+		   misc/libmisc.a output/liboutput.a hardware/mame/libmame.a libs/zmbv/libzmbv.a libs/decoders/internal/libopusint.a dos/libdos.a \
+		   hardware/libhardware.a cpu/libcpu.a hardware/reSID/libresid.a fpu/libfpu.a gui/libgui.a
 
 if OS2
 dosbox_x_LDADD += os2res.res
@@ -50,6 +52,11 @@ endif
 if C_LUA
 SUBDIRS += luaengine
 dosbox_x_LDADD += luaengine/libluaengine.a luaengine/liblua.a
+# ponytail: linker group wraps all libs — hardware/cpu reference luaengine symbols
+# via instrumentation_router.h, luaengine references libmisc (pc98_cdl).
+# --start-group in LDFLAGS (before LDADD), --end-group in LIBS (after LDADD).
+dosbox_x_LDFLAGS += -Wl,--start-group
+LIBS += -Wl,--end-group
 endif
 
 if C_GAMELINK

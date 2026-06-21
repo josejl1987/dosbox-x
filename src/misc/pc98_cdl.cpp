@@ -15,6 +15,9 @@
 #include "debug.h"
 #include "../debug/debug_inc.h"
 
+// ponytail: GetAddress is in debug.cpp, not exposed in any header
+extern uint64_t GetAddress(uint16_t seg, uint32_t offset);
+
 // Performance tuning:
 // Stack tracking reads memory and updates evidence for every instruction;
 // disable it if CDL capture is too slow. Instruction fetch/code marking
@@ -217,7 +220,7 @@ void CDL::recordInsnFetch(uint16_t cs, uint32_t ip) {
     char dasm_line[256] = {0};
     int len = 0;
     {
-        PhysPt phys = ::GetAddress(cs, ip);
+        PhysPt phys = GetAddress(cs, ip);
         len = static_cast<int>(DasmI386(dasm_line, phys, ip, cpu.code.big));
     }
     Module* m = findModuleForLinear(linear);
@@ -241,7 +244,7 @@ void CDL::recordInsnFetch(uint16_t cs, uint32_t ip) {
     // Stack access tracking: check raw opcode bytes for PUSH/POP/CALL/RET
     // and record stack reads/writes at SS:SP.
     {
-        const PhysPt phys = ::GetAddress(cs, ip);
+        const PhysPt phys = GetAddress(cs, ip);
         const uint8_t op = mem_readb(phys);
         const uint16_t ss_val = SegValue(::ss);
         const uint16_t sp_val = reg_sp;

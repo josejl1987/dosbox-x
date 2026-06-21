@@ -7,7 +7,15 @@
 #include <string>
 #include <vector>
 
+// ponytail: Bitu defined in config.h — must be available before FillFlags decl
+#ifndef HAVE_CONFIG_H
+typedef uintptr_t Bitu;
+#endif
+
 #if C_LUA
+
+// ponytail: forward decl — FillFlags is in lazyflags.h, can't include due to circular dep
+extern Bitu FillFlags();
 
 // ============================================================================
 // InstrumentationFeature — bit flags for the atomic feature mask

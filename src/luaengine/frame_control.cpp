@@ -6,6 +6,7 @@
 #include <cmath>
 
 // DOSBox-X includes
+#include "dosbox.h" // Bitu type needed by video.h included from sdlmain.h
 #include "sdlmain.h"
 #include "pic.h"
 #include "setup.h"

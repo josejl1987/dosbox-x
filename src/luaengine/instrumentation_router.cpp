@@ -12,6 +12,10 @@
  *  GNU General Public License for more details.
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #if C_LUA
 
 #include "instrumentation_router.h"
@@ -22,6 +26,7 @@
 #include "paging.h"
 #include "debug.h"
 #include "../debug/debug_inc.h"
+#include "debug_bridge.h"
 #include "pc98_cdl.h"
 
 #include <algorithm>
@@ -40,9 +45,9 @@ std::atomic<uint32_t> g_instrumentation_features{0};
 // ============================================================================
 
 DebugAddress DebugAddress::fromCSIP() {
-	uint16_t cs = SegValue(cs);
+	uint16_t cs_val = SegValue(SegNames::cs);
 	uint32_t ip = reg_eip;
-	return {cs, ip, (uint32_t(cs) << 4) + ip, 0};
+	return {cs_val, ip, (uint32_t(cs_val) << 4) + ip, 0};
 }
 
 uint32_t DebugAddress::getPhysical() const {
@@ -143,8 +148,8 @@ bool InstrumentationRouter::onInstruction(DebugAddress addr, uint32_t feature_ma
 	// Execution breakpoints — check both CBreakpoint and router's own entries
 	if (feature_mask & INSTR_EXECUTION_BREAK) {
 		// Legacy CBreakpoint system — backward compatible (returns bool)
-		if (!CBreakpoint::BPoints.empty() &&
-			CBreakpoint::CheckBreakpoint(addr.segment, addr.offset)) {
+		if (DebugBridge::HasBreakpoints() &&
+			DebugBridge::CheckBreakpoint(addr.segment, addr.offset)) {
 			should_break = true;
 		}
 

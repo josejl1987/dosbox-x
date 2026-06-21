@@ -43,10 +43,10 @@
 #include "symbol_manager.h"
 #include "debug_logger.h"
 #include "instrumentation_router.h"
+#include "debug_bridge.h"
 
 // Forward declarations
 class Section;
-class CBreakpoint;
 
 // UI State structure for ImGui integration
 struct LuaEngineUIState {
@@ -494,9 +494,9 @@ struct LuaEngine
     std::string getHistoryFilePath();
     
     // Breakpoint tracking for enhanced functionality
-    std::map<CBreakpoint*, std::string> breakpoint_names_;
-    std::map<CBreakpoint*, std::string> breakpoint_conditions_;
-    std::map<CBreakpoint*, std::string> breakpoint_actions_;
+    std::map<DebugBreakpointHandle, std::string> breakpoint_names_;
+    std::map<DebugBreakpointHandle, std::string> breakpoint_conditions_;
+    std::map<DebugBreakpointHandle, std::string> breakpoint_actions_;
     std::mutex breakpoint_metadata_mutex_; // Protects the above maps
 
     // Global instance protection

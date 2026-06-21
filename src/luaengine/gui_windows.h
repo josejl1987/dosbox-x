@@ -25,6 +25,9 @@ namespace LuaEngineDebugTools { class DebuggerSession; }
 
 namespace LuaEngineGUIWindows {
 
+// Bring DebuggerSession into this namespace for pointer usage
+using LuaEngineDebugTools::DebuggerSession;
+
 // Forward declarations
 class WindowManager;
 class ToolWindow;

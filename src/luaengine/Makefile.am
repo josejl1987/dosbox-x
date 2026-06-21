@@ -1,9 +1,12 @@
 AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/vs -I$(top_srcdir)/vs/lua \
 	-I$(top_srcdir)/vs/lua/src \
+	-I$(top_srcdir)/vs/imgui \
 	-I$(top_srcdir)/third_party/lrdb/include \
 	-I$(top_srcdir)/third_party/lrdb/third_party/asio/asio/include \
 	-I$(top_srcdir)/third_party/lrdb/third_party/picojson \
-	-DASIO_STANDALONE -DWIN32_LEAN_AND_MEAN -D_WINSOCKAPI_=1 -DNOMINMAX
+	-DASIO_STANDALONE -DWIN32_LEAN_AND_MEAN -D_WINSOCKAPI_=1 -DNOMINMAX \
+	-DSOL_NOEXCEPT_FUNCTION_TYPE=0 \
+	-include force_gnu_source.h
 
 if C_LUA
 noinst_LIBRARIES = libluaengine.a liblua.a
@@ -66,7 +69,8 @@ libluaengine_a_SOURCES = LuaEngine.cpp luaengine.h event_manager.cpp event_manag
 	watch_window.cpp watch_window.h \
 	cheat_engine.cpp cheat_engine.h \
 	cheat_window.cpp cheat_window.h \
-	instrumentation_router.cpp instrumentation_router.h
+	instrumentation_router.cpp instrumentation_router.h \
+	debug_bridge.cpp debug_bridge.h
 else
 noinst_LIBRARIES = 
 endif

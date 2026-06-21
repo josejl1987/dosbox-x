@@ -1,6 +1,7 @@
 #include "event_manager.h"
 #include "luaengine.h"
 #include "debug.h"
+#include "logging.h" // For DEBUG_ShowMsg
 #include "trace_logger.h"
 
 namespace LuaEngineEvents {

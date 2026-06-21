@@ -224,9 +224,9 @@ OLDCFLAGS="$CFLAGS"
 OLDCPPFLAGS="$CPPFLAGS"
 OLDCXXFLAGS="$CXXFLAGS"
 
-AC_MSG_CHECKING([checking for C++14 support])
-AC_CHECK_CXXFLAGS([ -std=gnu++14 ], [  ], 
-    AC_MSG_ERROR([ Your compiler must support C++14 or better ])
+AC_MSG_CHECKING([checking for C++17 support])
+AC_CHECK_CXXFLAGS([ -std=gnu++17 ], [  ], 
+    AC_MSG_ERROR([ Your compiler must support C++17 or better ])
 )
 
 CXXFLAGS="$OLDCXXFLAGS"
@@ -234,7 +234,7 @@ CPPFLAGS="$OLDCPPFLAGS"
 CFLAGS="$OLDCFLAGS"
 
 CFLAGS="$CFLAGS -std=gnu11"; # no such "gnu14"
-CXXFLAGS="$CXXFLAGS -std=gnu++14";
+CXXFLAGS="$CXXFLAGS -std=gnu++17 -D_GNU_SOURCE";
 
 dnl Allow the SDL drawn menu to be enabled on Windows or macOS instead of their native menu system.
 AH_TEMPLATE(C_FORCE_MENU_SDLDRAW,[Define to 1 to force SDL-drawn menus])
@@ -707,7 +707,7 @@ case "$host" in
        dnl to do more to distinguish them.
        dnl For now I am lazy and do not add proper detection code.
        macosx=1
-       OBJCXXFLAGS="$OBJCXXFLAGS -std=gnu++14";
+       OBJCXXFLAGS="$OBJCXXFLAGS -std=gnu++17";
        AC_DEFINE(MACOSX, 1, [Compiling on Mac OS X])
        LIBS="$LIBS -framework Carbon -framework CoreFoundation -framework CoreMIDI -framework AudioUnit -framework AudioToolbox -framework ApplicationServices -framework AppKit -framework IOKit "
        dnl FEATURE: Whether to support direct serial port pass-through

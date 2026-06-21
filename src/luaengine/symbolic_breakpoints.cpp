@@ -1,9 +1,12 @@
 #include "symbolic_breakpoints.h"
 
+#include "dosbox.h"       // Bitu type — must come before debug.h
 #include "symbol_manager.h"
 #include "debug.h"
+#include "logging.h"
 #include "luaengine.h"
 #include "core_debug_interface.h"
+#include "debug_bridge.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -31,7 +34,7 @@ SymbolicBreakpointManager* TryGetSymbolicBreakpointManager() {
 void SymbolicBreakpointManager::clearPhysicalBreakpoint(SymbolicBreakpoint& bp) {
     // 1. Remove the DOSBox physical breakpoint object
     if (bp.physical_bp) {
-        bp.physical_bp->Activate(false);
+        DebugBridge::Activate(bp.physical_bp, false);
         // We don't manually delete CBreakpoint pointers usually, DOSBox manages the pool,
         // but we must ensure it's inactive.
         bp.physical_bp = nullptr;
@@ -55,7 +58,7 @@ void SymbolicBreakpointManager::clearPhysicalBreakpoint(SymbolicBreakpoint& bp) 
         // Remove from DOSBox internal list
         // Note: Verify if DeleteBreakpoint requires specific Seg:Off or if it handles the list logic.
         if (seg != 0 || off != 0) {
-            CBreakpoint::DeleteBreakpoint(seg, off);
+            DebugBridge::DeleteBreakpoint(seg, off);
         }
 
         // Remove from the UI/Core Debugger list
@@ -136,9 +139,9 @@ void SymbolicBreakpointManager::resolveAll() {
             }
 
             // 1. Add DOSBox physical breakpoint
-            CBreakpoint* physical_bp = CBreakpoint::AddBreakpoint(seg, off, false);
+            DebugBreakpointHandle physical_bp = DebugBridge::AddBreakpoint(seg, off, false);
             if (physical_bp) {
-                physical_bp->Activate(true);
+                DebugBridge::Activate(physical_bp, true);
                 bp.physical_bp = physical_bp;
             }
 
@@ -151,7 +154,7 @@ void SymbolicBreakpointManager::resolveAll() {
     }
 
     // Ensure DOSBox internal states are flushed/active
-    CBreakpoint::ActivateBreakpoints();
+    DebugBridge::ActivateBreakpoints();
 }
 
 void SymbolicBreakpointManager::addBreakpoint(const std::string& symbol, int32_t offset, const std::string& desc) {

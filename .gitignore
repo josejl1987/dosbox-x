@@ -141,3 +141,14 @@ contrib/macos/dosbox-x.plist
 # ignore default dosbox config files (used for manual testing)
 /dosbox-x.conf
 /src/dosbox-x.conf
+
+# C_LUA build workarounds — symlinks created by build, not source
+/include/instrumentation_router.h
+/include/gamelink
+/include/output/
+
+# misc build artifacts
+*.zip
+.atl/
+*.bak.*
+*.new

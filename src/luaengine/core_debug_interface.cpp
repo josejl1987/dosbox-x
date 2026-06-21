@@ -6,13 +6,19 @@
 #include "mem.h"
 #include "regs.h"
 #include "debug.h"
+#include "logging.h"     // For DEBUG_ShowMsg
 #include "menu.h"
 #include "../debug/debug_inc.h"
 #include "luaengine.h"  // For enabling instruction hooks when breakpoints are added
+#include "debug_bridge.h"
 #include <mutex>
 #include <sstream>
 #include <iomanip>
 #include <thread>
+
+// ponytail: debug subsystem internals not exposed in headers
+extern bool debugging;
+extern int debug_running;
 #include <chrono>
 #include <algorithm>
 #include <cctype>
@@ -366,7 +372,7 @@ namespace LuaEngineDebug {
         // Ensure all breakpoints are active for normal execution
         // NOTE: We do NOT call ActivateBreakpointsExceptAt here anymore
         // The skip_once_ flag in checkBreakpoints() handles that logic
-        CBreakpoint::ActivateBreakpoints();
+        DebugBridge::ActivateBreakpoints();
 
         // Exit debug loop and return to normal execution
         DOSBOX_SetNormalLoop();
@@ -393,10 +399,10 @@ namespace LuaEngineDebug {
 
 #if C_DEBUG
         // Reactivate breakpoints before stepping (they may have been deactivated)
-        CBreakpoint::ActivateBreakpoints();
+        DebugBridge::ActivateBreakpoints();
 
         // Execute one instruction using the existing debugger
-        DEBUG_RunLua(1, false);  // Run 1 instruction without breakpoint handling
+        DebugBridge::RunLua(1, false);
 
         // Force back into debug mode after the step
         pause(BreakReason::Step);
@@ -412,7 +418,7 @@ namespace LuaEngineDebug {
 
 #if C_DEBUG
         // Reactivate breakpoints before stepping
-        CBreakpoint::ActivateBreakpoints();
+        DebugBridge::ActivateBreakpoints();
 
         // Check if current instruction is a call
         uint32_t current_address = (SegValue(cs) << 4) + reg_eip;
@@ -426,7 +432,7 @@ namespace LuaEngineDebug {
             uint32_t off = (next_address - (seg << 4)) & 0xFFFF;
 
             // Add temporary breakpoint after the call
-            CBreakpoint::AddBreakpoint(seg, off, true);
+            DebugBridge::AddBreakpoint(seg, off, true);
 
             // Resume execution - it will hit the breakpoint after the call returns
             resume();
@@ -516,9 +522,9 @@ namespace LuaEngineDebug {
         (void)address; (void)seg; (void)off;
 
         // Use DOSBox's breakpoint system (false = permanent breakpoint)
-        CBreakpoint::AddBreakpoint(seg, off, false);
+        DebugBridge::AddBreakpoint(seg, off, false);
         // Ensure breakpoints are activated
-        CBreakpoint::ActivateBreakpoints();
+        DebugBridge::ActivateBreakpoints();
 #endif
 
         // OPTIMIZATION: Simple breakpoints are handled by CBreakpoint only
@@ -606,7 +612,7 @@ namespace LuaEngineDebug {
         off = static_cast<uint16_t>(address & 0xFFFF);
 
         // Use DOSBox's breakpoint system to remove
-        CBreakpoint::DeleteBreakpoint(seg, off);
+        DebugBridge::DeleteBreakpoint(seg, off);
 #endif
 
         // Also remove from our internal list
@@ -671,7 +677,7 @@ namespace LuaEngineDebug {
             uint16_t seg = SegValue(cs);
             uint32_t cs_base = SegPhys(cs);  // Use SegPhys instead of simple shift
             uint16_t off = static_cast<uint16_t>(address - cs_base);
-            CBreakpoint::DeleteBreakpoint(seg, off);
+            DebugBridge::DeleteBreakpoint(seg, off);
 #endif
             notifyBreakpointListChanged();
             return;
@@ -693,9 +699,9 @@ namespace LuaEngineDebug {
         uint16_t seg = SegValue(cs);
         uint32_t cs_base = SegPhys(cs);  // Use SegPhys instead of simple shift
         uint16_t off = static_cast<uint16_t>(address - cs_base);
-        CBreakpoint::AddBreakpoint(seg, off, false);
+        DebugBridge::AddBreakpoint(seg, off, false);
         // Ensure breakpoints are activated
-        CBreakpoint::ActivateBreakpoints();
+        DebugBridge::ActivateBreakpoints();
 #endif
 
         // Keep instruction hooks on so the breakpoint will be observed each instruction
@@ -1049,14 +1055,14 @@ namespace LuaEngineDebug {
         DEBUG_ShowMsg("DEBUG: Run to cursor - Target: %08X, Seg:Off: %04X:%04X\n", address, seg, off);
 
         // Add a temporary breakpoint (true = once only)
-        CBreakpoint::AddBreakpoint(seg, off, true);
+        DebugBridge::AddBreakpoint(seg, off, true);
 
         // Set exitLoop to break out of debug loop
         extern bool exitLoop;
         exitLoop = true;
 
         // Activate breakpoints except at current location
-        CBreakpoint::ActivateBreakpointsExceptAt(SegPhys(cs) + reg_eip);
+        DebugBridge::ActivateBreakpointsExceptAt(SegPhys(cs) + reg_eip);
 
         // Set state for resume
         debugging = false;
@@ -1100,7 +1106,7 @@ namespace LuaEngineDebug {
     void DosBoxCoreDebugger::clearAllBreakpoints() {
 #if C_DEBUG
         // Clear all breakpoints from DOSBox's system
-        CBreakpoint::DeleteAll();
+        DebugBridge::DeleteAll();
 #endif
 
         {

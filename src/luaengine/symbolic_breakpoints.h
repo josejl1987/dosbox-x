@@ -5,7 +5,9 @@
 #include <string>
 #include <vector>
 
-class CBreakpoint; // Forward declaration from debug.h
+// Forward-declare the opaque handle type from debug_bridge.h
+// (Can't include debug_bridge.h here due to #if C_LUA guard ordering)
+using DebugBreakpointHandle = void*;
 
 namespace LuaEngineSymbols {
 
@@ -17,7 +19,7 @@ struct SymbolicBreakpoint {
     bool enabled = true;
     std::string description;
     uint32_t resolved_linear_address = 0;
-    CBreakpoint* physical_bp = nullptr;
+    DebugBreakpointHandle physical_bp = nullptr;
     bool is_absolute = false; // true when created directly from a linear address without symbol
     bool address_valid = false; // true when resolved_linear_address is valid
 };

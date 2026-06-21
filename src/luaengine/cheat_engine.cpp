@@ -279,13 +279,13 @@ void Cheat::applyIncreaseDecrease() {
     // Clamp to valid range based on size
     switch (size_) {
         case LuaEngineRamSearch::WatchSize::BYTE_1:
-            new_value = std::max(0LL, std::min(255LL, new_value));
+            new_value = std::max(int64_t(0), std::min(int64_t(255), new_value));
             break;
         case LuaEngineRamSearch::WatchSize::BYTE_2:
-            new_value = std::max(0LL, std::min(65535LL, new_value));
+            new_value = std::max(int64_t(0), std::min(int64_t(65535), new_value));
             break;
         case LuaEngineRamSearch::WatchSize::BYTE_4:
-            new_value = std::max(0LL, std::min(4294967295LL, new_value));
+            new_value = std::max(int64_t(0), std::min(int64_t(4294967295), new_value));
             break;
         case LuaEngineRamSearch::WatchSize::BYTE_8:
             // No clamping for 64-bit

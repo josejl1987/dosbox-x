@@ -4,10 +4,8 @@
 #include "luaengine.h"
 
 // Required includes for breakpoint operations
-#include "debug.h"       // For DEBUG_ShowMsg
-
-// Forward declarations
-extern LuaEngine luaEngine;
+#include "logging.h"      // For DEBUG_ShowMsg
+#include "debug_bridge.h"
 
 #ifdef C_LUA
 
@@ -31,9 +29,9 @@ void LuaEngine::registerBreakpointAPI() {
         // But for tracepoints (should_stop=false), we MUST NOT add a CBreakpoint
         // because CBreakpoint always hard-pauses the loop
         if (should_stop) {
-            CBreakpoint* bp = CBreakpoint::AddBreakpoint(cs, ip, false);
+            DebugBreakpointHandle bp = DebugBridge::AddBreakpoint(cs, ip, false);
             if (bp) {
-                bp->Activate(true);
+                DebugBridge::Activate(bp, true);
 
                 // Store additional info if provided (thread-safe)
                 {
@@ -56,10 +54,11 @@ void LuaEngine::registerBreakpointAPI() {
             } else {
                 DEBUG_ShowMsg("LuaEngine: Failed to add physical breakpoint at %04X:%04X", cs, ip);
             }
+            DEBUG_ShowMsg("LuaEngine: Breakpoint added at %04X:%04X", cs, ip);
             return true;
         } else {
             // Ensure no physical breakpoint exists that would force a stop
-            CBreakpoint::DeleteBreakpoint(cs, ip);
+            DebugBridge::DeleteBreakpoint(cs, ip);
 
             DEBUG_ShowMsg("LuaEngine: Tracepoint added at %04X:%04X", cs, ip);
             return true;
@@ -71,9 +70,9 @@ void LuaEngine::registerBreakpointAPI() {
         luaEngine.removeLuaBreakpoint(cs, ip);
 
         // Also remove physical breakpoint if it exists
-        CBreakpoint* bp = CBreakpoint::FindPhysBreakpoint(cs, ip, false);
+        DebugBreakpointHandle bp = DebugBridge::FindPhysBreakpoint(cs, ip, false);
         if (bp) {
-            bp->Activate(false);
+            DebugBridge::Activate(bp, false);
 
             // Clean up our additional data (thread-safe)
             {
@@ -84,7 +83,7 @@ void LuaEngine::registerBreakpointAPI() {
             }
 
             // Remove the physical breakpoint entry to avoid stale instances
-            CBreakpoint::DeleteBreakpoint(cs, ip);
+            DebugBridge::DeleteBreakpoint(cs, ip);
         }
 
         DEBUG_ShowMsg("LuaEngine: Breakpoint/Tracepoint removed at %04X:%04X", cs, ip);
@@ -96,9 +95,9 @@ void LuaEngine::registerBreakpointAPI() {
         luaEngine.enableLuaBreakpoint(cs, ip, enabled);
 
         // Also enable/disable physical breakpoint if it exists
-        CBreakpoint* bp = CBreakpoint::FindPhysBreakpoint(cs, ip, false);
+        DebugBreakpointHandle bp = DebugBridge::FindPhysBreakpoint(cs, ip, false);
         if (bp) {
-            bp->Activate(enabled);
+            DebugBridge::Activate(bp, enabled);
         }
 
         DEBUG_ShowMsg("LuaEngine: Breakpoint/Tracepoint %s at %04X:%04X", enabled ? "enabled" : "disabled", cs, ip);
@@ -114,14 +113,17 @@ void LuaEngine::registerBreakpointAPI() {
         
         // Iterate through our tracked breakpoints
         for (const auto& [bp, name] : breakpoint_names_) {
-            if (bp && bp->IsActive()) {
+            if (DebugBridge::IsActive(bp)) {
                 auto bp_info = lua.create_table();
+#if 0
+                // ponytail: CBreakpoint instance method, needs full bridge
                 bp_info["segment"] = bp->GetSegment();
                 bp_info["offset"] = bp->GetOffset();
                 bp_info["address"] = bp->GetLocation();
-                bp_info["name"] = name;
-                bp_info["active"] = bp->IsActive();
                 bp_info["once"] = bp->GetOnce();
+#endif
+                bp_info["name"] = name;
+                bp_info["active"] = DebugBridge::IsActive(bp);
                 
                 // Add condition if present
                 auto cond_it = breakpoint_conditions_.find(bp);
@@ -150,11 +152,11 @@ void LuaEngine::registerBreakpointAPI() {
                                          sol::optional<std::string> condition,
                                          sol::optional<std::string> action,
                                          sol::optional<bool> stop) -> bool {
-        uint16_t ah_val = ah.value_or(BPINT_ALL);
-        uint16_t al_val = al.value_or(BPINT_ALL);
+        uint16_t ah_val = ah.value_or(DEBUG_BRIDGE_BPINT_ALL);
+        uint16_t al_val = al.value_or(DEBUG_BRIDGE_BPINT_ALL);
         bool should_stop = stop.value_or(true);
 
-        CBreakpoint* bp = CBreakpoint::AddIntBreakpoint(intNum, ah_val, al_val, false);
+        DebugBreakpointHandle bp = DebugBridge::AddIntBreakpoint(intNum, ah_val, al_val, false);
         if (!bp) {
             DEBUG_ShowMsg("LuaEngine: Failed to add INT breakpoint on 0x%02X", intNum);
             return false;
@@ -179,7 +181,7 @@ void LuaEngine::registerBreakpointAPI() {
 
     breakpoint_table["add_mem"] = [this](uint16_t seg, uint32_t off,
                                           sol::optional<std::string> name) -> bool {
-        CBreakpoint* bp = CBreakpoint::AddMemBreakpoint(seg, off);
+        DebugBreakpointHandle bp = DebugBridge::AddMemBreakpoint(seg, off);
         if (!bp) {
             DEBUG_ShowMsg("LuaEngine: Failed to add memory breakpoint at %04X:%04X", seg, off);
             return false;

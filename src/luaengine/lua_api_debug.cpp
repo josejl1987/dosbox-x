@@ -4,12 +4,14 @@
 #include "luaengine.h"
 
 // Required includes for debug operations
-#include "debug.h"       // For DEBUG_EnableDebugger, DEBUG_ShowMsg, DasmI386
+#include "debug.h"       // For DEBUG_EnableDebugger, DasmI386
+#include "logging.h"     // For DEBUG_ShowMsg
 #include "regs.h"        // For register access
 #include "cpu.h"         // For CPU state and SegValue
 #include "mem.h"         // For memory operations
 #include "paging.h"      // For memory addressing
 #include "../debug/debug_inc.h"  // For DasmI386 function declaration
+#include "debug_bridge.h"
 
 // Standard library includes
 #include <fstream>       // For file I/O
@@ -20,8 +22,7 @@
 // Debug tools integration
 #include "debugger_session.h"  // For DebuggerSession access
 
-// Forward declarations
-extern LuaEngine luaEngine;
+// (luaEngine now provided by debug_bridge.h)
 
 // Utility function from lua_api_memory.cpp
 extern std::vector<uint8_t> GetBytes(uint16_t seg, uint32_t ofs, size_t size);
@@ -130,12 +131,12 @@ void LuaEngine::registerDebugAPI() {
         auto result = lua.create_table();
         int num_instructions = count.value_or(10);
 
-        PhysPt start = ::GetAddress(seg, offset);
+        PhysPt start = GetAddress(seg, offset);
         uint32_t current_ip = offset;
 
         for(int i = 0; i < num_instructions; i++) {
             char dasm_line[256];
-            PhysPt addr = ::GetAddress(seg, current_ip);
+            PhysPt addr = GetAddress(seg, current_ip);
 
             // Use DOSBox-X's built-in disassembler
             Bitu instruction_size = DasmI386(dasm_line, addr, current_ip, cpu.code.big);
@@ -165,7 +166,7 @@ void LuaEngine::registerDebugAPI() {
 
     debug_table["get_instruction_at"] = [this](uint16_t seg, uint32_t offset) -> sol::table {
         char dasm_line[256];
-        PhysPt addr = ::GetAddress(seg, offset);
+        PhysPt addr = GetAddress(seg, offset);
 
         Bitu instruction_size = DasmI386(dasm_line, addr, offset, cpu.code.big);
 
